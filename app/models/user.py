@@ -1,0 +1,20 @@
+﻿from datetime import datetime
+from sqlalchemy import Boolean, DateTime, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.core.database import Base
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    email: Mapped[str] = mapped_column(String, unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String)
+    full_name: Mapped[str] = mapped_column(String, default="")
+    role: Mapped[str] = mapped_column(String, default="tutor")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    tutor_profile = relationship("TutorProfile", back_populates="user", uselist=False)
+    walker_profile = relationship("WalkerProfile", back_populates="user", uselist=False)
+    pets = relationship("Pet", back_populates="tutor")
+    walks = relationship("Walk", back_populates="tutor", foreign_keys="Walk.tutor_id")

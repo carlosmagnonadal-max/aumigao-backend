@@ -4,6 +4,7 @@ from app.schemas.common import ORMModel
 
 class TutorProfileBase(BaseModel):
     full_name: str = ""
+    cpf: str = ""
     phone: str = ""
     photo_url: str | None = None
     cep: str = ""

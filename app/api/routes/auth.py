@@ -11,6 +11,7 @@ from app.models.user import User
 from app.models.tutor_profile import TutorProfile
 from app.schemas.user import UserCreate, UserResponse
 from app.core.security import hash_password, verify_password, create_access_token
+from app.utils.registration_validation import normalize_cpf_or_raise, normalize_email_or_raise, normalize_phone_or_raise
 
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -41,13 +42,17 @@ class TutorRegisterRequest(BaseModel):
 
 @router.post("/register", response_model=UserResponse)
 def register(user: UserCreate, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.email == user.email).first()
+    try:
+        email = normalize_email_or_raise(str(user.email))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    existing_user = db.query(User).filter(User.email == email).first()
 
     if existing_user:
         raise HTTPException(status_code=400, detail="Email já cadastrado")
 
     new_user = User(
-        email=user.email,
+        email=email,
         password=hash_password(user.password)
     )
 
@@ -60,13 +65,20 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
 
 @router.post("/register-tutor")
 def register_tutor(data: TutorRegisterRequest, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.email == data.email).first()
+    try:
+        email = normalize_email_or_raise(data.email)
+        cpf = normalize_cpf_or_raise(data.cpf)
+        phone = normalize_phone_or_raise(data.phone)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    existing_user = db.query(User).filter(User.email == email).first()
 
     if existing_user:
         raise HTTPException(status_code=400, detail="Email já cadastrado")
 
     new_user = User(
-        email=data.email,
+        email=email,
         password=hash_password(data.password)
     )
 
@@ -76,7 +88,8 @@ def register_tutor(data: TutorRegisterRequest, db: Session = Depends(get_db)):
 
     profile = TutorProfile(
         full_name=data.full_name,
-        phone=data.phone,
+        cpf=cpf,
+        phone=phone,
         cep=data.cep,
         street=data.street,
         number=data.number,

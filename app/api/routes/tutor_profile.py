@@ -10,9 +10,22 @@ from app.schemas.tutor_profile import (
     TutorProfileUpdate,
     TutorProfileResponse,
 )
+from app.utils.registration_validation import normalize_cpf_or_raise, normalize_phone_or_raise
 
 
 router = APIRouter(prefix="/tutor-profile", tags=["Tutor Profile"])
+
+
+def _normalized_profile_payload(payload: TutorProfileCreate | TutorProfileUpdate):
+    data = payload.model_dump(exclude_unset=True)
+    try:
+        if data.get("cpf"):
+            data["cpf"] = normalize_cpf_or_raise(data.get("cpf"))
+        if data.get("phone"):
+            data["phone"] = normalize_phone_or_raise(data.get("phone"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return data
 
 
 @router.post("/", response_model=TutorProfileResponse)
@@ -31,23 +44,7 @@ def create_tutor_profile(
             detail="Perfil do tutor já existe"
         )
 
-    profile = TutorProfile(
-        full_name=profile_data.full_name,
-        phone=profile_data.phone,
-        profile_photo_url=profile_data.profile_photo_url,
-        cep=profile_data.cep,
-        street=profile_data.street,
-        number=profile_data.number,
-        complement=profile_data.complement,
-        neighborhood=profile_data.neighborhood,
-        city=profile_data.city,
-        state=profile_data.state,
-        reference_point=profile_data.reference_point,
-        access_instructions=profile_data.access_instructions,
-        pet_pickup_notes=profile_data.pet_pickup_notes,
-        preferred_pickup_method=profile_data.preferred_pickup_method,
-        user_id=current_user.id,
-    )
+    profile = TutorProfile(user_id=current_user.id, **_normalized_profile_payload(profile_data))
 
     db.add(profile)
     db.commit()
@@ -90,7 +87,7 @@ def update_my_tutor_profile(
         db.commit()
         db.refresh(profile)
 
-    update_data = profile_update.model_dump(exclude_unset=True)
+    update_data = _normalized_profile_payload(profile_update)
 
     for field, value in update_data.items():
         setattr(profile, field, value)

@@ -9,6 +9,7 @@ class TutorProfile(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), unique=True)
     full_name: Mapped[str] = mapped_column(String, default="")
+    cpf: Mapped[str] = mapped_column(String, default="")
     phone: Mapped[str] = mapped_column(String, default="")
     photo_url: Mapped[str | None] = mapped_column(String, nullable=True)
     cep: Mapped[str] = mapped_column(String, default="")

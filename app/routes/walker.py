@@ -1,4 +1,5 @@
 import os
+import logging
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -73,6 +74,7 @@ KIT_ITEM_DEFINITIONS = [
 ]
 
 WALKER_KIT_SUBMISSIONS: dict[str, dict] = {}
+LOGGER = logging.getLogger("aumigao.walker_applications")
 
 
 class PartnerApplicationCreate(BaseModel):
@@ -446,6 +448,7 @@ def _build_walker_kit(user_id: str | None) -> dict:
 
 @partner_router.post("", status_code=201)
 def create_partner_application(payload: PartnerApplicationCreate, db: Session = Depends(get_db)):
+    LOGGER.info("candidatura recebida", extra={"email": payload.email, "full_name": payload.full_name})
     if not payload.accepted_declaration:
         raise HTTPException(status_code=400, detail="Declaracao obrigatoria precisa ser aceita.")
     _ensure_application_complete(
@@ -501,7 +504,17 @@ def create_partner_application(payload: PartnerApplicationCreate, db: Session = 
     profile.rejection_reason = None
     db.commit()
     db.refresh(profile)
+    LOGGER.info(
+        "candidatura criada",
+        extra={
+            "walker_profile_id": profile.id,
+            "user_id": profile.user_id,
+            "status": profile.status,
+            "active_as_walker": profile.active_as_walker,
+        },
+    )
     mark_referral_under_review(user.id, db)
+    LOGGER.info("candidatura salva", extra={"walker_profile_id": profile.id, "status": profile.status})
     return _serialize_partner_application(profile, db)
 
 

@@ -39,7 +39,7 @@ def matching_matches(payload: dict, name: str) -> list[dict]:
     return [item for item in rows if item.get("name") == name]
 
 
-def create_application(client: TestClient, *, email: str, name: str, photo_url: str = "") -> dict:
+def create_application(client: TestClient, *, email: str, name: str, photo_url: str = "beta://profile-photo") -> dict:
     created = client.post(
         "/api/partner-applications",
         json={
@@ -53,6 +53,8 @@ def create_application(client: TestClient, *, email: str, name: str, photo_url: 
             "experience_description": "Cadastro real para auditoria admin.",
             "availability": "Segunda a sexta",
             "profile_photo_url": photo_url,
+            "document_url": "beta://identity-document",
+            "proof_of_address_url": "beta://proof-of-address",
             "accepted_declaration": True,
         },
     )

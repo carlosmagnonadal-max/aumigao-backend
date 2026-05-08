@@ -86,6 +86,9 @@ class PartnerApplicationCreate(BaseModel):
     experience_description: str = ""
     availability: str = ""
     profile_photo_url: str | None = None
+    document_url: str | None = None
+    proof_of_address_url: str | None = None
+    selfie_url: str | None = None
     accepted_declaration: bool = Field(default=False)
 
 
@@ -144,6 +147,9 @@ def _serialize_partner_application(profile: WalkerProfile, db: Session, include_
         "experience_description": profile.experience or "",
         "availability": "",
         "profile_photo_url": profile.profile_photo_url or "",
+        "document_url": profile.document_url or "",
+        "proof_of_address_url": profile.proof_of_address_url or "",
+        "selfie_url": profile.selfie_url or "",
         "accepted_declaration": True,
         "status": _public_status_label(profile.status),
         "raw_status": profile.status,
@@ -157,6 +163,42 @@ def _serialize_partner_application(profile: WalkerProfile, db: Session, include_
     if include_internal:
         payload["internal_notes"] = profile.internal_notes or ""
     return payload
+
+
+def _missing_application_fields(*, profile_photo_url: str | None, document_url: str | None, proof_of_address_url: str | None) -> list[str]:
+    missing = []
+    if not (profile_photo_url or "").strip():
+        missing.append("Envie sua foto de perfil.")
+    if not (document_url or "").strip():
+        missing.append("Envie o documento obrigatório.")
+    if not (proof_of_address_url or "").strip():
+        missing.append("Complete os documentos para enviar sua candidatura.")
+    return missing
+
+
+def _ensure_application_complete(*, profile_photo_url: str | None, document_url: str | None, proof_of_address_url: str | None):
+    missing = _missing_application_fields(
+        profile_photo_url=profile_photo_url,
+        document_url=document_url,
+        proof_of_address_url=proof_of_address_url,
+    )
+    if missing:
+        raise HTTPException(status_code=400, detail={"message": "Cadastro de passeador incompleto.", "errors": missing})
+
+
+def _require_active_walker(user: User, db: Session) -> WalkerProfile:
+    profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == user.id).first()
+    if not profile:
+        raise HTTPException(status_code=403, detail="Cadastro de passeador nao encontrado.")
+    if profile.status in {"pending", "document_review"} or not profile.active_as_walker:
+        raise HTTPException(status_code=403, detail="Candidatura ainda em analise.")
+    if profile.status == "rejected":
+        raise HTTPException(status_code=403, detail=profile.rejection_reason or "Candidatura rejeitada.")
+    if profile.status in {"suspended", "restricted"}:
+        raise HTTPException(status_code=403, detail="Perfil com bloqueio operacional.")
+    if user.role not in {"walker", "passeador"}:
+        raise HTTPException(status_code=403, detail="Usuario ainda nao liberado como passeador.")
+    return profile
 
 
 def _apply_profile_status(profile: WalkerProfile, status: str, reason: str | None = None, db: Session | None = None):
@@ -406,6 +448,11 @@ def _build_walker_kit(user_id: str | None) -> dict:
 def create_partner_application(payload: PartnerApplicationCreate, db: Session = Depends(get_db)):
     if not payload.accepted_declaration:
         raise HTTPException(status_code=400, detail="Declaracao obrigatoria precisa ser aceita.")
+    _ensure_application_complete(
+        profile_photo_url=payload.profile_photo_url,
+        document_url=payload.document_url,
+        proof_of_address_url=payload.proof_of_address_url,
+    )
 
     try:
         email = normalize_email_or_raise(payload.email)
@@ -444,6 +491,9 @@ def create_partner_application(payload: PartnerApplicationCreate, db: Session = 
     profile.experience = payload.experience_description.strip()
     profile.bio = payload.experience_description.strip()
     profile.profile_photo_url = payload.profile_photo_url
+    profile.document_url = payload.document_url
+    profile.proof_of_address_url = payload.proof_of_address_url
+    profile.selfie_url = payload.selfie_url
     profile.status = document_status
     profile.active_as_walker = False
     profile.approved_at = None
@@ -620,6 +670,11 @@ def create_profile(payload: WalkerProfileCreate, user: User = Depends(get_curren
     if profile:
         return update_profile(payload, user, db)
     data = payload.model_dump()
+    _ensure_application_complete(
+        profile_photo_url=data.get("profile_photo_url"),
+        document_url=data.get("document_url"),
+        proof_of_address_url=data.get("proof_of_address_url"),
+    )
     try:
         if data.get("cpf"):
             data["cpf"] = normalize_cpf_or_raise(data.get("cpf"))
@@ -654,6 +709,12 @@ def update_profile(payload: WalkerProfileUpdate, user: User = Depends(get_curren
         setattr(profile, key, value)
     if profile.status in {"pending", ""} and (profile.document_url or profile.selfie_url or profile.proof_of_address_url):
         profile.status = "document_review"
+    if profile.status in {"pending", "document_review"}:
+        _ensure_application_complete(
+            profile_photo_url=profile.profile_photo_url,
+            document_url=profile.document_url,
+            proof_of_address_url=profile.proof_of_address_url,
+        )
     db.commit()
     db.refresh(profile)
     return profile
@@ -661,6 +722,7 @@ def update_profile(payload: WalkerProfileUpdate, user: User = Depends(get_curren
 
 @router.get("/dashboard")
 def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_active_walker(user, db)
     active = db.query(Walk).filter(Walk.walker_id == user.id, Walk.status.in_(["Indo buscar o pet", "Passeando agora"])).all()
     accepted = db.query(Walk).filter(Walk.walker_id == user.id).all()
     available = db.query(Walk).filter(Walk.walker_id.is_(None), Walk.status == "Agendado").all()
@@ -766,6 +828,7 @@ def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_
 
 @router.get("/earnings")
 def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_active_walker(user, db)
     completed = _completed_walks(user, db)
     total = sum(float(walk.price or 0) for walk in completed)
     tips = 52.0
@@ -809,11 +872,13 @@ def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_d
 
 @router.get("/goals-evolution")
 def goals_evolution(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_active_walker(user, db)
     return _goals_evolution_payload(user, db)
 
 
 @router.put("/kit")
-def update_kit(payload: dict, user: User = Depends(get_current_user)):
+def update_kit(payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_active_walker(user, db)
     items_payload = (payload or {}).get("items") or []
     items = {}
     for definition in KIT_ITEM_DEFINITIONS:
@@ -904,7 +969,8 @@ def api_public_walkers(db: Session = Depends(get_db)):
 
 
 @router.get("/availability")
-def availability(user: User = Depends(get_current_user)):
+def availability(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_active_walker(user, db)
     return {
         "week": [
             {"day": "Seg 22", "status": "available", "possible_walks": 3},
@@ -924,12 +990,14 @@ def availability(user: User = Depends(get_current_user)):
 
 
 @router.put("/availability")
-def update_availability(payload: dict, user: User = Depends(get_current_user)):
+def update_availability(payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_active_walker(user, db)
     return {"ok": True, "user_id": user.id, **payload}
 
 
 @router.get("/requests")
 def requests(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_active_walker(user, db)
     process_expired_attempts(db)
     walks = (
         db.query(Walk)
@@ -960,6 +1028,7 @@ def requests(user: User = Depends(get_current_user), db: Session = Depends(get_d
 
 @router.get("/walks")
 def walker_walks(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_active_walker(user, db)
     process_expired_attempts(db)
     walks = db.query(Walk).filter(Walk.walker_id == user.id).all()
     return [serialize_operational_walk(walk, db, user=user) for walk in walks]
@@ -967,6 +1036,7 @@ def walker_walks(user: User = Depends(get_current_user), db: Session = Depends(g
 
 @router.post("/walks/{walk_id}/accept")
 def accept_walk(walk_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_active_walker(user, db)
     walk = db.get(Walk, walk_id)
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
@@ -981,6 +1051,7 @@ def accept_walk(walk_id: str, user: User = Depends(get_current_user), db: Sessio
 
 @router.post("/walks/{walk_id}/decline")
 def decline_walk(walk_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_active_walker(user, db)
     walk = db.get(Walk, walk_id)
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
@@ -992,6 +1063,7 @@ def decline_walk(walk_id: str, user: User = Depends(get_current_user), db: Sessi
 
 @router.post("/walks/{walk_id}/status")
 def walker_status(walk_id: str, payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_active_walker(user, db)
     walk = db.get(Walk, walk_id)
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")

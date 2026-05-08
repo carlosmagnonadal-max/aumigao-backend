@@ -34,6 +34,21 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == email).first():
         raise HTTPException(status_code=409, detail="E-mail ja cadastrado")
     role = "tutor" if payload.role in {"cliente", "tutor"} else payload.role
+    if role in {"walker", "passeador"}:
+        documents = profile_payload.get("documents", {}) if isinstance(profile_payload, dict) else {}
+        profile_info = profile_payload.get("profile", {}) if isinstance(profile_payload, dict) else {}
+        profile_photo_url = profile_payload.get("profile_photo_url") or profile_info.get("photoUri") or profile_info.get("photo_url")
+        document_url = profile_payload.get("document_url") or documents.get("identity")
+        proof_of_address_url = profile_payload.get("proof_of_address_url") or documents.get("residence")
+        missing = []
+        if not profile_photo_url:
+            missing.append("Envie sua foto de perfil.")
+        if not document_url:
+            missing.append("Envie o documento obrigatório.")
+        if not proof_of_address_url:
+            missing.append("Complete os documentos para enviar sua candidatura.")
+        if missing:
+            raise HTTPException(status_code=400, detail={"message": "Cadastro de passeador incompleto.", "errors": missing})
     if payload.referral_code and role in {"walker", "passeador"}:
         validate_referral_code(payload.referral_code, db)
     user = User(id=str(uuid4()), email=email, full_name=payload.full_name, role=role, password_hash=get_password_hash(payload.password))
@@ -55,7 +70,21 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
             state=address.get("estado", ""),
         ))
     elif role in {"walker", "passeador"} and (cpf or phone):
-        db.add(WalkerProfile(id=str(uuid4()), user_id=user.id, full_name=payload.full_name, cpf=cpf, phone=phone, status="pending"))
+        documents = profile_payload.get("documents", {}) if isinstance(profile_payload, dict) else {}
+        profile_info = profile_payload.get("profile", {}) if isinstance(profile_payload, dict) else {}
+        db.add(WalkerProfile(
+            id=str(uuid4()),
+            user_id=user.id,
+            full_name=payload.full_name,
+            cpf=cpf,
+            phone=phone,
+            profile_photo_url=profile_payload.get("profile_photo_url") or profile_info.get("photoUri") or profile_info.get("photo_url"),
+            document_url=profile_payload.get("document_url") or documents.get("identity"),
+            proof_of_address_url=profile_payload.get("proof_of_address_url") or documents.get("residence"),
+            selfie_url=profile_payload.get("selfie_url") or documents.get("petPhoto"),
+            status="document_review",
+            active_as_walker=False,
+        ))
     db.commit()
     db.refresh(user)
     if payload.referral_code and role in {"walker", "passeador"}:

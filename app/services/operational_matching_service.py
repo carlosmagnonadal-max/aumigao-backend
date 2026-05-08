@@ -271,7 +271,11 @@ def _rank_candidates(walk: Walk, db: Session, excluded: set[str]) -> list[dict]:
 
 
 def _candidate_for_selected_walker(walk: Walk, walker_id: str, db: Session) -> dict | None:
-    profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == walker_id, WalkerProfile.status.in_(["approved", "active"])).first()
+    profile = db.query(WalkerProfile).filter(
+        WalkerProfile.user_id == walker_id,
+        WalkerProfile.status == "active",
+        WalkerProfile.active_as_walker.is_(True),
+    ).first()
     if profile:
         return matched_walker_payload(profile, _candidate_request(walk), db)
     user = db.get(User, walker_id)

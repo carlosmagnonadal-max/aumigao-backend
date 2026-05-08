@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 
 os.environ["EXPO_PUBLIC_DEMO_MODE"] = "false"
 os.environ["DEMO_MODE"] = "false"
@@ -30,17 +30,20 @@ def ensure_admin() -> str:
     return create_access_token("admin-sim-flow", {"role": "admin"})
 
 
-def main():
-    client = TestClient(app)
-    token = ensure_admin()
-    admin_headers = {"Authorization": f"Bearer {token}"}
-    stamp = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
-    email = f"walker-flow-{stamp}@aumigao.local"
+def public_matches(payload: dict, name: str) -> list[dict]:
+    return [item for item in payload.get("walkers", []) if item.get("name") == name]
 
+
+def matching_matches(payload: dict, name: str) -> list[dict]:
+    rows = payload.get("top_recommended", []) + payload.get("other_options", [])
+    return [item for item in rows if item.get("name") == name]
+
+
+def create_application(client: TestClient, *, email: str, name: str, photo_url: str = "") -> dict:
     created = client.post(
         "/api/partner-applications",
         json={
-            "full_name": "Passeador Auditoria Real",
+            "full_name": name,
             "cpf": "52998224725",
             "phone": "71999990000",
             "email": email,
@@ -49,13 +52,45 @@ def main():
             "has_third_party_experience": True,
             "experience_description": "Cadastro real para auditoria admin.",
             "availability": "Segunda a sexta",
-            "profile_photo_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
+            "profile_photo_url": photo_url,
             "accepted_declaration": True,
         },
     )
     assert created.status_code == 201, created.text
-    candidate = created.json()
-    assert candidate["status"] in {"Em análise", "Aprovação documental"}, candidate
+    return created.json()
+
+
+def assert_not_public_or_matching(client: TestClient, admin_headers: dict, name: str):
+    public_walkers = client.get("/walker/public")
+    assert public_walkers.status_code == 200, public_walkers.text
+    assert not public_matches(public_walkers.json(), name), public_walkers.json()
+
+    matching = client.post(
+        "/matching/walkers",
+        json={"city": "Pituba", "neighborhood": "Pituba", "scheduled_at": "2026-05-09T10:00:00", "duration_minutes": 45},
+        headers=admin_headers,
+    )
+    assert matching.status_code == 200, matching.text
+    assert not matching_matches(matching.json(), name), matching.json()
+
+
+def main():
+    client = TestClient(app)
+    token = ensure_admin()
+    admin_headers = {"Authorization": f"Bearer {token}"}
+    stamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
+    approved_name = f"Passeador Auditoria Real {stamp}"
+    approved_email = f"walker-flow-{stamp}@aumigao.local"
+
+    candidate = create_application(
+        client,
+        email=approved_email,
+        name=approved_name,
+        photo_url="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
+    )
+    assert candidate["raw_status"] in {"pending", "document_review"}, candidate
+    assert candidate["active_as_walker"] is False, candidate
+    assert_not_public_or_matching(client, admin_headers, approved_name)
 
     admin_list = client.get("/admin/walkers", headers=admin_headers)
     assert admin_list.status_code == 200, admin_list.text
@@ -64,14 +99,19 @@ def main():
     approved = client.post(f"/admin/walkers/{candidate['id']}/approve", headers=admin_headers)
     assert approved.status_code == 200, approved.text
     approved_data = approved.json()
-    assert approved_data["active_as_walker"] is True
+    assert approved_data["raw_status"] == "active", approved_data
+    assert approved_data["active_as_walker"] is True, approved_data
 
     active_list = client.get("/admin/walkers", headers=admin_headers).json()
     assert any(item["id"] == candidate["id"] and item["raw_status"] == "active" for item in active_list)
 
     public_walkers = client.get("/walker/public")
     assert public_walkers.status_code == 200, public_walkers.text
-    assert any(item["name"] == "Passeador Auditoria Real" for item in public_walkers.json()["walkers"])
+    assert len(public_matches(public_walkers.json(), approved_name)) == 1, public_walkers.json()
+
+    api_walkers = client.get("/api/walkers")
+    assert api_walkers.status_code == 200, api_walkers.text
+    assert len([item for item in api_walkers.json() if item.get("name") == approved_name]) == 1, api_walkers.json()
 
     matching = client.post(
         "/matching/walkers",
@@ -79,9 +119,24 @@ def main():
         headers=admin_headers,
     )
     assert matching.status_code == 200, matching.text
-    matching_data = matching.json()
-    found = matching_data["top_recommended"] + matching_data["other_options"]
-    assert any(item["name"] == "Passeador Auditoria Real" for item in found), matching_data
+    assert len(matching_matches(matching.json(), approved_name)) == 1, matching.json()
+
+    rejected_name = f"Passeador Rejeitado Auditoria {stamp}"
+    rejected_candidate = create_application(
+        client,
+        email=f"walker-reject-{stamp}@aumigao.local",
+        name=rejected_name,
+    )
+    rejected = client.post(
+        f"/admin/walkers/{rejected_candidate['id']}/reject",
+        json={"reason": "Documentos insuficientes"},
+        headers=admin_headers,
+    )
+    assert rejected.status_code == 200, rejected.text
+    rejected_data = rejected.json()
+    assert rejected_data["raw_status"] == "rejected", rejected_data
+    assert rejected_data["active_as_walker"] is False, rejected_data
+    assert_not_public_or_matching(client, admin_headers, rejected_name)
 
     dashboard = client.get("/admin/dashboard", headers=admin_headers)
     assert dashboard.status_code == 200, dashboard.text

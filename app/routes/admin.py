@@ -16,7 +16,7 @@ from app.services.operational_matching_service import process_expired_attempts, 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 api_router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
-APPROVED_WALKER_STATUSES = {"approved", "active"}
+APPROVED_WALKER_STATUSES = {"active"}
 PAID_PAYMENT_STATUSES = {"paid", "Pago", "pagamento_confirmado_sandbox", "payment_confirmed", "confirmed"}
 IN_PROGRESS_WALK_STATUSES = {"Indo buscar o pet", "Passeando agora", "walker_arriving", "ride_in_progress"}
 
@@ -177,7 +177,7 @@ def _status_label(status: str | None) -> str:
 def _serialize_walker_profile(profile: WalkerProfile, db: Session, include_internal: bool = True) -> dict:
     user = _profile_user(profile, db)
     document_count = len([value for value in [profile.document_url, profile.selfie_url, profile.proof_of_address_url] if value])
-    active_as_walker = bool(profile.active_as_walker or profile.status in APPROVED_WALKER_STATUSES)
+    active_as_walker = bool(profile.active_as_walker and profile.status in APPROVED_WALKER_STATUSES)
     payload = {
         "id": profile.id,
         "walker_id": profile.id,
@@ -219,6 +219,18 @@ def _serialize_walker_profile(profile: WalkerProfile, db: Session, include_inter
     if include_internal:
         payload["internal_notes"] = profile.internal_notes or ""
     return payload
+
+
+def _unique_walker_profiles(db: Session, include_internal: bool = True) -> list[dict]:
+    rows = []
+    seen_keys = set()
+    for profile in db.query(WalkerProfile).order_by(WalkerProfile.created_at.desc()).all():
+        key = profile.user_id or profile.id
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        rows.append(_serialize_walker_profile(profile, db, include_internal=include_internal))
+    return rows
 
 
 def _split_scheduled_date(value: str) -> tuple[str | None, str | None]:
@@ -357,12 +369,12 @@ def tutors(db: Session = Depends(get_db)):
 @router.get("/walkers")
 @api_router.get("/walkers")
 def walkers(db: Session = Depends(get_db)):
-    return [_serialize_walker_profile(profile, db) for profile in db.query(WalkerProfile).order_by(WalkerProfile.created_at.desc()).all()]
+    return _unique_walker_profiles(db)
 
 @router.get("/partner-applications")
 @api_router.get("/partner-applications")
 def partner_applications(db: Session = Depends(get_db)):
-    return [_serialize_walker_profile(profile, db, include_internal=False) for profile in db.query(WalkerProfile).order_by(WalkerProfile.created_at.desc()).all()]
+    return _unique_walker_profiles(db, include_internal=False)
 
 
 @router.get("/partner-applications/{candidate_id}")

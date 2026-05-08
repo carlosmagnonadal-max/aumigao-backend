@@ -4,7 +4,6 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -148,7 +147,7 @@ def _serialize_partner_application(profile: WalkerProfile, db: Session, include_
         "accepted_declaration": True,
         "status": _public_status_label(profile.status),
         "raw_status": profile.status,
-        "active_as_walker": bool(profile.active_as_walker or profile.status in {"approved", "active"}),
+        "active_as_walker": bool(profile.active_as_walker and profile.status == "active"),
         "approved_at": profile.approved_at,
         "rejected_at": profile.rejected_at,
         "rejection_reason": profile.rejection_reason,
@@ -422,13 +421,14 @@ def create_partner_application(payload: PartnerApplicationCreate, db: Session = 
             email=email,
             password_hash=get_password_hash(str(uuid4())),
             full_name=payload.full_name.strip(),
-            role="walker",
+            role="cliente",
         )
         db.add(user)
         db.flush()
     else:
         user.full_name = payload.full_name.strip() or user.full_name
-        user.role = "walker"
+        if user.role in {"walker", "passeador"}:
+            user.role = "cliente"
 
     profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == user.id).first()
     document_status = "document_review" if payload.profile_photo_url else "pending"
@@ -619,7 +619,6 @@ def create_profile(payload: WalkerProfileCreate, user: User = Depends(get_curren
     profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == user.id).first()
     if profile:
         return update_profile(payload, user, db)
-    user.role = "walker"
     data = payload.model_dump()
     try:
         if data.get("cpf"):
@@ -835,9 +834,9 @@ def update_kit(payload: dict, user: User = Depends(get_current_user)):
 
 def _public_walker_rows(db: Session) -> list[dict]:
     profiles = db.query(WalkerProfile).filter(
-        WalkerProfile.status.in_(["approved", "active"]),
-        or_(WalkerProfile.active_as_walker.is_(True), WalkerProfile.status == "approved"),
-    ).all()
+        WalkerProfile.status == "active",
+        WalkerProfile.active_as_walker.is_(True),
+    ).order_by(WalkerProfile.created_at.desc()).all()
     if not profiles:
         if not DEMO_MODE:
             return []
@@ -864,8 +863,14 @@ def _public_walker_rows(db: Session) -> list[dict]:
                     "walker_kit": _build_walker_kit("walker-demo-user-1"),
             }
         ]
-    return [
-        {
+    rows = []
+    seen_keys = set()
+    for profile in profiles:
+        dedupe_key = profile.cpf or profile.user_id or profile.id
+        if not dedupe_key or dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        rows.append({
                 **(summary := reputation_summary(profile.user_id, db)),
                 "id": profile.user_id,
                 "partner_id": profile.id,
@@ -873,6 +878,9 @@ def _public_walker_rows(db: Session) -> list[dict]:
                 "full_name": profile.full_name or "Passeador",
                 "photo_url": profile.profile_photo_url or "",
                 "profile_photo_url": profile.profile_photo_url or "",
+                "status": profile.status,
+                "raw_status": profile.status,
+                "active_as_walker": bool(profile.active_as_walker),
                 "rating": summary["rating_average"] or 0,
                 "average_rating": summary["rating_average"] or 0,
                 "city": profile.city,
@@ -881,9 +889,8 @@ def _public_walker_rows(db: Session) -> list[dict]:
                 "walk_price": 35,
                 "verified": True,
                 "walker_kit": _build_walker_kit(profile.user_id),
-        }
-        for profile in profiles
-    ]
+        })
+    return rows
 
 
 @router.get("/public")

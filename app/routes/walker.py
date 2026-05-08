@@ -81,6 +81,7 @@ LOGGER = logging.getLogger("aumigao.walker_applications")
 class PartnerApplicationCreate(BaseModel):
     full_name: str
     cpf: str
+    password: str = ""
     phone: str = ""
     email: str
     neighborhood_region: str = ""
@@ -137,6 +138,11 @@ def _raw_status_from_label(status: str) -> str:
     if normalized in {"suspenso", "suspended"}:
         return "suspended"
     return "pending"
+
+
+def _validate_password_or_raise(password: str):
+    if len(password or "") < 8 or not any(char.isalpha() for char in password) or not any(char.isdigit() for char in password):
+        raise HTTPException(status_code=400, detail="A senha deve ter pelo menos 8 caracteres, incluindo 1 letra e 1 numero.")
 
 
 def _serialize_partner_application(profile: WalkerProfile, db: Session, include_internal: bool = False) -> dict:
@@ -472,6 +478,7 @@ def _build_walker_kit(user_id: str | None) -> dict:
 @partner_router.post("", status_code=201)
 def create_partner_application(payload: PartnerApplicationCreate, db: Session = Depends(get_db)):
     LOGGER.info("candidatura recebida", extra={"email": payload.email, "full_name": payload.full_name})
+    _validate_password_or_raise(payload.password)
     if not payload.accepted_declaration:
         raise HTTPException(status_code=400, detail="Declaracao obrigatoria precisa ser aceita.")
     identity_front_url = payload.identity_document_front_url or payload.document_url
@@ -496,9 +503,9 @@ def create_partner_application(payload: PartnerApplicationCreate, db: Session = 
     user = User(
         id=str(uuid4()),
         email=email,
-        password_hash=get_password_hash(str(uuid4())),
+        password_hash=get_password_hash(payload.password),
         full_name=payload.full_name.strip(),
-        role="cliente",
+        role="walker",
     )
     db.add(user)
     db.flush()

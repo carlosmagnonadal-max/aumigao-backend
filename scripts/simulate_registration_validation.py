@@ -14,6 +14,7 @@ VALID_PHONE = "71999999999"
 VALID_LANDLINE = "7133334444"
 VALID_EMAIL = "usuario.teste@gmail.com"
 WALKER_COMPLETE_FIELDS = {
+    "password": "Senha123",
     "profile_photo_url": "beta://profile-photo",
     "document_url": "beta://identity-front",
     "identity_document_back_url": "beta://identity-back",

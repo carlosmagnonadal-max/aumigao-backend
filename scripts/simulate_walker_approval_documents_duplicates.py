@@ -92,6 +92,17 @@ def main():
     assert detail_data["proof_of_address_url"] == "beta://proof-of-address", detail_data
     assert detail_data["selfie_url"] == "beta://selfie", detail_data
 
+    notes = client.patch(
+        f"/admin/partner-applications/{candidate['id']}/admin-fields",
+        json={"internal_notes": "Documentos revisados no painel admin."},
+        headers=admin_headers,
+    )
+    assert notes.status_code == 200, notes.text
+    assert notes.json()["internal_notes"] == "Documentos revisados no painel admin.", notes.text
+    detail_after_notes = client.get(f"/admin/partner-applications/{candidate['id']}", headers=admin_headers)
+    assert detail_after_notes.status_code == 200, detail_after_notes.text
+    assert detail_after_notes.json()["internal_notes"] == "Documentos revisados no painel admin.", detail_after_notes.text
+
     pending_headers = {"Authorization": f"Bearer {create_access_token(candidate['user_id'], {'role': 'cliente'})}"}
     assert client.get("/walker/dashboard", headers=pending_headers).status_code == 403
 
@@ -105,6 +116,10 @@ def main():
     active_profile = client.get("/walker/profile", headers=active_headers)
     assert active_profile.status_code == 200, active_profile.text
     assert active_profile.json()["status"] == "active", active_profile.text
+    assert active_profile.json()["active_as_walker"] is True, active_profile.text
+    with SessionLocal() as db:
+        approved_user = db.query(User).filter(User.id == candidate["user_id"]).first()
+        assert approved_user.role == "walker", approved_user.role
     assert client.get("/walker/dashboard", headers=active_headers).status_code == 200
 
     duplicate_cpf = client.post(

@@ -386,6 +386,31 @@ def partner_application_detail(candidate_id: str, db: Session = Depends(get_db))
     return _serialize_walker_profile(profile, db)
 
 
+@router.patch("/partner-applications/{candidate_id}/admin-fields")
+@api_router.patch("/partner-applications/{candidate_id}/admin-fields")
+def update_partner_application_admin_fields(candidate_id: str, payload: dict | None = None, db: Session = Depends(get_db)):
+    profile = db.get(WalkerProfile, candidate_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Candidatura nao encontrada")
+    payload = payload or {}
+    if "internal_notes" in payload:
+        profile.internal_notes = payload.get("internal_notes") or ""
+    if "active_as_walker" in payload:
+        active_as_walker = bool(payload.get("active_as_walker"))
+        if active_as_walker and profile.status not in APPROVED_WALKER_STATUSES:
+            raise HTTPException(status_code=400, detail="Apenas candidatos aprovados podem ser ativados como passeador.")
+        profile.active_as_walker = active_as_walker
+        profile.status = "active" if active_as_walker else "approved"
+        if active_as_walker and not profile.approved_at:
+            profile.approved_at = datetime.utcnow()
+        user = db.get(User, profile.user_id)
+        if active_as_walker and user:
+            user.role = "walker"
+    db.commit()
+    db.refresh(profile)
+    return _serialize_walker_profile(profile, db)
+
+
 @router.post("/walkers/{walker_id}/approve")
 @api_router.post("/walkers/{walker_id}/approve")
 def approve_walker(walker_id: str, db: Session = Depends(get_db)):

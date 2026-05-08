@@ -30,11 +30,24 @@ def ensure_admin() -> str:
     return create_access_token("admin-activation-flow", {"role": "admin"})
 
 
-def application_payload(email: str, name: str, *, complete: bool = True) -> dict:
+def cpf_from_seed(seed: int) -> str:
+    base = f"{seed % 1_000_000_000:09d}"
+    for weight_start in (10, 11):
+        total = sum(int(digit) * weight for digit, weight in zip(base, range(weight_start, 1, -1)))
+        check = (total * 10) % 11
+        base += str(0 if check == 10 else check)
+    return base
+
+
+def phone_from_seed(seed: int) -> str:
+    return f"719{seed % 100_000_000:08d}"
+
+
+def application_payload(email: str, name: str, *, complete: bool = True, seed: int = 1) -> dict:
     payload = {
         "full_name": name,
-        "cpf": "52998224725",
-        "phone": "71999990000",
+        "cpf": cpf_from_seed(seed),
+        "phone": phone_from_seed(seed),
         "email": email,
         "neighborhood_region": "Pituba",
         "has_pet_experience": True,
@@ -73,10 +86,11 @@ def main():
     client = TestClient(app)
     admin_headers = {"Authorization": f"Bearer {ensure_admin()}"}
     stamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
+    seed_base = int(stamp[-9:])
 
     incomplete = client.post(
         "/api/partner-applications",
-        json=application_payload(f"incomplete-{stamp}@aumigao.local", f"Passeador Incompleto {stamp}", complete=False),
+        json=application_payload(f"incomplete-{stamp}@aumigao.local", f"Passeador Incompleto {stamp}", complete=False, seed=seed_base + 1),
     )
     assert incomplete.status_code == 400, incomplete.text
     incomplete_detail = incomplete.json()["detail"]
@@ -86,7 +100,7 @@ def main():
     pending_name = f"Passeador Pendente {stamp}"
     pending = client.post(
         "/api/partner-applications",
-        json=application_payload(f"pending-{stamp}@aumigao.local", pending_name),
+        json=application_payload(f"pending-{stamp}@aumigao.local", pending_name, seed=seed_base + 2),
     )
     assert pending.status_code == 201, pending.text
     pending_data = pending.json()
@@ -99,7 +113,7 @@ def main():
     approved_name = f"Passeador Ativado {stamp}"
     approved_candidate = client.post(
         "/api/partner-applications",
-        json=application_payload(f"approved-{stamp}@aumigao.local", approved_name),
+        json=application_payload(f"approved-{stamp}@aumigao.local", approved_name, seed=seed_base + 3),
     ).json()
     approved = client.post(f"/admin/walkers/{approved_candidate['id']}/approve", headers=admin_headers)
     assert approved.status_code == 200, approved.text
@@ -116,7 +130,7 @@ def main():
     rejected_name = f"Passeador Rejeitado {stamp}"
     rejected_candidate = client.post(
         "/api/partner-applications",
-        json=application_payload(f"rejected-{stamp}@aumigao.local", rejected_name),
+        json=application_payload(f"rejected-{stamp}@aumigao.local", rejected_name, seed=seed_base + 4),
     ).json()
     rejected = client.post(
         f"/admin/walkers/{rejected_candidate['id']}/reject",

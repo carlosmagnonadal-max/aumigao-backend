@@ -9,6 +9,7 @@ from app.models.tutor_profile import TutorProfile
 from app.models.walker_profile import WalkerProfile
 from app.schemas.auth import LoginRequest, TokenResponse
 from app.schemas.user import UserCreate, UserResponse
+from app.services.identity_uniqueness import ensure_unique_identity
 from app.services.walker_referrals import link_referral_to_user, validate_referral_code
 from app.utils.registration_validation import normalize_cpf_or_raise, normalize_email_or_raise, normalize_phone_or_raise
 
@@ -31,8 +32,7 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    if db.query(User).filter(User.email == email).first():
-        raise HTTPException(status_code=409, detail="E-mail ja cadastrado")
+    ensure_unique_identity(db, email=email, cpf=cpf or None, phone=phone or None)
     role = "tutor" if payload.role in {"cliente", "tutor"} else payload.role
     if role in {"walker", "passeador"}:
         documents = profile_payload.get("documents", {}) if isinstance(profile_payload, dict) else {}

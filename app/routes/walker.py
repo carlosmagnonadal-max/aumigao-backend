@@ -18,6 +18,7 @@ from app.models.walker_profile import WalkerProfile
 from app.schemas.walker_profile import WalkerProfileCreate, WalkerProfileResponse, WalkerProfileUpdate
 from app.schemas.complaint import ComplaintCreate, ComplaintEvidenceCreate
 from app.services.complaint_service import create_complaint
+from app.services.identity_uniqueness import ensure_unique_identity
 from app.services.reputation_service import reputation_summary
 from app.services.walker_referrals import mark_referral_approved, mark_referral_rejected, mark_referral_under_review
 from app.utils.registration_validation import normalize_cpf_or_raise, normalize_email_or_raise, normalize_phone_or_raise
@@ -464,21 +465,17 @@ def create_partner_application(payload: PartnerApplicationCreate, db: Session = 
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    user = db.query(User).filter(User.email == email).first()
-    if not user:
-        user = User(
-            id=str(uuid4()),
-            email=email,
-            password_hash=get_password_hash(str(uuid4())),
-            full_name=payload.full_name.strip(),
-            role="cliente",
-        )
-        db.add(user)
-        db.flush()
-    else:
-        user.full_name = payload.full_name.strip() or user.full_name
-        if user.role in {"walker", "passeador"}:
-            user.role = "cliente"
+    ensure_unique_identity(db, email=email, cpf=cpf, phone=phone)
+
+    user = User(
+        id=str(uuid4()),
+        email=email,
+        password_hash=get_password_hash(str(uuid4())),
+        full_name=payload.full_name.strip(),
+        role="cliente",
+    )
+    db.add(user)
+    db.flush()
 
     profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == user.id).first()
     document_status = "document_review" if payload.profile_photo_url else "pending"
@@ -695,6 +692,7 @@ def create_profile(payload: WalkerProfileCreate, user: User = Depends(get_curren
             data["phone"] = normalize_phone_or_raise(data.get("phone"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    ensure_unique_identity(db, cpf=data.get("cpf") or None, phone=data.get("phone") or None, current_user_id=user.id)
     has_documents = bool(data.get("document_url") or data.get("selfie_url") or data.get("proof_of_address_url"))
     profile = WalkerProfile(id=str(uuid4()), user_id=user.id, status="document_review" if has_documents else "pending", **data)
     db.add(profile)
@@ -718,6 +716,7 @@ def update_profile(payload: WalkerProfileUpdate, user: User = Depends(get_curren
             data["phone"] = normalize_phone_or_raise(data.get("phone"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    ensure_unique_identity(db, cpf=data.get("cpf") or None, phone=data.get("phone") or None, current_user_id=user.id)
     for key, value in data.items():
         setattr(profile, key, value)
     if profile.status in {"pending", ""} and (profile.document_url or profile.selfie_url or profile.proof_of_address_url):

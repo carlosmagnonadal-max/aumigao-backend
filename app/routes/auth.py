@@ -21,6 +21,8 @@ def build_session(user: User) -> TokenResponse:
 
 @router.post("/register", response_model=TokenResponse)
 def register(payload: UserCreate, db: Session = Depends(get_db)):
+    if len(payload.password or "") < 8 or not any(char.isalpha() for char in payload.password) or not any(char.isdigit() for char in payload.password):
+        raise HTTPException(status_code=400, detail="A senha deve ter pelo menos 8 caracteres, incluindo 1 letra e 1 numero.")
     try:
         email = normalize_email_or_raise(str(payload.email))
         profile_payload = payload.profile or {}
@@ -38,13 +40,19 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
         documents = profile_payload.get("documents", {}) if isinstance(profile_payload, dict) else {}
         profile_info = profile_payload.get("profile", {}) if isinstance(profile_payload, dict) else {}
         profile_photo_url = profile_payload.get("profile_photo_url") or profile_info.get("photoUri") or profile_info.get("photo_url")
-        document_url = profile_payload.get("document_url") or documents.get("identity")
+        document_url = profile_payload.get("identity_document_front_url") or profile_payload.get("document_url") or documents.get("identityFront") or documents.get("identity")
+        identity_document_back_url = profile_payload.get("identity_document_back_url") or documents.get("identityBack")
         proof_of_address_url = profile_payload.get("proof_of_address_url") or documents.get("residence")
+        bio = str(profile_payload.get("bio") or profile_info.get("bio") or "")
         missing = []
         if not profile_photo_url:
             missing.append("Envie sua foto de perfil.")
+        if len(bio.strip()) < 80:
+            missing.append("Escreva uma breve apresentação para os tutores.")
         if not document_url:
-            missing.append("Envie o documento obrigatório.")
+            missing.append("Envie a frente do documento de identidade.")
+        if not identity_document_back_url:
+            missing.append("Envie o verso do documento de identidade.")
         if not proof_of_address_url:
             missing.append("Complete os documentos para enviar sua candidatura.")
         if missing:
@@ -72,14 +80,20 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
     elif role in {"walker", "passeador"} and (cpf or phone):
         documents = profile_payload.get("documents", {}) if isinstance(profile_payload, dict) else {}
         profile_info = profile_payload.get("profile", {}) if isinstance(profile_payload, dict) else {}
+        bio = str(profile_payload.get("bio") or profile_info.get("bio") or "").strip()
+        experience_options = profile_payload.get("experience_options") or profile_info.get("experience") or []
+        experience = " | ".join([bio, *[str(item).strip() for item in experience_options if str(item).strip()]])
         db.add(WalkerProfile(
             id=str(uuid4()),
             user_id=user.id,
             full_name=payload.full_name,
             cpf=cpf,
             phone=phone,
+            bio=bio,
+            experience=experience,
             profile_photo_url=profile_payload.get("profile_photo_url") or profile_info.get("photoUri") or profile_info.get("photo_url"),
-            document_url=profile_payload.get("document_url") or documents.get("identity"),
+            document_url=profile_payload.get("identity_document_front_url") or profile_payload.get("document_url") or documents.get("identityFront") or documents.get("identity"),
+            identity_document_back_url=profile_payload.get("identity_document_back_url") or documents.get("identityBack"),
             proof_of_address_url=profile_payload.get("proof_of_address_url") or documents.get("residence"),
             selfie_url=profile_payload.get("selfie_url") or documents.get("petPhoto"),
             status="document_review",

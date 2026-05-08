@@ -45,6 +45,7 @@ def ensure_walker_profile_schema():
     columns = {
         "cpf": "VARCHAR DEFAULT ''",
         "profile_photo_url": "VARCHAR",
+        "identity_document_back_url": "VARCHAR",
         "internal_notes": "TEXT DEFAULT ''",
         "active_as_walker": "BOOLEAN DEFAULT 0",
         "approved_at": "DATETIME",

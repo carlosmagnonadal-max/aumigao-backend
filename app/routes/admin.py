@@ -176,7 +176,7 @@ def _status_label(status: str | None) -> str:
 
 def _serialize_walker_profile(profile: WalkerProfile, db: Session, include_internal: bool = True) -> dict:
     user = _profile_user(profile, db)
-    document_count = len([value for value in [profile.document_url, profile.selfie_url, profile.proof_of_address_url] if value])
+    document_count = len([value for value in [profile.document_url, profile.identity_document_back_url, profile.selfie_url, profile.proof_of_address_url] if value])
     active_as_walker = bool(profile.active_as_walker and profile.status in APPROVED_WALKER_STATUSES)
     payload = {
         "id": profile.id,
@@ -195,8 +195,11 @@ def _serialize_walker_profile(profile: WalkerProfile, db: Session, include_inter
         "experience": profile.experience or "",
         "experience_description": profile.experience or "",
         "bio": profile.bio or "",
+        "experience_options": [part.strip() for part in (profile.experience or "").split("|")[1:] if part.strip()],
         "rg": profile.rg or "",
         "document_url": profile.document_url,
+        "identity_document_front_url": profile.document_url,
+        "identity_document_back_url": profile.identity_document_back_url,
         "selfie_url": profile.selfie_url,
         "proof_of_address_url": profile.proof_of_address_url,
         "documents_count": document_count,

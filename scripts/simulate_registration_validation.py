@@ -13,11 +13,39 @@ VALID_CPF = "52998224725"
 VALID_PHONE = "71999999999"
 VALID_LANDLINE = "7133334444"
 VALID_EMAIL = "usuario.teste@gmail.com"
+WALKER_COMPLETE_FIELDS = {
+    "profile_photo_url": "beta://profile-photo",
+    "document_url": "beta://identity-front",
+    "identity_document_back_url": "beta://identity-back",
+    "proof_of_address_url": "beta://proof-of-address",
+    "bio": "Sou apaixonado por pets, tenho rotina organizada, cuido com carinho e mantenho tutores informados durante todo o passeio.",
+}
 
 
 def unique_email(prefix: str) -> str:
     stamp = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
     return f"{prefix}-{stamp}@gmail.com"
+
+
+def unique_cpf() -> str:
+    base = datetime.utcnow().strftime("%H%M%S%f")[-9:]
+
+    def digit(numbers: str) -> str:
+        factor = len(numbers) + 1
+        total = sum(int(number) * (factor - index) for index, number in enumerate(numbers))
+        value = (total * 10) % 11
+        return "0" if value == 10 else str(value)
+
+    first = digit(base)
+    return base + first + digit(base + first)
+
+
+def unique_mobile_phone() -> str:
+    return "719" + datetime.utcnow().strftime("%H%M%S%f")[-8:]
+
+
+def unique_landline_phone() -> str:
+    return "713" + datetime.utcnow().strftime("%H%M%S%f")[-7:]
 
 
 def expect_bad(response, message: str):
@@ -37,6 +65,7 @@ def main():
                 "phone": VALID_PHONE,
                 "email": unique_email("walker-cpf-invalid"),
                 "accepted_declaration": True,
+                **WALKER_COMPLETE_FIELDS,
             },
         )
         expect_bad(response, "Informe um CPF válido.")
@@ -46,10 +75,11 @@ def main():
             "/api/partner-applications",
             json={
                 "full_name": "Passeador Validacao",
-                "cpf": VALID_CPF,
+                "cpf": unique_cpf(),
                 "phone": phone,
                 "email": unique_email("walker-phone-invalid"),
                 "accepted_declaration": True,
+                **WALKER_COMPLETE_FIELDS,
             },
         )
         expect_bad(response, "Informe um telefone válido com DDD.")
@@ -59,47 +89,53 @@ def main():
             "/api/partner-applications",
             json={
                 "full_name": "Passeador Validacao",
-                "cpf": VALID_CPF,
+                "cpf": unique_cpf(),
                 "phone": VALID_PHONE,
                 "email": email,
                 "accepted_declaration": True,
+                **WALKER_COMPLETE_FIELDS,
             },
         )
         expect_bad(response, "Informe um e-mail válido.")
 
+    walker_valid_cpf = unique_cpf()
+    walker_valid_phone = unique_mobile_phone()
     walker_valid = client.post(
         "/api/partner-applications",
         json={
             "full_name": "Passeador Validacao Real",
-            "cpf": VALID_CPF,
-            "phone": VALID_PHONE,
+            "cpf": walker_valid_cpf,
+            "phone": walker_valid_phone,
             "email": unique_email("walker-valid"),
             "accepted_declaration": True,
+            **WALKER_COMPLETE_FIELDS,
         },
     )
     assert walker_valid.status_code == 201, walker_valid.text
-    assert walker_valid.json()["cpf"] == VALID_CPF
-    assert walker_valid.json()["phone"] == VALID_PHONE
+    assert walker_valid.json()["cpf"] == walker_valid_cpf
+    assert walker_valid.json()["phone"] == walker_valid_phone
 
+    walker_landline_phone = unique_landline_phone()
     walker_landline = client.post(
         "/api/partner-applications",
         json={
             "full_name": "Passeador Telefone Fixo",
-            "cpf": VALID_CPF,
-            "phone": VALID_LANDLINE,
+            "cpf": unique_cpf(),
+            "phone": walker_landline_phone,
             "email": unique_email("walker-landline"),
             "accepted_declaration": True,
+            **WALKER_COMPLETE_FIELDS,
         },
     )
     assert walker_landline.status_code == 201, walker_landline.text
-    assert walker_landline.json()["phone"] == VALID_LANDLINE
+    assert walker_landline.json()["phone"] == walker_landline_phone
 
     tutor_invalid = client.post(
         "/auth/register",
         json={
             "full_name": "Tutor CPF Invalido",
             "email": unique_email("tutor-invalid"),
-            "password": "123456",
+            "password": "Senha123",
             "role": "cliente",
             "profile": {"personal": {"cpf": "12345678900", "telefone": VALID_PHONE}},
         },
@@ -111,9 +147,9 @@ def main():
         json={
             "full_name": "Tutor Validacao Real",
             "email": VALID_EMAIL.replace("@", f".{datetime.utcnow().strftime('%H%M%S%f')}@"),
-            "password": "123456",
+            "password": "Senha123",
             "role": "cliente",
-            "profile": {"personal": {"cpf": VALID_CPF, "telefone": VALID_PHONE}},
+            "profile": {"personal": {"cpf": unique_cpf(), "telefone": unique_mobile_phone()}},
         },
     )
     assert tutor_valid.status_code == 200, tutor_valid.text

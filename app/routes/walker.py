@@ -87,9 +87,13 @@ class PartnerApplicationCreate(BaseModel):
     has_pet_experience: bool = False
     has_third_party_experience: bool = False
     experience_description: str = ""
+    bio: str = ""
+    experience_options: list[str] = Field(default_factory=list)
     availability: str = ""
     profile_photo_url: str | None = None
     document_url: str | None = None
+    identity_document_front_url: str | None = None
+    identity_document_back_url: str | None = None
     proof_of_address_url: str | None = None
     selfie_url: str | None = None
     accepted_declaration: bool = Field(default=False)
@@ -137,6 +141,9 @@ def _raw_status_from_label(status: str) -> str:
 
 def _serialize_partner_application(profile: WalkerProfile, db: Session, include_internal: bool = False) -> dict:
     user = db.get(User, profile.user_id) if profile.user_id else None
+    identity_front_url = profile.document_url or ""
+    identity_back_url = profile.identity_document_back_url or ""
+    presentation = profile.bio or profile.experience or ""
     payload = {
         "id": profile.id,
         "user_id": profile.user_id,
@@ -148,9 +155,13 @@ def _serialize_partner_application(profile: WalkerProfile, db: Session, include_
         "has_pet_experience": bool(profile.experience or profile.bio),
         "has_third_party_experience": bool(profile.experience),
         "experience_description": profile.experience or "",
+        "bio": presentation,
+        "experience_options": _extract_experience_options(profile.experience or ""),
         "availability": "",
         "profile_photo_url": profile.profile_photo_url or "",
-        "document_url": profile.document_url or "",
+        "document_url": identity_front_url,
+        "identity_document_front_url": identity_front_url,
+        "identity_document_back_url": identity_back_url,
         "proof_of_address_url": profile.proof_of_address_url or "",
         "selfie_url": profile.selfie_url or "",
         "accepted_declaration": True,
@@ -168,22 +179,33 @@ def _serialize_partner_application(profile: WalkerProfile, db: Session, include_
     return payload
 
 
-def _missing_application_fields(*, profile_photo_url: str | None, document_url: str | None, proof_of_address_url: str | None) -> list[str]:
+def _extract_experience_options(value: str) -> list[str]:
+    parts = [part.strip() for part in (value or "").split("|")]
+    return [part for part in parts[1:] if part]
+
+
+def _missing_application_fields(*, profile_photo_url: str | None, document_url: str | None, identity_document_back_url: str | None, proof_of_address_url: str | None, bio: str | None) -> list[str]:
     missing = []
     if not (profile_photo_url or "").strip():
         missing.append("Envie sua foto de perfil.")
+    if len((bio or "").strip()) < 80:
+        missing.append("Escreva uma breve apresentação para os tutores.")
     if not (document_url or "").strip():
-        missing.append("Envie o documento obrigatório.")
+        missing.append("Envie a frente do documento de identidade.")
+    if not (identity_document_back_url or "").strip():
+        missing.append("Envie o verso do documento de identidade.")
     if not (proof_of_address_url or "").strip():
         missing.append("Complete os documentos para enviar sua candidatura.")
     return missing
 
 
-def _ensure_application_complete(*, profile_photo_url: str | None, document_url: str | None, proof_of_address_url: str | None):
+def _ensure_application_complete(*, profile_photo_url: str | None, document_url: str | None, identity_document_back_url: str | None, proof_of_address_url: str | None, bio: str | None):
     missing = _missing_application_fields(
         profile_photo_url=profile_photo_url,
         document_url=document_url,
+        identity_document_back_url=identity_document_back_url,
         proof_of_address_url=proof_of_address_url,
+        bio=bio,
     )
     if missing:
         raise HTTPException(status_code=400, detail={"message": "Cadastro de passeador incompleto.", "errors": missing})
@@ -452,10 +474,14 @@ def create_partner_application(payload: PartnerApplicationCreate, db: Session = 
     LOGGER.info("candidatura recebida", extra={"email": payload.email, "full_name": payload.full_name})
     if not payload.accepted_declaration:
         raise HTTPException(status_code=400, detail="Declaracao obrigatoria precisa ser aceita.")
+    identity_front_url = payload.identity_document_front_url or payload.document_url
+    presentation = (payload.bio or payload.experience_description or "").strip()
     _ensure_application_complete(
         profile_photo_url=payload.profile_photo_url,
-        document_url=payload.document_url,
+        document_url=identity_front_url,
+        identity_document_back_url=payload.identity_document_back_url,
         proof_of_address_url=payload.proof_of_address_url,
+        bio=presentation,
     )
 
     try:
@@ -488,10 +514,12 @@ def create_partner_application(payload: PartnerApplicationCreate, db: Session = 
     profile.phone = phone
     profile.city = payload.neighborhood_region.strip()
     profile.state = payload.neighborhood_region.strip()
-    profile.experience = payload.experience_description.strip()
-    profile.bio = payload.experience_description.strip()
+    experience_parts = [presentation, *[item.strip() for item in payload.experience_options if item.strip()]]
+    profile.experience = " | ".join([item for item in experience_parts if item])
+    profile.bio = presentation
     profile.profile_photo_url = payload.profile_photo_url
-    profile.document_url = payload.document_url
+    profile.document_url = identity_front_url
+    profile.identity_document_back_url = payload.identity_document_back_url
     profile.proof_of_address_url = payload.proof_of_address_url
     profile.selfie_url = payload.selfie_url
     profile.status = document_status
@@ -680,10 +708,16 @@ def create_profile(payload: WalkerProfileCreate, user: User = Depends(get_curren
     if profile:
         return update_profile(payload, user, db)
     data = payload.model_dump()
+    if data.get("identity_document_front_url") and not data.get("document_url"):
+        data["document_url"] = data.pop("identity_document_front_url")
+    else:
+        data.pop("identity_document_front_url", None)
     _ensure_application_complete(
         profile_photo_url=data.get("profile_photo_url"),
         document_url=data.get("document_url"),
+        identity_document_back_url=data.get("identity_document_back_url"),
         proof_of_address_url=data.get("proof_of_address_url"),
+        bio=data.get("bio") or data.get("experience"),
     )
     try:
         if data.get("cpf"):
@@ -709,6 +743,10 @@ def update_profile(payload: WalkerProfileUpdate, user: User = Depends(get_curren
         profile = WalkerProfile(id=str(uuid4()), user_id=user.id)
         db.add(profile)
     data = payload.model_dump(exclude_unset=True)
+    if data.get("identity_document_front_url") and not data.get("document_url"):
+        data["document_url"] = data.pop("identity_document_front_url")
+    else:
+        data.pop("identity_document_front_url", None)
     try:
         if data.get("cpf"):
             data["cpf"] = normalize_cpf_or_raise(data.get("cpf"))
@@ -725,7 +763,9 @@ def update_profile(payload: WalkerProfileUpdate, user: User = Depends(get_curren
         _ensure_application_complete(
             profile_photo_url=profile.profile_photo_url,
             document_url=profile.document_url,
+            identity_document_back_url=profile.identity_document_back_url,
             proof_of_address_url=profile.proof_of_address_url,
+            bio=profile.bio,
         )
     db.commit()
     db.refresh(profile)

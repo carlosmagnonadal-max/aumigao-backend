@@ -19,6 +19,7 @@ class WalkerProfile(Base):
     profile_photo_url: Mapped[str | None] = mapped_column(String, nullable=True)
     rg: Mapped[str] = mapped_column(String, default="")
     document_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    identity_document_back_url: Mapped[str | None] = mapped_column(String, nullable=True)
     selfie_url: Mapped[str | None] = mapped_column(String, nullable=True)
     proof_of_address_url: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="pending")

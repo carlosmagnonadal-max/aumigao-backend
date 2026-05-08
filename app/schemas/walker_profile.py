@@ -13,6 +13,8 @@ class WalkerProfileBase(BaseModel):
     bio: str = ""
     rg: str = ""
     document_url: str | None = None
+    identity_document_front_url: str | None = None
+    identity_document_back_url: str | None = None
     selfie_url: str | None = None
     proof_of_address_url: str | None = None
     profile_photo_url: str | None = None

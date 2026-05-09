@@ -30,7 +30,7 @@ from app.models import (
     WalkerReview,
     WalkerWeeklyMission,
 )
-from app.routes import admin, auth, complaints, matching, operational_walks, payments, pets, referrals, reviews, tutor, walker, walker_quality, walks, weekly_missions
+from app.routes import admin, auth, complaints, matching, notifications, operational_walks, payments, pets, referrals, reviews, tutor, walker, walker_quality, walks, weekly_missions
 from app.services.admin_seed_service import ensure_configured_admin_users
 from app.services.operational_matching_service import ensure_operational_schema, process_expired_attempts
 
@@ -94,6 +94,8 @@ app.include_router(auth.router)
 app.include_router(tutor.router)
 app.include_router(pets.router)
 app.include_router(walks.router)
+app.include_router(notifications.router)
+app.include_router(notifications.api_router)
 app.include_router(operational_walks.router)
 app.include_router(operational_walks.api_router)
 app.include_router(walker.router)

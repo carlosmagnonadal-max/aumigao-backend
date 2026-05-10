@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
-from app.core.database import Base, SessionLocal, engine
+from app.core.database import Base, SessionLocal, engine, get_database_diagnostics, mask_database_url
 from app.models import (
     Complaint,
     ComplaintDecision,
@@ -34,44 +34,172 @@ from app.routes import admin, auth, complaints, matching, notifications, operati
 from app.services.admin_seed_service import ensure_configured_admin_users
 from app.services.operational_matching_service import ensure_operational_schema, process_expired_attempts
 
+
+def ensure_legacy_id_compatibility():
+    if engine.dialect.name != "postgresql":
+        return
+    inspector = inspect(engine)
+    with engine.begin() as connection:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in inspector.get_table_names():
+                connection.execute(text(f"DROP TYPE IF EXISTS {table.name} CASCADE"))
+    targets = {
+        "users": ("id",),
+        "tutor_profiles": ("id", "user_id"),
+        "pets": ("id", "owner_id"),
+    }
+    with engine.begin() as connection:
+        for table_name in targets:
+            if table_name not in inspector.get_table_names():
+                continue
+            for foreign_key in inspector.get_foreign_keys(table_name):
+                constraint_name = foreign_key.get("name")
+                if constraint_name:
+                    connection.execute(text(f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {constraint_name}"))
+    for table_name, column_names in targets.items():
+        if table_name not in inspector.get_table_names():
+            continue
+        columns = {column["name"]: str(column["type"]).lower() for column in inspector.get_columns(table_name)}
+        with engine.begin() as connection:
+            for column_name in column_names:
+                column_type = columns.get(column_name, "")
+                if column_type and "char" not in column_type and "text" not in column_type:
+                    connection.execute(
+                        text(f"ALTER TABLE {table_name} ALTER COLUMN {column_name} TYPE VARCHAR USING {column_name}::VARCHAR")
+                    )
+
+
+ensure_legacy_id_compatibility()
 Base.metadata.create_all(bind=engine)
 ensure_operational_schema(engine)
+_db_diagnostics = get_database_diagnostics()
+print(f"[database] backend DATABASE_URL={mask_database_url(_db_diagnostics['database_url'])}")
+if "sqlite_path" in _db_diagnostics:
+    print(f"[database] backend SQLite path={_db_diagnostics['sqlite_path']}")
 
-def ensure_walker_profile_schema():
+def _sql_type(kind: str) -> str:
+    if kind == "datetime":
+        return "TIMESTAMP" if engine.dialect.name == "postgresql" else "DATETIME"
+    if kind == "boolean_true":
+        return "BOOLEAN DEFAULT TRUE" if engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 1"
+    if kind == "boolean_false":
+        return "BOOLEAN DEFAULT FALSE" if engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"
+    return kind
+
+
+def _add_missing_columns(table_name: str, columns: dict[str, str]):
     inspector = inspect(engine)
-    if "walker_profiles" not in inspector.get_table_names():
+    if table_name not in inspector.get_table_names():
         return
-    existing = {column["name"] for column in inspector.get_columns("walker_profiles")}
-    columns = {
-        "cpf": "VARCHAR DEFAULT ''",
-        "profile_photo_url": "VARCHAR",
-        "identity_document_back_url": "VARCHAR",
-        "internal_notes": "TEXT DEFAULT ''",
-        "active_as_walker": "BOOLEAN DEFAULT 0",
-        "approved_at": "DATETIME",
-        "rejected_at": "DATETIME",
-    }
+    existing = {column["name"] for column in inspector.get_columns(table_name)}
     with engine.begin() as connection:
         for name, definition in columns.items():
             if name not in existing:
-                connection.execute(text(f"ALTER TABLE walker_profiles ADD COLUMN {name} {definition}"))
+                connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {name} {definition}"))
+
+
+def ensure_user_schema():
+    _add_missing_columns(
+        "users",
+        {
+            "password_hash": "VARCHAR DEFAULT ''",
+            "full_name": "VARCHAR DEFAULT ''",
+            "role": "VARCHAR DEFAULT 'tutor'",
+            "is_active": _sql_type("boolean_true"),
+            "created_at": _sql_type("datetime"),
+        },
+    )
+    inspector = inspect(engine)
+    if "users" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("users")}
+    if "password" in existing and "password_hash" in existing:
+        with engine.begin() as connection:
+            connection.execute(text("UPDATE users SET password_hash = password WHERE COALESCE(password_hash, '') = ''"))
+
+
+ensure_user_schema()
+
+def ensure_walker_profile_schema():
+    _add_missing_columns(
+        "walker_profiles",
+        {
+            "cpf": "VARCHAR DEFAULT ''",
+            "profile_photo_url": "VARCHAR",
+            "identity_document_back_url": "VARCHAR",
+            "internal_notes": "TEXT DEFAULT ''",
+            "active_as_walker": _sql_type("boolean_false"),
+            "approved_at": _sql_type("datetime"),
+            "rejected_at": _sql_type("datetime"),
+        },
+    )
 
 ensure_walker_profile_schema()
 
 def ensure_tutor_profile_schema():
+    _add_missing_columns(
+        "tutor_profiles",
+        {
+            "cpf": "VARCHAR DEFAULT ''",
+            "photo_url": "VARCHAR",
+            "pickup_notes": "TEXT DEFAULT ''",
+            "preferred_method": "VARCHAR DEFAULT 'Buscar em casa'",
+            "created_at": _sql_type("datetime"),
+        },
+    )
     inspector = inspect(engine)
     if "tutor_profiles" not in inspector.get_table_names():
         return
     existing = {column["name"] for column in inspector.get_columns("tutor_profiles")}
-    columns = {
-        "cpf": "VARCHAR DEFAULT ''",
-    }
     with engine.begin() as connection:
-        for name, definition in columns.items():
-            if name not in existing:
-                connection.execute(text(f"ALTER TABLE tutor_profiles ADD COLUMN {name} {definition}"))
+        if {"profile_photo_url", "photo_url"}.issubset(existing):
+            connection.execute(text("UPDATE tutor_profiles SET photo_url = profile_photo_url WHERE photo_url IS NULL"))
+        if {"pet_pickup_notes", "pickup_notes"}.issubset(existing):
+            connection.execute(text("UPDATE tutor_profiles SET pickup_notes = pet_pickup_notes WHERE COALESCE(pickup_notes, '') = ''"))
+        if {"preferred_pickup_method", "preferred_method"}.issubset(existing):
+            connection.execute(text("UPDATE tutor_profiles SET preferred_method = preferred_pickup_method WHERE COALESCE(preferred_method, '') = ''"))
 
 ensure_tutor_profile_schema()
+
+def ensure_pet_schema():
+    _add_missing_columns(
+        "pets",
+        {
+            "tutor_id": "VARCHAR",
+            "photo_url": "VARCHAR",
+            "species": "VARCHAR DEFAULT 'Cachorro'",
+            "sex": "VARCHAR DEFAULT ''",
+            "weight": "FLOAT",
+            "behavior_notes": "TEXT DEFAULT ''",
+            "is_social": _sql_type("boolean_true"),
+            "afraid_of_noise": _sql_type("boolean_false"),
+            "pulls_leash": _sql_type("boolean_false"),
+            "can_walk_with_other_pets": _sql_type("boolean_false"),
+            "is_neutered": _sql_type("boolean_false"),
+            "medications": "TEXT DEFAULT ''",
+            "restrictions": "TEXT DEFAULT ''",
+            "created_at": _sql_type("datetime"),
+        },
+    )
+    inspector = inspect(engine)
+    if "pets" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("pets")}
+    with engine.begin() as connection:
+        if {"owner_id", "tutor_id"}.issubset(existing):
+            connection.execute(text("UPDATE pets SET tutor_id = owner_id WHERE tutor_id IS NULL"))
+        if {"behavior", "behavior_notes"}.issubset(existing):
+            connection.execute(text("UPDATE pets SET behavior_notes = behavior WHERE COALESCE(behavior_notes, '') = ''"))
+        if {"castrated", "is_neutered"}.issubset(existing):
+            connection.execute(
+                text(
+                    "UPDATE pets SET is_neutered = LOWER(CAST(castrated AS VARCHAR)) IN ('true', '1', 'sim', 'yes') "
+                    "WHERE is_neutered = FALSE"
+                )
+            )
+
+
+ensure_pet_schema()
 with SessionLocal() as db:
     ensure_configured_admin_users(db)
 

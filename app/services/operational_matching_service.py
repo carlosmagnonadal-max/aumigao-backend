@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from app.models.pet import Pet
@@ -61,18 +61,22 @@ def utcnow() -> datetime:
 
 
 def ensure_operational_schema(engine) -> None:
+    datetime_type = "TIMESTAMP" if engine.dialect.name == "postgresql" else "DATETIME"
     columns = {
         "operational_status": "VARCHAR DEFAULT 'ride_scheduled'",
         "assigned_walker_id": "VARCHAR",
         "current_attempt": "INTEGER DEFAULT 0",
         "max_attempts": "INTEGER DEFAULT 3",
-        "confirmation_expires_at": "DATETIME",
-        "matching_started_at": "DATETIME",
-        "matching_finished_at": "DATETIME",
+        "confirmation_expires_at": datetime_type,
+        "matching_started_at": datetime_type,
+        "matching_finished_at": datetime_type,
         "no_walker_reason": "TEXT",
     }
+    inspector = inspect(engine)
+    if "walks" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("walks")}
     with engine.begin() as conn:
-        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(walks)")).fetchall()}
         for name, definition in columns.items():
             if name not in existing:
                 conn.execute(text(f"ALTER TABLE walks ADD COLUMN {name} {definition}"))

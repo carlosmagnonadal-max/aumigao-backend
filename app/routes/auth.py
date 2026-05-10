@@ -107,9 +107,17 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
 
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == payload.email).first()
-    if not user or not verify_password(payload.password, user.password_hash):
+    try:
+        email = normalize_email_or_raise(payload.email)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    password = str(payload.password or "").strip()
+    user = db.query(User).filter(User.email == email).first()
+    if not user or not verify_password(password, user.password_hash):
         raise HTTPException(status_code=401, detail="Credenciais invalidas")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Usuario inativo")
     return build_session(user)
 
 @router.get("/me", response_model=UserResponse)

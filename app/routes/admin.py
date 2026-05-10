@@ -19,6 +19,23 @@ api_router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depend
 APPROVED_WALKER_STATUSES = {"active"}
 PAID_PAYMENT_STATUSES = {"paid", "Pago", "pagamento_confirmado_sandbox", "payment_confirmed", "confirmed"}
 IN_PROGRESS_WALK_STATUSES = {"Indo buscar o pet", "Passeando agora", "walker_arriving", "ride_in_progress"}
+FAKE_WALKER_TOKENS = (
+    "passeador fluxo real",
+    "passeador login",
+    "passeador ativado",
+    "passeador auditoria",
+    "passeador docs",
+    "auditoria real",
+    "teste",
+    "test",
+    "demo",
+    "mock",
+    "fallback",
+    "sample",
+    "seed",
+    "local",
+    "auditoria",
+)
 
 REFERRAL_PROGRAM_SETTINGS = {
     "program_enabled": False,
@@ -159,6 +176,28 @@ def _profile_user(profile: WalkerProfile, db: Session) -> User | None:
     return db.get(User, profile.user_id) if profile.user_id else None
 
 
+def _is_fake_walker_profile(profile: WalkerProfile, user: User | None) -> bool:
+    searchable = " ".join([
+        profile.full_name or "",
+        profile.cpf or "",
+        profile.phone or "",
+        profile.id or "",
+        profile.user_id or "",
+        user.email if user else "",
+        user.full_name if user else "",
+    ]).strip().lower()
+    return any(token in searchable for token in FAKE_WALKER_TOKENS)
+
+
+def _is_real_active_walker_profile(profile: WalkerProfile, db: Session) -> bool:
+    user = _profile_user(profile, db)
+    if _is_fake_walker_profile(profile, user):
+        return False
+    if not user or user.role not in {"walker", "passeador"}:
+        return False
+    return bool(profile.status == "active" and profile.active_as_walker)
+
+
 def _status_label(status: str | None) -> str:
     status = (status or "pending").strip()
     if status in {"approved", "active"}:
@@ -228,7 +267,10 @@ def _unique_walker_profiles(db: Session, include_internal: bool = True) -> list[
     rows = []
     seen_keys = set()
     for profile in db.query(WalkerProfile).order_by(WalkerProfile.created_at.desc()).all():
-        key = profile.user_id or profile.id
+        user = _profile_user(profile, db)
+        if _is_fake_walker_profile(profile, user):
+            continue
+        key = (profile.cpf or profile.user_id or profile.id or profile.phone or (user.email if user else "")).strip().lower()
         if key in seen_keys:
             continue
         seen_keys.add(key)
@@ -278,6 +320,9 @@ def _walker_program_rows(db: Session) -> list[dict]:
     rows = []
     profiles = db.query(WalkerProfile).all()
     for index, profile in enumerate(profiles or []):
+        user = _profile_user(profile, db)
+        if _is_fake_walker_profile(profile, user):
+            continue
         completed = db.query(Walk).filter(Walk.walker_id == profile.user_id, Walk.status == "Finalizado").count()
         rows.append({
             "walker_id": profile.id,
@@ -337,12 +382,22 @@ def dashboard(db: Session = Depends(get_db)):
     payments = db.query(Payment).filter(Payment.status.in_(PAID_PAYMENT_STATUSES)).all()
     no_show_total = db.query(Walk).filter(Walk.status.in_(["Não comparecimento do cliente", "Não comparecimento do passeador"])).count()
     walk_total = db.query(Walk).count()
+    real_active_walkers_count = sum(
+        1
+        for profile in db.query(WalkerProfile).all()
+        if _is_real_active_walker_profile(profile, db)
+    )
+    real_risk_walkers_count = sum(
+        1
+        for profile in db.query(WalkerProfile).filter(WalkerProfile.status.in_(["restricted", "suspended"])).all()
+        if not _is_fake_walker_profile(profile, _profile_user(profile, db))
+    )
     return {
         "total_clients": db.query(User).filter(User.role.in_(["tutor", "cliente"])).count(),
         "total_tutors": db.query(User).filter(User.role.in_(["tutor", "cliente"])).count(),
         "total_pets": db.query(Pet).count(),
-        "total_active_walkers": db.query(WalkerProfile).filter(WalkerProfile.status.in_(APPROVED_WALKER_STATUSES)).count(),
-        "total_walkers": db.query(WalkerProfile).filter(WalkerProfile.status.in_(APPROVED_WALKER_STATUSES)).count(),
+        "total_active_walkers": real_active_walkers_count,
+        "total_walkers": real_active_walkers_count,
         "total_walks_scheduled": db.query(Walk).filter(Walk.status == "Agendado").count(),
         "scheduled_walks": db.query(Walk).filter(Walk.status == "Agendado").count(),
         "total_walks_finished": db.query(Walk).filter(Walk.status == "Finalizado").count(),
@@ -352,7 +407,7 @@ def dashboard(db: Session = Depends(get_db)):
         "estimated_revenue": sum(float(payment.amount or 0) for payment in payments),
         "pending_occurrences": 0,
         "open_disputes": 0,
-        "walkers_at_risk": db.query(WalkerProfile).filter(WalkerProfile.status.in_(["restricted", "suspended"])).count(),
+        "walkers_at_risk": real_risk_walkers_count,
         "top_rated_walkers": 0,
         "disintermediation_alerts": 0,
         "weekly_tips_amount": sum(float(payment.amount or 0) for payment in payments if payment.provider == "internal_tip"),

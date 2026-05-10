@@ -76,6 +76,22 @@ KIT_ITEM_DEFINITIONS = [
 
 WALKER_KIT_SUBMISSIONS: dict[str, dict] = {}
 LOGGER = logging.getLogger("aumigao.walker_applications")
+FAKE_WALKER_TOKENS = (
+    "passeador fluxo real",
+    "passeador login",
+    "passeador ativado",
+    "passeador auditoria",
+    "passeador docs",
+    "auditoria real",
+    "teste",
+    "test",
+    "demo",
+    "mock",
+    "fallback",
+    "sample",
+    "local",
+    "auditoria",
+)
 
 
 class PartnerApplicationCreate(BaseModel):
@@ -230,6 +246,26 @@ def _require_active_walker(user: User, db: Session) -> WalkerProfile:
     if user.role not in {"walker", "passeador"}:
         raise HTTPException(status_code=403, detail="Usuario ainda nao liberado como passeador.")
     return profile
+
+
+def _is_public_real_walker(profile: WalkerProfile, user: User | None) -> bool:
+    if DEMO_MODE:
+        return True
+    if profile.status != "active" or not profile.active_as_walker:
+        return False
+    if not user or user.role not in {"walker", "passeador"}:
+        return False
+
+    searchable = " ".join([
+        profile.full_name or "",
+        profile.cpf or "",
+        profile.phone or "",
+        profile.id or "",
+        profile.user_id or "",
+        user.email if user else "",
+        user.full_name if user else "",
+    ]).strip().lower()
+    return not any(token in searchable for token in FAKE_WALKER_TOKENS)
 
 
 def _apply_profile_status(profile: WalkerProfile, status: str, reason: str | None = None, db: Session | None = None):
@@ -990,7 +1026,10 @@ def _public_walker_rows(db: Session) -> list[dict]:
     rows = []
     seen_keys = set()
     for profile in profiles:
-        dedupe_key = profile.cpf or profile.user_id or profile.id
+        user = db.get(User, profile.user_id) if profile.user_id else None
+        if not _is_public_real_walker(profile, user):
+            continue
+        dedupe_key = (profile.cpf or profile.user_id or profile.id or profile.phone or (user.email if user else "")).strip().lower()
         if not dedupe_key or dedupe_key in seen_keys:
             continue
         seen_keys.add(dedupe_key)
@@ -1000,6 +1039,10 @@ def _public_walker_rows(db: Session) -> list[dict]:
                 "partner_id": profile.id,
                 "name": profile.full_name or "Passeador",
                 "full_name": profile.full_name or "Passeador",
+                "cpf": profile.cpf or "",
+                "phone": profile.phone or "",
+                "email": user.email if user else "",
+                "role": user.role if user else "",
                 "photo_url": profile.profile_photo_url or "",
                 "profile_photo_url": profile.profile_photo_url or "",
                 "status": profile.status,

@@ -1,12 +1,17 @@
 ﻿from datetime import datetime, timedelta, timezone
 from hashlib import pbkdf2_hmac
 from hmac import compare_digest
+import os
 from os import urandom
+from pathlib import Path
 from typing import Any
 
 import jwt
+from dotenv import load_dotenv
 
-SECRET_KEY = "aumigao-dev-secret-key-with-more-than-32-bytes"
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+
+SECRET_KEY = os.getenv("JWT_SECRET", "aumigao-dev-secret-key-with-more-than-32-bytes").strip().strip('"').strip("'")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
 

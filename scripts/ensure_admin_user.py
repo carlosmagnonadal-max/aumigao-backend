@@ -47,6 +47,18 @@ def _print_admins(label: str, admins: list[User]) -> None:
         )
 
 
+def _deactivate_unconfigured_admins(db, configured_emails: set[str]) -> int:
+    count = 0
+    for admin in _admin_rows(db):
+        email = str(admin.email or "").strip().lower()
+        if email not in configured_emails and admin.is_active:
+            admin.is_active = False
+            count += 1
+    if count:
+        db.commit()
+    return count
+
+
 def main() -> int:
     configured = _configured_admins()
     _print_database_diagnostics()
@@ -61,6 +73,8 @@ def main() -> int:
     try:
         _print_admins("Admins antes:", _admin_rows(db))
         ensured = ensure_configured_admin_users(db)
+        configured_emails = {item["email"].strip().lower() for item in configured}
+        deactivated = _deactivate_unconfigured_admins(db, configured_emails)
         db.expire_all()
         _print_admins("Admins depois:", _admin_rows(db))
 
@@ -78,6 +92,7 @@ def main() -> int:
             ok = ok and password_ok and role_ok and active_ok
 
         print(f"Admins preservados/criados: {len(ensured)}")
+        print(f"Admins fora do .env desativados: {deactivated}")
         print("Dados operacionais criados: 0")
         return 0 if ok else 1
     finally:

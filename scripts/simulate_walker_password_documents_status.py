@@ -96,7 +96,7 @@ def main():
     dashboard_before = client.get("/walker/dashboard", headers=walker_headers)
     assert dashboard_before.status_code == 403, dashboard_before.text
 
-    admin_login = client.post("/auth/login", json={"email": "admin@petpasso.com", "password": "Admin@123"})
+    admin_login = client.post("/auth/login", json={"email": "admin@aumigao.com", "password": "Admin@123"})
     assert admin_login.status_code == 200, admin_login.text
     admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
 

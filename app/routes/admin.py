@@ -19,13 +19,16 @@ api_router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depend
 APPROVED_WALKER_STATUSES = {"active"}
 PAID_PAYMENT_STATUSES = {"paid", "Pago", "pagamento_confirmado_sandbox", "payment_confirmed", "confirmed"}
 IN_PROGRESS_WALK_STATUSES = {"Indo buscar o pet", "Passeando agora", "walker_arriving", "ride_in_progress"}
-FAKE_WALKER_TOKENS = (
+FAKE_ENTITY_TOKENS = (
     "passeador fluxo real",
     "passeador login",
     "passeador ativado",
     "passeador auditoria",
     "passeador docs",
     "auditoria real",
+    "fluxo real",
+    "login",
+    "docs",
     "teste",
     "test",
     "demo",
@@ -35,6 +38,12 @@ FAKE_WALKER_TOKENS = (
     "seed",
     "local",
     "auditoria",
+    "ficticio",
+    "fictício",
+    "fake",
+    "pet-demo",
+    "walk-demo",
+    "request-demo",
 )
 
 REFERRAL_PROGRAM_SETTINGS = {
@@ -176,17 +185,46 @@ def _profile_user(profile: WalkerProfile, db: Session) -> User | None:
     return db.get(User, profile.user_id) if profile.user_id else None
 
 
+def _has_fake_token(*values: object) -> bool:
+    searchable = " ".join(str(value or "").strip().lower() for value in values)
+    return any(token in searchable for token in FAKE_ENTITY_TOKENS)
+
+
+def _is_valid_email(value: str | None) -> bool:
+    email = (value or "").strip()
+    return "@" in email and "." in email.rsplit("@", 1)[-1]
+
+
+def _is_fake_user(user: User | None) -> bool:
+    return bool(user and _has_fake_token(user.id, user.email, user.full_name))
+
+
+def _is_real_tutor(user: User | None) -> bool:
+    if not user or user.role not in {"tutor", "cliente", "client", "customer"}:
+        return False
+    if not _is_valid_email(user.email):
+        return False
+    return not _is_fake_user(user)
+
+
+def _is_real_pet(pet: Pet | None, tutor: User | None = None) -> bool:
+    if not pet:
+        return False
+    if _has_fake_token(pet.id, pet.name, pet.photo_url, pet.tutor_id):
+        return False
+    return _is_real_tutor(tutor) if tutor else True
+
+
 def _is_fake_walker_profile(profile: WalkerProfile, user: User | None) -> bool:
-    searchable = " ".join([
-        profile.full_name or "",
-        profile.cpf or "",
-        profile.phone or "",
-        profile.id or "",
-        profile.user_id or "",
+    return _has_fake_token(
+        profile.full_name,
+        profile.cpf,
+        profile.phone,
+        profile.id,
+        profile.user_id,
         user.email if user else "",
         user.full_name if user else "",
-    ]).strip().lower()
-    return any(token in searchable for token in FAKE_WALKER_TOKENS)
+    )
 
 
 def _is_real_active_walker_profile(profile: WalkerProfile, db: Session) -> bool:
@@ -196,6 +234,47 @@ def _is_real_active_walker_profile(profile: WalkerProfile, db: Session) -> bool:
     if not user or user.role not in {"walker", "passeador"}:
         return False
     return bool(profile.status == "active" and profile.active_as_walker)
+
+
+def _is_real_walker_user(user: User | None, db: Session) -> bool:
+    if not user or user.role not in {"walker", "passeador"}:
+        return False
+    if _is_fake_user(user):
+        return False
+    profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == user.id).first()
+    return not profile or not _is_fake_walker_profile(profile, user)
+
+
+def _walk_walker_user(walk: Walk, db: Session) -> User | None:
+    walker_id = walk.walker_id or walk.assigned_walker_id
+    return db.get(User, walker_id) if walker_id else None
+
+
+def _is_real_admin_walk(walk: Walk, db: Session, require_walker: bool = False) -> bool:
+    tutor = db.get(User, walk.tutor_id) if walk.tutor_id else None
+    pet = db.get(Pet, walk.pet_id) if walk.pet_id else None
+    walker = _walk_walker_user(walk, db)
+    if _has_fake_token(walk.id, walk.tutor_id, walk.walker_id, walk.assigned_walker_id, walk.pet_id, walk.address_snapshot, walk.notes):
+        return False
+    if not _is_real_tutor(tutor):
+        return False
+    if not _is_real_pet(pet, tutor):
+        return False
+    if require_walker and not _is_real_walker_user(walker, db):
+        return False
+    return True
+
+
+def _is_completed_admin_walk(walk: Walk) -> bool:
+    return (walk.status or "").strip().lower() in {"finalizado", "completed", "finished"} or (walk.operational_status or "").strip().lower() == "ride_completed"
+
+
+def _is_real_paid_payment(payment: Payment, real_walk_ids: set[str]) -> bool:
+    if payment.status not in PAID_PAYMENT_STATUSES:
+        return False
+    if not payment.walk_id or payment.walk_id not in real_walk_ids:
+        return False
+    return not _has_fake_token(payment.id, payment.tutor_id, payment.walk_id, payment.provider, payment.provider_payment_id)
 
 
 def _status_label(status: str | None) -> str:
@@ -379,9 +458,22 @@ def _walker_program_metrics(rows: list[dict]) -> dict:
 @router.get("/dashboard")
 @api_router.get("/dashboard")
 def dashboard(db: Session = Depends(get_db)):
-    payments = db.query(Payment).filter(Payment.status.in_(PAID_PAYMENT_STATUSES)).all()
-    no_show_total = db.query(Walk).filter(Walk.status.in_(["Não comparecimento do cliente", "Não comparecimento do passeador"])).count()
-    walk_total = db.query(Walk).count()
+    real_clients = [user for user in db.query(User).all() if _is_real_tutor(user)]
+    real_pets = [
+        pet
+        for pet in db.query(Pet).all()
+        if _is_real_pet(pet, db.get(User, pet.tutor_id) if pet.tutor_id else None)
+    ]
+    real_walks = [walk for walk in db.query(Walk).all() if _is_real_admin_walk(walk, db)]
+    completed_real_walks = [walk for walk in real_walks if _is_completed_admin_walk(walk) and _is_real_admin_walk(walk, db, require_walker=True)]
+    real_revenue_walk_ids = {walk.id for walk in completed_real_walks}
+    payments = [
+        payment
+        for payment in db.query(Payment).filter(Payment.status.in_(PAID_PAYMENT_STATUSES)).all()
+        if _is_real_paid_payment(payment, real_revenue_walk_ids)
+    ]
+    no_show_total = len([walk for walk in real_walks if walk.status in {"Não comparecimento do cliente", "Não comparecimento do passeador"}])
+    walk_total = len(real_walks)
     real_active_walkers_count = sum(
         1
         for profile in db.query(WalkerProfile).all()
@@ -393,16 +485,16 @@ def dashboard(db: Session = Depends(get_db)):
         if not _is_fake_walker_profile(profile, _profile_user(profile, db))
     )
     return {
-        "total_clients": db.query(User).filter(User.role.in_(["tutor", "cliente"])).count(),
-        "total_tutors": db.query(User).filter(User.role.in_(["tutor", "cliente"])).count(),
-        "total_pets": db.query(Pet).count(),
+        "total_clients": len(real_clients),
+        "total_tutors": len(real_clients),
+        "total_pets": len(real_pets),
         "total_active_walkers": real_active_walkers_count,
         "total_walkers": real_active_walkers_count,
-        "total_walks_scheduled": db.query(Walk).filter(Walk.status == "Agendado").count(),
-        "scheduled_walks": db.query(Walk).filter(Walk.status == "Agendado").count(),
-        "total_walks_finished": db.query(Walk).filter(Walk.status == "Finalizado").count(),
-        "completed_walks": db.query(Walk).filter(Walk.status == "Finalizado").count(),
-        "total_walks_in_progress": db.query(Walk).filter(Walk.status.in_(IN_PROGRESS_WALK_STATUSES)).count(),
+        "total_walks_scheduled": len([walk for walk in real_walks if walk.status == "Agendado"]),
+        "scheduled_walks": len([walk for walk in real_walks if walk.status == "Agendado"]),
+        "total_walks_finished": len(completed_real_walks),
+        "completed_walks": len(completed_real_walks),
+        "total_walks_in_progress": len([walk for walk in real_walks if walk.status in IN_PROGRESS_WALK_STATUSES or walk.operational_status in IN_PROGRESS_WALK_STATUSES]),
         "estimated_revenue_paid": sum(float(payment.amount or 0) for payment in payments),
         "estimated_revenue": sum(float(payment.amount or 0) for payment in payments),
         "pending_occurrences": 0,
@@ -422,7 +514,7 @@ def users(db: Session = Depends(get_db)):
 @router.get("/tutors")
 @api_router.get("/tutors")
 def tutors(db: Session = Depends(get_db)):
-    return db.query(User).filter(User.role.in_(["tutor", "cliente"])).all()
+    return [user for user in db.query(User).order_by(User.created_at.desc()).all() if _is_real_tutor(user)]
 
 @router.get("/walkers")
 @api_router.get("/walkers")
@@ -508,7 +600,11 @@ def reject_walker(walker_id: str, payload: dict | None = None, db: Session = Dep
 @api_router.get("/walks")
 def walks(db: Session = Depends(get_db)):
     process_expired_attempts(db)
-    return [_serialize_admin_walk(walk, db) for walk in db.query(Walk).order_by(Walk.created_at.desc()).all()]
+    return [
+        _serialize_admin_walk(walk, db)
+        for walk in db.query(Walk).order_by(Walk.created_at.desc()).all()
+        if _is_real_admin_walk(walk, db, require_walker=_is_completed_admin_walk(walk))
+    ]
 
 @router.get("/payments")
 @api_router.get("/payments")

@@ -12,6 +12,7 @@ from app.models.payment import Payment
 from app.models.pet import Pet
 from app.models.user import User
 from app.models.walk import Walk
+from app.models.walker_kit_submission import WalkerKitSubmission
 from app.models.walker_profile import WalkerProfile
 from app.services.walker_referrals import mark_referral_approved, mark_referral_rejected
 from app.services.operational_matching_service import (
@@ -38,6 +39,23 @@ RECOVERY_WALK_STATUSES = {
     "support_followup",
     "auto_rematching",
 }
+
+
+def _serialize_walker_kit_submission(submission: WalkerKitSubmission, db: Session) -> dict:
+    profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == submission.walker_user_id).first()
+    user = db.query(User).filter(User.id == submission.walker_user_id).first()
+    return {
+        "id": submission.id,
+        "walker_user_id": submission.walker_user_id,
+        "walker_name": profile.full_name if profile and profile.full_name else user.full_name if user else "",
+        "items_json": submission.items_json,
+        "audit_status": submission.audit_status,
+        "audit_note": submission.audit_note,
+        "reviewed_by_admin_id": submission.reviewed_by_admin_id,
+        "reviewed_at": submission.reviewed_at.isoformat() if submission.reviewed_at else None,
+        "created_at": submission.created_at.isoformat() if submission.created_at else None,
+        "updated_at": submission.updated_at.isoformat() if submission.updated_at else None,
+    }
 
 TUTOR_RECONFIRMATION_STATUSES = {
     "awaiting_tutor_reconfirmation",
@@ -1067,6 +1085,55 @@ def recover_walk(walk_id: str, db: Session = Depends(get_db)):
 @api_router.get("/payments")
 def payments(db: Session = Depends(get_db)):
     return [_serialize_admin_payment(payment, db) for payment in db.query(Payment).order_by(Payment.created_at.desc()).all()]
+
+
+@router.get("/walker-kits/pending")
+@api_router.get("/walker-kits/pending")
+def pending_walker_kits(db: Session = Depends(get_db)):
+    rows = db.query(WalkerKitSubmission).filter(
+        WalkerKitSubmission.audit_status == "pending_review"
+    ).order_by(WalkerKitSubmission.updated_at.desc()).all()
+    return {
+        "items": [_serialize_walker_kit_submission(row, db) for row in rows],
+        "total": len(rows),
+    }
+
+
+@router.post("/walker-kits/{submission_id}/approve")
+@api_router.post("/walker-kits/{submission_id}/approve")
+def approve_walker_kit(submission_id: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    submission = db.query(WalkerKitSubmission).filter(WalkerKitSubmission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail="Envio de kit nao encontrado.")
+
+    now = datetime.utcnow()
+    submission.audit_status = "approved"
+    submission.audit_note = "Kit aprovado pela auditoria administrativa."
+    submission.reviewed_by_admin_id = admin.id
+    submission.reviewed_at = now
+    submission.updated_at = now
+    db.commit()
+    db.refresh(submission)
+    return _serialize_walker_kit_submission(submission, db)
+
+
+@router.post("/walker-kits/{submission_id}/reject")
+@api_router.post("/walker-kits/{submission_id}/reject")
+def reject_walker_kit(submission_id: str, payload: dict | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    submission = db.query(WalkerKitSubmission).filter(WalkerKitSubmission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail="Envio de kit nao encontrado.")
+
+    now = datetime.utcnow()
+    submission.audit_status = "rejected"
+    submission.audit_note = (payload or {}).get("audit_note") or (payload or {}).get("reason") or "Kit rejeitado pela auditoria administrativa."
+    submission.reviewed_by_admin_id = admin.id
+    submission.reviewed_at = now
+    submission.updated_at = now
+    db.commit()
+    db.refresh(submission)
+    return _serialize_walker_kit_submission(submission, db)
+
 
 @router.get("/walker-operations")
 def walker_operations(db: Session = Depends(get_db)):

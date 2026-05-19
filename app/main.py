@@ -24,6 +24,7 @@ from app.models import (
     WalkOperationalLog,
     WalkerBoost,
     WalkerIncentive,
+    WalkerKitSubmission,
     WalkerMonitoringAlert,
     WalkerProfile,
     WalkerRecoveryPlan,

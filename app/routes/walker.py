@@ -1,6 +1,7 @@
 import os
 import logging
 import shutil
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -15,7 +16,8 @@ from app.dependencies.auth import get_current_user
 from app.models.payment import Payment
 from app.models.pet import Pet
 from app.models.user import User
-from app.models.walk import Walk
+from app.models.walk import Walk, WalkMatchingAttempt
+from app.models.walker_kit_submission import WalkerKitSubmission
 from app.models.walker_profile import WalkerProfile
 from app.schemas.walker_profile import WalkerProfileCreate, WalkerProfileResponse, WalkerProfileUpdate
 from app.schemas.complaint import ComplaintCreate, ComplaintEvidenceCreate
@@ -70,7 +72,6 @@ KIT_ITEM_DEFINITIONS = [
     {"key": "premium_treats", "label": "Itens premium", "description": "Petiscos autorizados e outros itens de conforto."},
 ]
 
-WALKER_KIT_SUBMISSIONS: dict[str, dict] = {}
 LOGGER = logging.getLogger("aumigao.walker_applications")
 UPLOAD_ROOT = Path(__file__).resolve().parents[2] / "uploads" / "walker-documents"
 ALLOWED_UPLOAD_TYPES = {
@@ -572,9 +573,9 @@ def _walker_level(total_completed: int, rating_avg: float, acceptance_rate: int,
 def _default_kit_submission() -> dict:
     return {
         "items": {
-            "water": {"available": True, "photo_urls": ["https://images.unsplash.com/photo-1523362628745-0c100150b504?auto=format&fit=crop&w=400&q=80"]},
-            "bowl": {"available": True, "photo_urls": []},
-            "bags": {"available": True, "photo_urls": []},
+            "water": {"available": False, "photo_urls": []},
+            "bowl": {"available": False, "photo_urls": []},
+            "bags": {"available": False, "photo_urls": []},
             "first_aid": {"available": False, "photo_urls": []},
             "towel": {"available": False, "photo_urls": []},
             "premium_treats": {"available": False, "photo_urls": []},
@@ -585,8 +586,26 @@ def _default_kit_submission() -> dict:
     }
 
 
-def _build_walker_kit(user_id: str | None) -> dict:
-    submission = WALKER_KIT_SUBMISSIONS.get(user_id or "", _default_kit_submission())
+def _kit_submission_payload(row: WalkerKitSubmission | None) -> dict:
+    if not row:
+        return _default_kit_submission()
+    try:
+        items = json.loads(row.items_json or "{}")
+    except (TypeError, ValueError):
+        items = {}
+    return {
+        "items": items if isinstance(items, dict) else {},
+        "audit_status": row.audit_status,
+        "audit_note": row.audit_note,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _build_walker_kit(user_id: str | None, db: Session | None = None) -> dict:
+    row = None
+    if db is not None and user_id:
+        row = db.query(WalkerKitSubmission).filter(WalkerKitSubmission.walker_user_id == user_id).first()
+    submission = _kit_submission_payload(row)
     submitted_items = submission.get("items", {})
     item_payloads = []
     available_keys = set()
@@ -1067,7 +1086,7 @@ def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_
             "eligible": len(completed) >= 2,
             "rule_preview": "Envie indicacoes de pessoas de confianca. Aprovacao nao e automatica e bonus futuro depende de desempenho.",
         },
-        "walker_kit": _build_walker_kit(user.id),
+        "walker_kit": _build_walker_kit(user.id, db),
         "cr_wallet": {
             "balance": 24,
             "earned_this_week": 6,
@@ -1180,13 +1199,21 @@ def update_kit(payload: dict, user: User = Depends(get_current_user), db: Sessio
             "photo_urls": incoming.get("photo_urls") or [],
         }
 
-    WALKER_KIT_SUBMISSIONS[user.id] = {
-        "items": items,
-        "audit_status": "em_analise",
-        "audit_note": "Kit enviado para validacao. As fotos aprovadas ficarao visiveis para o tutor.",
-        "updated_at": datetime.utcnow().isoformat(),
-    }
-    return {"ok": True, "walker_kit": _build_walker_kit(user.id)}
+    now = datetime.utcnow()
+    row = db.query(WalkerKitSubmission).filter(WalkerKitSubmission.walker_user_id == user.id).first()
+    if not row:
+        row = WalkerKitSubmission(walker_user_id=user.id)
+        db.add(row)
+
+    row.items_json = json.dumps(items)
+    row.audit_status = "pending_review"
+    row.audit_note = "Kit enviado para validacao. As fotos aprovadas ficarao visiveis para o tutor."
+    row.reviewed_by_admin_id = None
+    row.reviewed_at = None
+    row.updated_at = now
+    db.commit()
+    db.refresh(row)
+    return {"ok": True, "walker_kit": _build_walker_kit(user.id, db)}
 
 
 def _public_walker_rows(db: Session) -> list[dict]:
@@ -1217,7 +1244,7 @@ def _public_walker_rows(db: Session) -> list[dict]:
                     "bio": "Passeador verificado com kit publicado para consulta do tutor.",
                     "walk_price": 35,
                     "verified": True,
-                    "walker_kit": _build_walker_kit("walker-demo-user-1"),
+                    "walker_kit": _build_walker_kit("walker-demo-user-1", db),
             }
         ]
     rows = []
@@ -1252,7 +1279,7 @@ def _public_walker_rows(db: Session) -> list[dict]:
                 "bio": profile.bio or "Passeador disponivel com kit publicado para consulta.",
                 "walk_price": 35,
                 "verified": True,
-                "walker_kit": _build_walker_kit(profile.user_id),
+                "walker_kit": _build_walker_kit(profile.user_id, db),
         })
     return rows
 
@@ -1372,9 +1399,19 @@ def tutor_walk_reconfirmation(
 def requests(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
     process_expired_attempts(db)
+    pending_attempt_rows = (
+        db.query(WalkMatchingAttempt.walk_id)
+        .filter(
+            WalkMatchingAttempt.walker_id == user.id,
+            WalkMatchingAttempt.status == "pending",
+        )
+        .subquery()
+    )
+
     walks = (
         db.query(Walk)
         .filter(
+            Walk.id.in_(db.query(pending_attempt_rows.c.walk_id)),
             Walk.assigned_walker_id == user.id,
             Walk.operational_status.in_(["pending_walker_confirmation", "auto_rematching"]),
         )

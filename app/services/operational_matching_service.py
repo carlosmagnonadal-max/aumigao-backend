@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.models.pet import Pet
 from app.models.user import User
 from app.models.walk import Walk, WalkMatchingAttempt, WalkOperationalLog
+from app.models.walk_completion_review import WalkCompletionReview
 from app.models.walker_profile import WalkerProfile
 from app.schemas.matching import MatchingWalkerRequest
 from app.services.matching_service import get_eligible_walkers, matched_walker_payload
@@ -217,6 +218,22 @@ def serialize_log(log: WalkOperationalLog) -> dict:
     }
 
 
+def _serialize_completion_review(review: WalkCompletionReview | None) -> dict | None:
+    if not review:
+        return None
+
+    return {
+        "id": review.id,
+        "status": review.status,
+        "photo_url": review.photo_url,
+        "notes": review.notes,
+        "checklist": _json_load(review.checklist_json, {}),
+        "admin_note": review.admin_note,
+        "reviewed_at": review.reviewed_at,
+        "created_at": review.created_at,
+    }
+
+
 def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None, include_private: bool = False) -> dict:
     pet = db.get(Pet, walk.pet_id) if walk.pet_id else None
     tutor = db.get(User, walk.tutor_id) if walk.tutor_id else None
@@ -233,6 +250,12 @@ def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None
         .filter(WalkOperationalLog.walk_id == walk.id)
         .order_by(WalkOperationalLog.created_at.asc())
         .all()
+    )
+    completion_review = (
+        db.query(WalkCompletionReview)
+        .filter(WalkCompletionReview.walk_id == walk.id)
+        .order_by(WalkCompletionReview.created_at.desc())
+        .first()
     )
     walk_date, _, walk_time = (walk.scheduled_date or "").partition("T")
     can_see_full = include_private or should_release_address(walk, user)
@@ -276,6 +299,7 @@ def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None
         "no_walker_reason": walk.no_walker_reason,
         "matching_attempts": [serialize_attempt(item) for item in attempts],
         "operational_logs": [serialize_log(item) for item in logs],
+        "completion_review": _serialize_completion_review(completion_review),
         "created_at": walk.created_at,
     }
 

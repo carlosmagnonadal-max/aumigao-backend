@@ -32,6 +32,7 @@ from app.models import (
     WalkerReputationSnapshot,
     WalkerReview,
     WalkerWeeklyMission,
+    WalkCompletionReview,
 )
 from app.routes import admin, auth, complaints, matching, notifications, operational_walks, payments, pets, referrals, reviews, tutor, walker, walker_quality, walks, weekly_missions
 from app.services.admin_seed_service import ensure_configured_admin_users

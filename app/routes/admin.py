@@ -1,9 +1,11 @@
 ﻿from email.iterators import walk
 
+import json
 from app.models.tutor_profile import TutorProfile
 from fastapi import APIRouter, Depends
 from fastapi import HTTPException
 from datetime import datetime
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 from app.core.database import get_db
@@ -12,6 +14,7 @@ from app.models.payment import Payment
 from app.models.pet import Pet
 from app.models.user import User
 from app.models.walk import Walk
+from app.models.walk_completion_review import WalkCompletionReview
 from app.models.walker_kit_submission import WalkerKitSubmission
 from app.models.walker_profile import WalkerProfile
 from app.services.walker_referrals import mark_referral_approved, mark_referral_rejected
@@ -56,6 +59,64 @@ def _serialize_walker_kit_submission(submission: WalkerKitSubmission, db: Sessio
         "created_at": submission.created_at.isoformat() if submission.created_at else None,
         "updated_at": submission.updated_at.isoformat() if submission.updated_at else None,
     }
+
+
+def _walk_completion_checklist(review: WalkCompletionReview) -> dict:
+    if not review.checklist_json:
+        return {}
+    try:
+        parsed = json.loads(review.checklist_json)
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _serialize_walk_completion_review(review: WalkCompletionReview, db: Session) -> dict:
+    walk = db.get(Walk, review.walk_id)
+    walker = db.get(User, review.walker_user_id)
+    tutor = db.get(User, review.tutor_user_id)
+    pet = db.get(Pet, walk.pet_id) if walk else None
+    return {
+        "id": review.id,
+        "walk_id": review.walk_id,
+        "walker_user_id": review.walker_user_id,
+        "walker_name": walker.full_name if walker else "",
+        "walker_email": walker.email if walker else "",
+        "tutor_user_id": review.tutor_user_id,
+        "tutor_name": tutor.full_name if tutor else "",
+        "tutor_email": tutor.email if tutor else "",
+        "pet_name": pet.name if pet else "",
+        "scheduled_date": walk.scheduled_date if walk else None,
+        "photo_url": review.photo_url,
+        "notes": review.notes,
+        "checklist": _walk_completion_checklist(review),
+        "status": review.status,
+        "admin_note": review.admin_note,
+        "reviewed_by_admin_id": review.reviewed_by_admin_id,
+        "reviewed_at": review.reviewed_at.isoformat() if review.reviewed_at else None,
+        "created_at": review.created_at.isoformat() if review.created_at else None,
+        "updated_at": review.updated_at.isoformat() if review.updated_at else None,
+    }
+
+
+def _ensure_internal_walk_payment(walk: Walk, db: Session):
+    existing_paid = db.query(Payment).filter(
+        Payment.walk_id == walk.id,
+        Payment.status.in_(PAID_PAYMENT_STATUSES),
+    ).first()
+    if existing_paid:
+        return existing_paid
+    payment = Payment(
+        id=str(uuid4()),
+        tutor_id=walk.tutor_id,
+        walk_id=walk.id,
+        amount=float(walk.price or 0),
+        status="paid",
+        provider="internal",
+    )
+    db.add(payment)
+    return payment
+
 
 TUTOR_RECONFIRMATION_STATUSES = {
     "awaiting_tutor_reconfirmation",
@@ -1085,6 +1146,70 @@ def recover_walk(walk_id: str, db: Session = Depends(get_db)):
 @api_router.get("/payments")
 def payments(db: Session = Depends(get_db)):
     return [_serialize_admin_payment(payment, db) for payment in db.query(Payment).order_by(Payment.created_at.desc()).all()]
+
+
+@router.get("/walk-completions/pending")
+@api_router.get("/walk-completions/pending")
+def pending_walk_completions(db: Session = Depends(get_db)):
+    rows = db.query(WalkCompletionReview).filter(
+        WalkCompletionReview.status == "pending_review"
+    ).order_by(WalkCompletionReview.created_at.desc()).all()
+    return {
+        "items": [_serialize_walk_completion_review(row, db) for row in rows],
+        "total": len(rows),
+    }
+
+
+@router.post("/walk-completions/{review_id}/approve")
+@api_router.post("/walk-completions/{review_id}/approve")
+def approve_walk_completion(review_id: str, payload: dict | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    review = db.get(WalkCompletionReview, review_id)
+    if not review:
+        raise HTTPException(status_code=404, detail="Revisao de finalizacao nao encontrada.")
+    walk = db.get(Walk, review.walk_id)
+    if not walk:
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado.")
+
+    now = datetime.utcnow()
+    review.status = "approved"
+    review.admin_note = (payload or {}).get("admin_note") or (payload or {}).get("note")
+    review.reviewed_by_admin_id = admin.id
+    review.reviewed_at = now
+    review.updated_at = now
+    walk.operational_status = "ride_completed"
+    walk.status = "Finalizado"
+    walk.matching_finished_at = walk.matching_finished_at or now
+    _ensure_internal_walk_payment(walk, db)
+    log_event(db, walk.id, "completion_review_approved", actor_type="admin", actor_id=admin.id, metadata={"review_id": review.id})
+    db.commit()
+    db.refresh(review)
+    db.refresh(walk)
+    return {"ok": True, "review": _serialize_walk_completion_review(review, db), "walk": serialize_operational_walk(walk, db)}
+
+
+@router.post("/walk-completions/{review_id}/reject")
+@api_router.post("/walk-completions/{review_id}/reject")
+def reject_walk_completion(review_id: str, payload: dict | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    review = db.get(WalkCompletionReview, review_id)
+    if not review:
+        raise HTTPException(status_code=404, detail="Revisao de finalizacao nao encontrada.")
+    walk = db.get(Walk, review.walk_id)
+    if not walk:
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado.")
+
+    now = datetime.utcnow()
+    review.status = "rejected"
+    review.admin_note = (payload or {}).get("admin_note") or (payload or {}).get("reason") or "Finalizacao rejeitada pela revisao administrativa."
+    review.reviewed_by_admin_id = admin.id
+    review.reviewed_at = now
+    review.updated_at = now
+    walk.operational_status = "completion_rejected"
+    walk.status = "Finalização rejeitada"
+    log_event(db, walk.id, "completion_review_rejected", actor_type="admin", actor_id=admin.id, metadata={"review_id": review.id})
+    db.commit()
+    db.refresh(review)
+    db.refresh(walk)
+    return {"ok": True, "review": _serialize_walk_completion_review(review, db), "walk": serialize_operational_walk(walk, db)}
 
 
 @router.get("/walker-kits/pending")

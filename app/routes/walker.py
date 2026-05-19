@@ -17,6 +17,7 @@ from app.models.payment import Payment
 from app.models.pet import Pet
 from app.models.user import User
 from app.models.walk import Walk, WalkMatchingAttempt
+from app.models.walk_completion_review import WalkCompletionReview
 from app.models.walker_kit_submission import WalkerKitSubmission
 from app.models.walker_profile import WalkerProfile
 from app.schemas.walker_profile import WalkerProfileCreate, WalkerProfileResponse, WalkerProfileUpdate
@@ -1502,23 +1503,113 @@ def walker_status(walk_id: str, payload: dict, user: User = Depends(get_current_
         raise HTTPException(status_code=403, detail="Passeio nao pertence ao passeador")
     if walk.operational_status in {"pending_walker_confirmation", "auto_rematching"}:
         accept_operational_walk(walk, user, db)
-    update_operational_status(walk, payload.get("status", walk.status), db, actor=user)
+    requested_status = str(payload.get("status", walk.status))
+    if requested_status in {"ride_completed", "Finalizado", "finalizado", "completed", "finished"}:
+        raise HTTPException(status_code=409, detail="Finalizacao exige envio de relatorio para revisao administrativa.")
+    update_operational_status(walk, requested_status, db, actor=user)
     db.commit()
     db.refresh(walk)
     return {"ok": True, "status": walk.status, "walk": serialize_operational_walk(walk, db, user=user)}
 
 
-@router.post("/walks/{walk_id}/report")
-def send_report(walk_id: str, payload: dict | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+COMPLETION_REPORT_ALLOWED_STATUSES = {
+    "ride_in_progress",
+    "walker_arriving",
+    "ride_scheduled",
+    "walker_accepted",
+}
+
+
+def _completion_review_payload(review: WalkCompletionReview) -> dict:
+    checklist = {}
+    if review.checklist_json:
+        try:
+            parsed = json.loads(review.checklist_json)
+            checklist = parsed if isinstance(parsed, dict) else {}
+        except (TypeError, ValueError):
+            checklist = {}
+    return {
+        "id": review.id,
+        "walk_id": review.walk_id,
+        "walker_user_id": review.walker_user_id,
+        "tutor_user_id": review.tutor_user_id,
+        "status": review.status,
+        "photo_url": review.photo_url,
+        "notes": review.notes,
+        "checklist": checklist,
+        "admin_note": review.admin_note,
+        "reviewed_by_admin_id": review.reviewed_by_admin_id,
+        "reviewed_at": review.reviewed_at.isoformat() if review.reviewed_at else None,
+        "created_at": review.created_at.isoformat() if review.created_at else None,
+        "updated_at": review.updated_at.isoformat() if review.updated_at else None,
+    }
+
+
+def _submit_completion_review(walk: Walk, payload: dict | None, user: User, db: Session) -> WalkCompletionReview:
+    if walk.walker_id != user.id:
+        raise HTTPException(status_code=403, detail="Passeio nao pertence ao passeador")
+    if walk.operational_status not in COMPLETION_REPORT_ALLOWED_STATUSES:
+        raise HTTPException(status_code=409, detail="Passeio nao esta em status permitido para solicitar finalizacao.")
+
+    payload = payload or {}
+    checklist = payload.get("checklist") or payload.get("checklist_json") or {}
+    if not isinstance(checklist, dict):
+        checklist = {}
+    review = (
+        db.query(WalkCompletionReview)
+        .filter(WalkCompletionReview.walk_id == walk.id, WalkCompletionReview.walker_user_id == user.id)
+        .order_by(WalkCompletionReview.created_at.desc())
+        .first()
+    )
+    if not review:
+        review = WalkCompletionReview(
+            walk_id=walk.id,
+            walker_user_id=user.id,
+            tutor_user_id=walk.tutor_id,
+        )
+        db.add(review)
+        db.flush()
+
+    now = datetime.utcnow()
+    review.status = "pending_review"
+    review.photo_url = payload.get("photo_url")
+    review.notes = payload.get("notes")
+    review.checklist_json = json.dumps(checklist)
+    review.admin_note = None
+    review.reviewed_by_admin_id = None
+    review.reviewed_at = None
+    review.updated_at = now
+
+    walk.operational_status = "awaiting_completion_review"
+    walk.status = "Aguardando validação da finalização"
+    log_event(db, walk.id, "completion_report_submitted", actor_type=user.role, actor_id=user.id, metadata={"review_id": review.id})
+    return review
+
+
+@router.post("/walks/{walk_id}/completion-report")
+def submit_completion_report(walk_id: str, payload: dict | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_active_walker(user, db)
     walk = db.get(Walk, walk_id)
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
-    if walk.walker_id != user.id:
-        raise HTTPException(status_code=403, detail="Passeio nao pertence ao passeador")
-    update_operational_status(walk, "Finalizado", db, actor=user)
-    db.add(Payment(id=str(uuid4()), tutor_id=user.id, walk_id=walk.id, amount=float(walk.price or 0), status="paid", provider="internal"))
+    review = _submit_completion_review(walk, payload, user, db)
     db.commit()
-    return {"ok": True, "walk_id": walk_id, "status": walk.status, "report": payload or {}}
+    db.refresh(review)
+    db.refresh(walk)
+    return {"ok": True, "review": _completion_review_payload(review), "walk": serialize_operational_walk(walk, db, user=user)}
+
+
+@router.post("/walks/{walk_id}/report")
+def send_report(walk_id: str, payload: dict | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_active_walker(user, db)
+    walk = db.get(Walk, walk_id)
+    if not walk:
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado")
+    review = _submit_completion_review(walk, payload, user, db)
+    db.commit()
+    db.refresh(review)
+    db.refresh(walk)
+    return {"ok": True, "review": _completion_review_payload(review), "walk": serialize_operational_walk(walk, db, user=user)}
 
 
 @router.post("/walks/{walk_id}/occurrence")

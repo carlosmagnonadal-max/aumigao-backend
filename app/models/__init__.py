@@ -14,3 +14,4 @@ from app.models.walker_monitoring_alert import WalkerMonitoringAlert
 from app.models.walker_recovery_plan import WalkerRecoveryPlan
 from app.models.tip_integrity_flag import TipIntegrityFlag
 from app.models.complaint import Complaint, ComplaintDecision, ComplaintEvidence, ComplaintStatusHistory, RiskScore
+from app.models.notification import Notification

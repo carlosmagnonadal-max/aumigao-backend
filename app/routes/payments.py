@@ -136,7 +136,7 @@ def raise_asaas_error(step: str, response: httpx.Response, request_payload: dict
 
 def normalize_method(method: str):
     normalized = (method or "pix").strip().lower()
-    return "UNDEFINED" if normalized in {"card", "credit_card", "cartao", "cartÃ£o"} else "PIX"
+    return "UNDEFINED" if normalized in {"card", "credit_card", "cartao", "cartão"} else "PIX"
 
 
 def normalize_payment_status(provider_status: str | None):

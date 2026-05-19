@@ -22,6 +22,7 @@ class Walk(Base):
     notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     operational_status: Mapped[str] = mapped_column(String, default="ride_scheduled", index=True)
+    walker_selection_mode: Mapped[str] = mapped_column(String, default="auto")
     assigned_walker_id: Mapped[str | None] = mapped_column(String, ForeignKey("users.id"), nullable=True, index=True)
     current_attempt: Mapped[int] = mapped_column(Integer, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)

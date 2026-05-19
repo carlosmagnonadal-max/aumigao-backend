@@ -16,7 +16,7 @@ class TutorProfileBase(BaseModel):
     state: str = ""
     reference_point: str = ""
     access_instructions: str = ""
-    pickup_notes: str = ""
+    pickup_notes: str | None = ""
     preferred_method: str = "Buscar em casa"
 
 class TutorProfileCreate(TutorProfileBase):

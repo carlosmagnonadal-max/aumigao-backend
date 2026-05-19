@@ -29,5 +29,8 @@ class WalkerProfile(Base):
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
+    reviewed_by_admin_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    resubmission_requested_documents: Mapped[str] = mapped_column(Text, default="")
 
     user = relationship("User", back_populates="walker_profile")

@@ -14,6 +14,7 @@ from app.models.walk import Walk, WalkMatchingAttempt, WalkOperationalLog
 from app.models.walker_profile import WalkerProfile
 from app.schemas.matching import MatchingWalkerRequest
 from app.services.matching_service import get_eligible_walkers, matched_walker_payload
+from app.routes.notifications import NotificationCreate, _create_notification
 
 PENDING_WALKER_CONFIRMATION = "pending_walker_confirmation"
 WALKER_ACCEPTED = "walker_accepted"
@@ -25,6 +26,7 @@ WALKER_ARRIVING = "walker_arriving"
 RIDE_IN_PROGRESS = "ride_in_progress"
 RIDE_COMPLETED = "ride_completed"
 RIDE_CANCELLED = "ride_cancelled"
+AWAITING_TUTOR_RECONFIRMATION = "awaiting_tutor_reconfirmation"
 
 LEGACY_STATUS_TO_OPERATIONAL = {
     "Agendado": RIDE_SCHEDULED,
@@ -53,8 +55,39 @@ EXPIRED_ATTEMPT = "expired"
 SKIPPED_ATTEMPT = "skipped"
 
 MAX_ATTEMPTS = 3
-CONFIRMATION_TIMEOUT = timedelta(minutes=5)
+CONFIRMATION_TIMEOUT = timedelta(minutes=30)
 
+def notify_tutor_walk_event(
+    db: Session,
+    walk: Walk,
+    title: str,
+    message: str,
+    notification_type: str = "walk_status",
+    priority: str = "medium",
+    action: str | None = None,
+    metadata: dict | None = None,
+) -> None:
+    if not walk.tutor_id:
+        return
+
+    _create_notification(
+        db,
+        NotificationCreate(
+            user_id=walk.tutor_id,
+            user_role="tutor",
+            title=title,
+            message=message,
+            type=notification_type,
+            related_entity_type="walk",
+            related_entity_id=walk.id,
+            metadata={
+                "priority": priority,
+                "channel": "in_app",
+                "action": action or walk.operational_status,
+                **(metadata or {}),
+            },
+        ),
+    )
 
 def utcnow() -> datetime:
     return datetime.utcnow()
@@ -64,6 +97,7 @@ def ensure_operational_schema(engine) -> None:
     datetime_type = "TIMESTAMP" if engine.dialect.name == "postgresql" else "DATETIME"
     columns = {
         "operational_status": "VARCHAR DEFAULT 'ride_scheduled'",
+        "walker_selection_mode": "VARCHAR DEFAULT 'auto'",
         "assigned_walker_id": "VARCHAR",
         "current_attempt": "INTEGER DEFAULT 0",
         "max_attempts": "INTEGER DEFAULT 3",
@@ -203,6 +237,9 @@ def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None
     walk_date, _, walk_time = (walk.scheduled_date or "").partition("T")
     can_see_full = include_private or should_release_address(walk, user)
     address_payload = {"address_snapshot": walk.address_snapshot, "notes": walk.notes} if can_see_full else coarse_pickup_payload(walk)
+    pet_photo_url = (pet.photo_url if pet else "") or ""
+    if pet_photo_url.startswith(("file://", "content://", "blob:")):
+        pet_photo_url = ""
     return {
         "id": walk.id,
         "tutor_id": walk.tutor_id,
@@ -211,6 +248,7 @@ def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None
         "assignedWalkerId": walk.assigned_walker_id,
         "pet_id": walk.pet_id,
         "pet_name": pet.name if pet else None,
+        "pet_photo_url": pet_photo_url,
         "tutor_name": (tutor.full_name if tutor else None) or (tutor.email if tutor else None),
         "client_name": (tutor.full_name if tutor else None) or (tutor.email if tutor else None),
         "walker_name": (walker.full_name if walker else None) or (walker.email if walker else None),
@@ -222,6 +260,8 @@ def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None
         "status": walk.status,
         "operational_status": walk.operational_status,
         "operationalStatus": walk.operational_status,
+        "walker_selection_mode": walk.walker_selection_mode or "auto",
+        "walkerSelectionMode": walk.walker_selection_mode or "auto",
         "pickup_method": walk.pickup_method,
         **address_payload,
         "pickup_privacy_level": "full" if can_see_full else "coarse",
@@ -328,15 +368,76 @@ def _create_attempt(db: Session, walk: Walk, candidate: dict, attempt_number: in
     walk.current_attempt = attempt_number
     walk.max_attempts = walk.max_attempts or MAX_ATTEMPTS
     walk.confirmation_expires_at = expires_at
-    walk.operational_status = PENDING_WALKER_CONFIRMATION if attempt_number == 1 else AUTO_REMATCHING
+    walk.operational_status = PENDING_WALKER_CONFIRMATION if attempt_number == 1 or (walk.walker_selection_mode or "auto") == "only_selected" else AUTO_REMATCHING
     walk.status = OPERATIONAL_TO_LEGACY_STATUS[walk.operational_status]
     log_event(db, walk.id, "walker_attempt_created", metadata={"walker_id": attempt.walker_id, "attempt_number": attempt_number, "score": attempt.score})
     db.flush()
+
+    notify_walker_walk_event(
+        db,
+        walk,
+        attempt.walker_id,
+        title="Novo passeio disponível",
+        message="Você recebeu uma solicitação de passeio. Aceite ou recuse dentro do prazo para manter sua pontuação operacional.",
+        notification_type="new_walk",
+        priority="high",
+        action="walker_attempt_created",
+        metadata={
+            "attempt_number": attempt_number,
+            "expires_at": expires_at,
+            "score": attempt.score,
+        },
+    )
+
+    if attempt_number == 1:
+        notify_tutor_walk_event(
+            db,
+            walk,
+            title="Passeador em confirmação",
+            message="Encontramos um passeador disponível e estamos aguardando a confirmação dele.",
+            notification_type="walker_attempt_created",
+            priority="medium",
+            action=walk.operational_status,
+            metadata={"attempt_number": attempt_number, "walker_id": attempt.walker_id},
+        )
     return attempt
 
 
+def _selected_walker_unavailable(walk: Walk, db: Session, reason: str) -> Walk:
+    walk.operational_status = AWAITING_TUTOR_RECONFIRMATION
+    walk.status = "Aguardando confirmação do tutor"
+    walk.no_walker_reason = reason
+    walk.confirmation_expires_at = None
+    walk.matching_finished_at = utcnow()
+    log_event(
+        db,
+        walk.id,
+        "selected_walker_unavailable",
+        metadata={
+            "reason": reason,
+            "walker_selection_mode": walk.walker_selection_mode or "auto",
+            "walker_id": walk.assigned_walker_id or walk.walker_id,
+        },
+    )
+    notify_tutor_walk_event(
+        db,
+        walk,
+        title="Passeador escolhido indisponível",
+        message=reason,
+        notification_type="walk_recovery",
+        priority="high",
+        action=AWAITING_TUTOR_RECONFIRMATION,
+        metadata={
+            "reason": reason,
+            "walker_selection_mode": walk.walker_selection_mode or "auto",
+            "walker_id": walk.assigned_walker_id or walk.walker_id,
+        },
+    )
+    return walk
+
+
 def start_matching(walk: Walk, db: Session, actor: User | None = None) -> Walk:
-    process_expired_attempts(db)
+    process_expired_attempts(db, commit=False)
     if walk.operational_status in {WALKER_ACCEPTED, RIDE_SCHEDULED, WALKER_ARRIVING, RIDE_IN_PROGRESS, RIDE_COMPLETED} and walk.matching_finished_at:
         return walk
     pending = _current_pending_attempt(db, walk.id)
@@ -349,7 +450,34 @@ def start_matching(walk: Walk, db: Session, actor: User | None = None) -> Walk:
     walk.no_walker_reason = None
     log_event(db, walk.id, "matching_started", actor_type=(actor.role if actor else "system"), actor_id=(actor.id if actor else None))
 
+    notify_tutor_walk_event(
+        db,
+        walk,
+        title="Buscando passeador",
+        message="Estamos procurando o melhor passeador disponível para o passeio do seu pet.",
+        notification_type="matching_started",
+        priority="medium",
+        action="matching_started",
+    )
+
     selected_id = walk.assigned_walker_id or walk.walker_id
+    if (walk.walker_selection_mode or "auto") == "only_selected":
+        candidate = _candidate_for_selected_walker(walk, selected_id, db) if selected_id else None
+        if not candidate:
+            return _selected_walker_unavailable(
+                walk,
+                db,
+                "Passeador escolhido indisponível. Aguardando decisão do tutor.",
+            )
+        attempt_number = (
+            db.query(WalkMatchingAttempt)
+            .filter(WalkMatchingAttempt.walk_id == walk.id)
+            .count()
+            + 1
+        )
+        _create_attempt(db, walk, candidate, attempt_number)
+        return walk
+
     excluded: set[str] = set()
     candidate = _candidate_for_selected_walker(walk, selected_id, db) if selected_id else None
     if not candidate:
@@ -385,13 +513,38 @@ def rematch(walk: Walk, db: Session, reason: str = "rematch") -> Walk:
         .all()
     )
     next_number = len(attempts) + 1
+    if (walk.walker_selection_mode or "auto") == "only_selected":
+        return _selected_walker_unavailable(
+            walk,
+            db,
+            "Passeador escolhido não confirmou. Aguardando decisão do tutor.",
+        )
+
     if next_number > (walk.max_attempts or MAX_ATTEMPTS):
-        walk.operational_status = NO_WALKER_FOUND
-        walk.status = OPERATIONAL_TO_LEGACY_STATUS[NO_WALKER_FOUND]
-        walk.no_walker_reason = "Limite de tentativas atingido."
-        walk.matching_finished_at = utcnow()
+        walk.operational_status = AWAITING_TUTOR_RECONFIRMATION
+        walk.status = "Aguardando confirmação do tutor"
+        walk.no_walker_reason = "Limite de tentativas atingido. Aguardando confirmação do tutor para continuar a busca."
         walk.confirmation_expires_at = None
-        log_event(db, walk.id, "no_walker_found", metadata={"reason": walk.no_walker_reason})
+        log_event(
+            db,
+            walk.id,
+            "awaiting_tutor_reconfirmation",
+            metadata={
+                "reason": walk.no_walker_reason,
+                "attempts": len(attempts),
+                "max_attempts": walk.max_attempts or MAX_ATTEMPTS,
+            }
+        )
+        notify_tutor_walk_event(
+            db,
+            walk,
+            title="Confirme seu passeio",
+            message="Não conseguimos confirmar um passeador nas tentativas iniciais. Você pode continuar a busca, reagendar ou cancelar sem custo.",
+            notification_type="walk_recovery",
+            priority="high",
+            action=AWAITING_TUTOR_RECONFIRMATION,
+            metadata={"attempts": len(attempts), "max_attempts": walk.max_attempts or MAX_ATTEMPTS},
+        )
         return walk
 
     excluded = {attempt.walker_id for attempt in attempts}
@@ -404,37 +557,86 @@ def rematch(walk: Walk, db: Session, reason: str = "rematch") -> Walk:
         walk.matching_finished_at = utcnow()
         walk.confirmation_expires_at = None
         log_event(db, walk.id, "no_walker_found", metadata={"reason": walk.no_walker_reason})
+        notify_tutor_walk_event(
+            db,
+            walk,
+            title="Nenhum passeador encontrado",
+            message="Ainda não encontramos um passeador disponível para este horário. Nossa equipe pode orientar os próximos passos.",
+            notification_type="no_walker_found",
+            priority="high",
+            action=NO_WALKER_FOUND,
+        )
         return walk
 
     walk.operational_status = AUTO_REMATCHING
     walk.status = OPERATIONAL_TO_LEGACY_STATUS[AUTO_REMATCHING]
     log_event(db, walk.id, "rematch_started", metadata={"reason": reason, "attempt_number": next_number})
     _create_attempt(db, walk, candidate, next_number)
+    notify_tutor_walk_event(
+        db,
+        walk,
+        title="Buscando substituto",
+        message="Estamos buscando outro passeador disponível para manter seu passeio.",
+        notification_type="auto_rematching",
+        priority="high",
+        action=AUTO_REMATCHING,
+        metadata={"reason": reason, "attempt_number": next_number},
+    )
     return walk
 
-
 def decline_walk(walk: Walk, walker: User, db: Session) -> Walk:
-    process_expired_attempts(db)
+    process_expired_attempts(db, commit=False)
     attempt = _current_pending_attempt(db, walk.id)
     if not attempt or attempt.walker_id != walker.id:
         raise HTTPException(status_code=403, detail="Solicitacao nao atribuida a este passeador.")
+
     _finish_attempt(attempt, DECLINED_ATTEMPT, "walker_declined")
     walk.operational_status = WALKER_DECLINED
     walk.status = OPERATIONAL_TO_LEGACY_STATUS[WALKER_DECLINED]
-    log_event(db, walk.id, "walker_declined", actor_type="walker", actor_id=walker.id, metadata={"attempt_number": attempt.attempt_number})
+
+    log_event(
+        db,
+        walk.id,
+        "walker_declined",
+        actor_type="walker",
+        actor_id=walker.id,
+        metadata={"attempt_number": attempt.attempt_number},
+    )
+
+    notify_tutor_walk_event(
+        db,
+        walk,
+        title="Passeador indisponível",
+        message="O passeador não pôde atender este passeio. Já estamos buscando uma alternativa.",
+        notification_type="walker_declined",
+        priority="high",
+        action=WALKER_DECLINED,
+        metadata={"attempt_number": attempt.attempt_number},
+    )
+
     return rematch(walk, db, reason="walker_declined")
 
 
 def accept_walk(walk: Walk, walker: User, db: Session) -> Walk:
-    process_expired_attempts(db)
+    process_expired_attempts(db, commit=False)
+
     if walk.operational_status in {WALKER_ACCEPTED, RIDE_SCHEDULED} and walk.walker_id == walker.id:
         return walk
+
     attempt = _current_pending_attempt(db, walk.id)
+
     if not attempt or attempt.walker_id != walker.id:
         raise HTTPException(status_code=403, detail="Solicitacao nao atribuida a este passeador.")
+
     if attempt.expires_at <= utcnow():
         _finish_attempt(attempt, EXPIRED_ATTEMPT, "expired_before_accept")
-        log_event(db, walk.id, "walker_expired", actor_type="system", metadata={"walker_id": walker.id, "attempt_number": attempt.attempt_number})
+        log_event(
+            db,
+            walk.id,
+            "walker_expired",
+            actor_type="system",
+            metadata={"walker_id": walker.id, "attempt_number": attempt.attempt_number},
+        )
         rematch(walk, db, reason="expired")
         raise HTTPException(status_code=409, detail="Tempo de aceite expirado.")
 
@@ -456,37 +658,145 @@ def accept_walk(walk: Walk, walker: User, db: Session) -> Walk:
             synchronize_session=False,
         )
     )
+
     if updated != 1:
         raise HTTPException(status_code=409, detail="Este passeio ja foi aceito ou atualizado.")
+
     db.flush()
     db.refresh(walk)
+
     _finish_attempt(attempt, ACCEPTED_ATTEMPT, "walker_accepted")
-    log_event(db, walk.id, "walker_accepted", actor_type="walker", actor_id=walker.id, metadata={"attempt_number": attempt.attempt_number})
+
+    log_event(
+        db,
+        walk.id,
+        "walker_accepted",
+        actor_type="walker",
+        actor_id=walker.id,
+        metadata={"attempt_number": attempt.attempt_number},
+    )
+
     log_event(db, walk.id, "address_released", actor_type="system", actor_id=walker.id)
+
+    notify_tutor_walk_event(
+        db,
+        walk,
+        title="Passeador confirmado",
+        message="O passeador aceitou o passeio do seu pet.",
+        notification_type="walker_accepted",
+        priority="medium",
+        action=WALKER_ACCEPTED,
+        metadata={"walker_id": walker.id, "attempt_number": attempt.attempt_number},
+    )
+
+    notify_walker_walk_event(
+        db,
+        walk,
+        walker.id,
+        title="Passeio confirmado",
+        message="Você aceitou o passeio. O endereço do tutor já foi liberado conforme as regras operacionais.",
+        notification_type="walker_accepted",
+        priority="medium",
+        action=WALKER_ACCEPTED,
+        metadata={
+            "attempt_number": attempt.attempt_number,
+            "address_released": True,
+        },
+    )
+
     return walk
 
+def process_expired_attempts(db: Session, commit: bool = True) -> int:
+    """Expire pending attempts and persist the resulting rematch/recovery state.
 
-def process_expired_attempts(db: Session) -> int:
-    now = utcnow()
-    expired = (
-        db.query(WalkMatchingAttempt)
-        .filter(WalkMatchingAttempt.status == PENDING_ATTEMPT, WalkMatchingAttempt.expires_at <= now)
-        .order_by(WalkMatchingAttempt.expires_at.asc())
-        .all()
+    This function owns its commit because the background scheduler depends on it
+    running outside a request-level transaction. It remains idempotent by only
+    selecting attempts that are still pending.
+    """
+    try:
+        now = utcnow()
+        expired = (
+            db.query(WalkMatchingAttempt)
+            .filter(WalkMatchingAttempt.status == PENDING_ATTEMPT, WalkMatchingAttempt.expires_at <= now)
+            .order_by(WalkMatchingAttempt.expires_at.asc())
+            .all()
+        )
+        count = 0
+        for attempt in expired:
+            walk = db.get(Walk, attempt.walk_id)
+            if not walk or walk.operational_status not in {PENDING_WALKER_CONFIRMATION, AUTO_REMATCHING}:
+                continue
+            _finish_attempt(attempt, EXPIRED_ATTEMPT, "confirmation_timeout")
+            log_event(db, walk.id, "walker_expired", actor_type="system", metadata={"walker_id": attempt.walker_id, "attempt_number": attempt.attempt_number})
+
+            notify_walker_walk_event(
+                db,
+                walk,
+                attempt.walker_id,
+            title="Tempo de aceite expirado",
+            message="O prazo para aceitar este passeio expirou. A solicitação foi redirecionada para outro passeador.",
+                notification_type="acceptance_expired",
+                priority="medium",
+                action="walker_expired",
+                metadata={
+                    "attempt_number": attempt.attempt_number,
+                },
+            )
+
+            notify_tutor_walk_event(
+                db,
+                walk,
+            title="Tempo de confirmação expirado",
+            message="O passeador não respondeu dentro do prazo. Estamos buscando uma alternativa.",
+                notification_type="walker_expired",
+                priority="high",
+                action="walker_expired",
+                metadata={"walker_id": attempt.walker_id, "attempt_number": attempt.attempt_number},
+            )
+
+            rematch(walk, db, reason="expired")
+            count += 1
+
+        if count and commit:
+            db.commit()
+        return count
+    except Exception:
+        if commit:
+            db.rollback()
+        raise
+
+def notify_walker_walk_event(
+    db: Session,
+    walk: Walk,
+    walker_id: str | None,
+    title: str,
+    message: str,
+    notification_type: str = "walker_walk_event",
+    priority: str = "medium",
+    action: str | None = None,
+    metadata: dict | None = None,
+) -> None:
+    if not walker_id:
+        return
+
+    _create_notification(
+        db,
+        NotificationCreate(
+            user_id=walker_id,
+            user_role="walker",
+            title=title,
+            message=message,
+            type=notification_type,
+            related_entity_type="walk",
+            related_entity_id=walk.id,
+            metadata={
+                "priority": priority,
+                "channel": "in_app",
+                "action": action or walk.operational_status,
+                **(metadata or {}),
+            },
+        ),
     )
-    count = 0
-    for attempt in expired:
-        walk = db.get(Walk, attempt.walk_id)
-        if not walk or walk.operational_status not in {PENDING_WALKER_CONFIRMATION, AUTO_REMATCHING}:
-            continue
-        _finish_attempt(attempt, EXPIRED_ATTEMPT, "confirmation_timeout")
-        log_event(db, walk.id, "walker_expired", actor_type="system", metadata={"walker_id": attempt.walker_id, "attempt_number": attempt.attempt_number})
-        rematch(walk, db, reason="expired")
-        count += 1
-    if count:
-        db.commit()
-    return count
-
 
 def update_operational_status(walk: Walk, status: str, db: Session, actor: User | None = None) -> Walk:
     walk.operational_status = LEGACY_STATUS_TO_OPERATIONAL.get(status, status)

@@ -1,11 +1,12 @@
 ﻿from uuid import uuid4
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.payment import Payment
-from app.models.walk import Walk
+from app.models.walk import Walk, WalkMatchingAttempt
 from app.models.user import User
 from app.models.pet import Pet
 from app.schemas.walk import WalkCreate, WalkResponse, WalkUpdateStatus
@@ -14,6 +15,7 @@ from app.services.complaint_service import create_complaint
 from app.services.operational_matching_service import (
     LEGACY_STATUS_TO_OPERATIONAL,
     RIDE_SCHEDULED,
+    log_event,
     process_expired_attempts,
     serialize_operational_walk,
     start_matching,
@@ -30,11 +32,36 @@ class WalkTipCreate(BaseModel):
     note: str | None = None
 
 
+class WalkReconfirmationDecision(BaseModel):
+    action: str | None = None
+    decision: str | None = None
+
+
+FORBIDDEN_RESCHEDULE_FIELDS = {
+    "price",
+    "duration_minutes",
+    "pet_id",
+    "walker_id",
+    "assigned_walker_id",
+    "walker_selection_mode",
+}
+
+
 def _split_scheduled_date(value: str) -> tuple[str | None, str | None]:
     if not value:
         return None, None
     date_part, _, time_part = value.partition("T")
     return date_part or None, time_part[:5] or None
+
+
+def _parse_scheduled_at(value: str) -> datetime:
+    normalized = value.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Informe o novo horario do passeio.")
+    try:
+        return datetime.fromisoformat(normalized.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Horario do passeio invalido.")
 
 
 def _serialize_walk(walk: Walk, db: Session) -> dict:
@@ -63,19 +90,21 @@ def list_walks(user: User = Depends(get_current_user), db: Session = Depends(get
 def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     data = payload.model_dump()
     selected_walker_id = data.pop("walker_id", None)
+    requested_selection_mode = data.pop("walker_selection_mode", None)
+    walker_selection_mode = "only_selected" if requested_selection_mode == "only_selected" else "auto"
     walk = Walk(
         id=str(uuid4()),
         tutor_id=user.id,
         walker_id=selected_walker_id,
         assigned_walker_id=selected_walker_id,
-        operational_status=RIDE_SCHEDULED,
+        walker_selection_mode=walker_selection_mode,
+        operational_status="pending_walker_confirmation",
         current_attempt=0,
         max_attempts=3,
         **data,
     )
     db.add(walk)
-    if selected_walker_id:
-        start_matching(walk, db, actor=user)
+    start_matching(walk, db, actor=user)
     db.commit()
     db.refresh(walk)
     return serialize_operational_walk(walk, db, user=user)
@@ -92,6 +121,138 @@ def update_status(walk_id: str, payload: WalkUpdateStatus, user: User = Depends(
     update_operational_status(walk, payload.status, db, actor=user)
     db.commit()
     db.refresh(walk)
+    return serialize_operational_walk(walk, db, user=user)
+
+
+@router.post("/{walk_id}/reconfirmation")
+def respond_walk_reconfirmation(
+    walk_id: str,
+    payload: WalkReconfirmationDecision,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    walk = db.get(Walk, walk_id)
+    if not walk:
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado")
+    if str(walk.tutor_id) != str(user.id):
+        raise HTTPException(status_code=403, detail="Apenas o tutor dono do passeio pode reconfirmar.")
+
+    allowed_statuses = {
+        "awaiting_tutor_reconfirmation",
+        "no_walker_found",
+        "matching_failed",
+        "auto_rematching",
+    }
+    previous_status = walk.operational_status
+    if previous_status not in allowed_statuses:
+        raise HTTPException(status_code=409, detail="Passeio nao aguarda decisao do tutor.")
+
+    action = (payload.action or payload.decision or "").strip()
+    if action == "reschedule":
+        action = "keep_waiting"
+
+    log_metadata = {"action": action, "previous_status": previous_status}
+
+    if action == "continue_search":
+        walk.walker_selection_mode = "auto"
+        walk.walker_id = None
+        walk.assigned_walker_id = None
+        walk.no_walker_reason = None
+        walk.matching_finished_at = None
+        walk.confirmation_expires_at = None
+        log_event(db, walk.id, "tutor_reconfirmation_action", actor_type="tutor", actor_id=user.id, metadata=log_metadata)
+        start_matching(walk, db, actor=user)
+    elif action in {"keep_waiting", "accept_reschedule"}:
+        log_event(db, walk.id, "tutor_reconfirmation_action", actor_type="tutor", actor_id=user.id, metadata=log_metadata)
+    elif action == "cancel":
+        raise HTTPException(status_code=400, detail="Use o fluxo de cancelamento existente para cancelar este passeio.")
+    else:
+        raise HTTPException(status_code=400, detail="Acao de reconfirmacao invalida.")
+
+    db.commit()
+    db.refresh(walk)
+    response = serialize_operational_walk(walk, db, user=user)
+    if action in {"keep_waiting", "accept_reschedule"}:
+        response["reconfirmation_message"] = "Decisao registrada. Nenhuma remarcacao automatica foi criada neste fluxo."
+    return response
+
+
+@router.post("/{walk_id}/reschedule-selected-walker")
+def reschedule_selected_walker_walk(
+    walk_id: str,
+    payload: dict,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    forbidden = FORBIDDEN_RESCHEDULE_FIELDS.intersection(payload.keys())
+    if forbidden:
+        raise HTTPException(status_code=400, detail="Esta remarcacao permite alterar apenas data e horario.")
+
+    scheduled_date = str(payload.get("scheduled_date") or "").strip()
+    scheduled_at = _parse_scheduled_at(scheduled_date)
+    if scheduled_at <= datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Escolha um horario futuro para remarcar.")
+
+    walk = db.get(Walk, walk_id)
+    if not walk:
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado")
+    if str(walk.tutor_id) != str(user.id):
+        raise HTTPException(status_code=403, detail="Apenas o tutor dono do passeio pode remarcar.")
+    if walk.operational_status != "awaiting_tutor_reconfirmation":
+        raise HTTPException(status_code=409, detail="Passeio nao aguarda remarcacao operacional.")
+    if (walk.walker_selection_mode or "auto") != "only_selected":
+        raise HTTPException(status_code=409, detail="Remarcacao restrita disponivel apenas para passeador escolhido.")
+
+    selected_walker_id = walk.assigned_walker_id or walk.walker_id
+    if not selected_walker_id:
+        raise HTTPException(status_code=400, detail="Passeio sem passeador escolhido para remarcacao.")
+
+    pending_attempt = (
+        db.query(WalkMatchingAttempt)
+        .filter(WalkMatchingAttempt.walk_id == walk.id, WalkMatchingAttempt.status == "pending")
+        .first()
+    )
+    if pending_attempt:
+        return serialize_operational_walk(walk, db, user=user)
+
+    previous_scheduled_date = walk.scheduled_date
+    walk.scheduled_date = scheduled_date
+
+    if hasattr(walk, "walk_date"):
+        walk.walk_date = payload.get("walk_date")
+
+    if hasattr(walk, "walk_time"):
+        walk.walk_time = payload.get("walk_time")
+
+    walk.walker_id = selected_walker_id
+    walk.assigned_walker_id = selected_walker_id
+    walk.walker_selection_mode = "only_selected"
+    walk.operational_status = "pending_walker_confirmation"
+    walk.status = "Agendado"
+    walk.no_walker_reason = None
+    walk.matching_finished_at = None
+    walk.confirmation_expires_at = None
+
+    log_event(
+        db,
+        walk.id,
+        "selected_walker_reschedule_requested",
+        actor_type="tutor",
+        actor_id=user.id,
+        metadata={
+            "previous_scheduled_date": previous_scheduled_date,
+            "scheduled_date": scheduled_date,
+            "walk_date": payload.get("walk_date"),
+            "walk_time": payload.get("walk_time"),
+            "walker_id": selected_walker_id,
+        },
+    )
+
+    start_matching(walk, db, actor=user)
+
+    db.commit()
+    db.refresh(walk)
+
     return serialize_operational_walk(walk, db, user=user)
 
 

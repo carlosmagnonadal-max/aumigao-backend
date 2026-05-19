@@ -1,4 +1,7 @@
-﻿from fastapi import APIRouter, Depends
+﻿from email.iterators import walk
+
+from app.models.tutor_profile import TutorProfile
+from fastapi import APIRouter, Depends
 from fastapi import HTTPException
 from datetime import datetime
 
@@ -11,7 +14,13 @@ from app.models.user import User
 from app.models.walk import Walk
 from app.models.walker_profile import WalkerProfile
 from app.services.walker_referrals import mark_referral_approved, mark_referral_rejected
-from app.services.operational_matching_service import process_expired_attempts, serialize_operational_walk
+from app.services.operational_matching_service import (
+    log_event,
+    process_expired_attempts,
+    serialize_operational_walk,
+    start_matching,
+)
+from app.routes.notifications import NotificationCreate, _create_notification
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 api_router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -19,6 +28,21 @@ api_router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depend
 APPROVED_WALKER_STATUSES = {"active"}
 PAID_PAYMENT_STATUSES = {"paid", "Pago", "pagamento_confirmado_sandbox", "payment_confirmed", "confirmed"}
 IN_PROGRESS_WALK_STATUSES = {"Indo buscar o pet", "Passeando agora", "walker_arriving", "ride_in_progress"}
+
+RECOVERY_WALK_STATUSES = {
+    "no_walker_found",
+    "walker_declined",
+    "extended_matching",
+    "priority_matching",
+    "operational_recovery",
+    "support_followup",
+    "auto_rematching",
+}
+
+TUTOR_RECONFIRMATION_STATUSES = {
+    "awaiting_tutor_reconfirmation",
+}
+
 FAKE_ENTITY_TOKENS = (
     "passeador fluxo real",
     "passeador login",
@@ -278,24 +302,42 @@ def _is_real_paid_payment(payment: Payment, real_walk_ids: set[str]) -> bool:
 
 
 def _status_label(status: str | None) -> str:
-    status = (status or "pending").strip()
-    if status in {"approved", "active"}:
-        return "Aprovado"
-    if status == "rejected":
-        return "Reprovado"
-    if status in {"document_review", "aprovacao_documental"}:
-        return "Aprovação documental"
-    if status == "restricted":
-        return "Restrito"
-    if status == "suspended":
-        return "Suspenso"
-    return "Em análise"
+    labels = {
+        "submitted": "Cadastro enviado",
+        "under_review": "Documentos em análise",
+        "resubmission_requested": "Reenvio solicitado",
+        "approved": "Candidato aprovado",
+        "active": "Passeador ativo",
+        "rejected": "Candidatura recusada",
+        "blocked": "Bloqueado",
+    }
+    return labels.get(_canonical_application_status(status), labels["submitted"])
+
+
+def _canonical_application_status(status: str | None) -> str:
+    normalized = (status or "submitted").strip().lower()
+    if normalized in {"active", "ativo", "passeador ativo"}:
+        return "active"
+    if normalized in {"approved", "aprovado", "candidato aprovado"}:
+        return "approved"
+    if normalized in {"rejected", "reprovado", "rejeitado", "candidatura recusada"}:
+        return "rejected"
+    if normalized in {"under_review", "document_review", "documents_review", "aprovação documental", "aprovacao documental", "documentos em análise", "documentos em analise", "em análise", "em analise"}:
+        return "under_review"
+    if normalized in {"resubmission_requested", "reenvio solicitado", "documents_pending"}:
+        return "resubmission_requested"
+    if normalized in {"blocked", "bloqueado", "restrito", "restricted", "suspenso", "suspended"}:
+        return "blocked"
+    if normalized in {"submitted", "cadastro enviado", "pending"}:
+        return "submitted"
+    return "submitted"
 
 
 def _serialize_walker_profile(profile: WalkerProfile, db: Session, include_internal: bool = True) -> dict:
     user = _profile_user(profile, db)
     document_count = len([value for value in [profile.document_url, profile.identity_document_back_url, profile.selfie_url, profile.proof_of_address_url] if value])
-    active_as_walker = bool(profile.active_as_walker and profile.status in APPROVED_WALKER_STATUSES)
+    raw_status = _canonical_application_status(profile.status)
+    active_as_walker = bool(profile.active_as_walker and raw_status == "active")
     payload = {
         "id": profile.id,
         "walker_id": profile.id,
@@ -328,18 +370,57 @@ def _serialize_walker_profile(profile: WalkerProfile, db: Session, include_inter
         "has_third_party_experience": bool(profile.experience),
         "availability": "",
         "status": _status_label(profile.status),
-        "raw_status": profile.status,
-        "operational_status": profile.status,
+        "raw_status": raw_status,
+        "operational_status": raw_status,
         "active_as_walker": active_as_walker,
         "approved_at": profile.approved_at,
         "rejected_at": profile.rejected_at,
         "rejection_reason": profile.rejection_reason,
+        "status_reason": profile.rejection_reason,
+        "reviewed_by_admin_id": profile.reviewed_by_admin_id,
+        "resubmission_requested_documents": [item for item in (profile.resubmission_requested_documents or "").split(",") if item],
         "created_at": profile.created_at,
-        "updated_at": profile.created_at,
+        "updated_at": profile.updated_at or profile.created_at,
     }
     if include_internal:
         payload["internal_notes"] = profile.internal_notes or ""
     return payload
+
+
+def _document_key_list(values: list[str] | None) -> str:
+    return ",".join([str(item).strip() for item in (values or []) if str(item).strip()])
+
+
+def _apply_application_status(profile: WalkerProfile, status: str, reason: str | None = None):
+    raw_status = _canonical_application_status(status)
+    profile.status = raw_status
+    profile.updated_at = datetime.utcnow()
+    if raw_status == "active":
+        profile.active_as_walker = True
+        profile.approved_at = profile.approved_at or datetime.utcnow()
+        profile.rejected_at = None
+        profile.rejection_reason = None
+    elif raw_status == "approved":
+        profile.active_as_walker = False
+        profile.approved_at = datetime.utcnow()
+        profile.rejected_at = None
+        profile.rejection_reason = None
+    elif raw_status == "rejected":
+        profile.active_as_walker = False
+        profile.approved_at = None
+        profile.rejected_at = datetime.utcnow()
+        profile.rejection_reason = reason
+    elif raw_status == "resubmission_requested":
+        profile.active_as_walker = False
+        profile.approved_at = None
+        profile.rejected_at = None
+        profile.rejection_reason = reason
+    else:
+        profile.active_as_walker = False
+        profile.approved_at = None
+        profile.rejected_at = None
+        if raw_status in {"submitted", "under_review"}:
+            profile.rejection_reason = None
 
 
 def _unique_walker_profiles(db: Session, include_internal: bool = True) -> list[dict]:
@@ -454,6 +535,27 @@ def _walker_program_metrics(rows: list[dict]) -> dict:
         "avg_matching_score": round(sum(float(row["matching_score"]) for row in rows) / max(1, len(rows)), 1),
         "schedule_conflicts_blocked": sum(int(row["schedule_conflicts_blocked"]) for row in rows),
     }
+@router.get("/operational-alerts")
+@api_router.get("/operational-alerts")
+def operational_alerts(db: Session = Depends(get_db)):
+    process_expired_attempts(db)
+
+    real_walks = [
+        walk
+        for walk in db.query(Walk).order_by(Walk.created_at.desc()).all()
+        if _is_real_admin_walk(walk, db)
+    ]
+
+    alert_walks = [
+        walk
+        for walk in real_walks
+        if str(walk.operational_status or walk.status or "").lower() in RECOVERY_WALK_STATUSES
+    ]
+
+    return {
+        "total": len(alert_walks),
+        "items": [_serialize_admin_walk(walk, db) for walk in alert_walks],
+    }
 
 @router.get("/dashboard")
 @api_router.get("/dashboard")
@@ -465,6 +567,13 @@ def dashboard(db: Session = Depends(get_db)):
         if _is_real_pet(pet, db.get(User, pet.tutor_id) if pet.tutor_id else None)
     ]
     real_walks = [walk for walk in db.query(Walk).all() if _is_real_admin_walk(walk, db)]
+    critical_walks = [
+    walk
+    for walk in real_walks
+    if str(
+        walk.operational_status or walk.status or ""
+    ).lower() in RECOVERY_WALK_STATUSES
+]
     completed_real_walks = [walk for walk in real_walks if _is_completed_admin_walk(walk) and _is_real_admin_walk(walk, db, require_walker=True)]
     real_revenue_walk_ids = {walk.id for walk in completed_real_walks}
     payments = [
@@ -502,6 +611,19 @@ def dashboard(db: Session = Depends(get_db)):
         "walkers_at_risk": real_risk_walkers_count,
         "top_rated_walkers": 0,
         "disintermediation_alerts": 0,
+        "critical_operational_alerts": len(critical_walks),
+
+        "critical_walks": [
+            {
+                "id": walk.id,
+                "pet_id": walk.pet_id,
+                "tutor_id": walk.tutor_id,
+                "status": walk.status,
+                "operational_status": walk.operational_status,
+                "scheduled_date": walk.scheduled_date,
+            }
+            for walk in critical_walks
+        ],
         "weekly_tips_amount": sum(float(payment.amount or 0) for payment in payments if payment.provider == "internal_tip"),
         "no_show_rate": round((no_show_total / walk_total) * 100, 2) if walk_total else 0,
     }
@@ -511,10 +633,104 @@ def dashboard(db: Session = Depends(get_db)):
 def users(db: Session = Depends(get_db)):
     return db.query(User).all()
 
+def _serialize_admin_tutor(user: User, db: Session) -> dict:
+    profile = (
+        db.query(TutorProfile)
+        .filter(TutorProfile.user_id == user.id)
+        .first()
+    )
+
+    address_parts = []
+    if profile:
+        street_number = " ".join(
+            part for part in [profile.street, profile.number] if part
+        ).strip()
+        address_parts = [
+            street_number,
+            profile.complement,
+            profile.neighborhood,
+            profile.city,
+            profile.state,
+            profile.cep,
+        ]
+
+    address_snapshot = ", ".join(part for part in address_parts if part)
+
+    return {
+        "id": user.id,
+        "user_id": user.id,
+        "email": user.email,
+        "full_name": (profile.full_name if profile else None) or user.full_name or user.email,
+        "name": (profile.full_name if profile else None) or user.full_name or user.email,
+        "role": user.role,
+        "created_at": user.created_at,
+        "cpf": profile.cpf if profile else "",
+        "phone": profile.phone if profile else "",
+        "telefone": profile.phone if profile else "",
+        "cep": profile.cep if profile else "",
+        "street": profile.street if profile else "",
+        "rua": profile.street if profile else "",
+        "number": profile.number if profile else "",
+        "numero": profile.number if profile else "",
+        "complement": profile.complement if profile else "",
+        "complemento": profile.complement if profile else "",
+        "neighborhood": profile.neighborhood if profile else "",
+        "bairro": profile.neighborhood if profile else "",
+        "city": profile.city if profile else "",
+        "cidade": profile.city if profile else "",
+        "state": profile.state if profile else "",
+        "estado": profile.state if profile else "",
+        "address_snapshot": address_snapshot,
+    }
+
+
 @router.get("/tutors")
 @api_router.get("/tutors")
 def tutors(db: Session = Depends(get_db)):
-    return [user for user in db.query(User).order_by(User.created_at.desc()).all() if _is_real_tutor(user)]
+    users = [
+        user
+        for user in db.query(User).order_by(User.created_at.desc()).all()
+        if _is_real_tutor(user)
+    ]
+    return [_serialize_admin_tutor(user, db) for user in users]
+
+def _serialize_admin_pet(pet: Pet, db: Session) -> dict:
+    tutor = db.get(User, pet.tutor_id) if pet.tutor_id else None
+
+    return {
+        "id": pet.id,
+        "pet_id": pet.id,
+        "tutor_id": pet.tutor_id,
+        "user_id": pet.tutor_id,
+        "owner_id": pet.tutor_id,
+        "name": pet.name,
+        "pet_name": pet.name,
+        "photo_url": pet.photo_url,
+        "pet_photo_url": pet.photo_url,
+        "species": pet.species,
+        "sex": pet.sex,
+        "breed": pet.breed,
+        "size": pet.size,
+        "weight": pet.weight,
+        "age": pet.age,
+        "behavior_notes": pet.behavior_notes,
+        "notes": pet.behavior_notes or pet.health_notes or "",
+        "health_notes": pet.health_notes,
+        "restrictions": pet.restrictions,
+        "owner_name": (tutor.full_name if tutor else None) or (tutor.email if tutor else None) or "",
+        "created_at": pet.created_at,
+    }
+
+
+@router.get("/pets")
+@api_router.get("/pets")
+def admin_pets(db: Session = Depends(get_db)):
+    pets = [
+        pet
+        for pet in db.query(Pet).order_by(Pet.created_at.desc()).all()
+        if _is_real_pet(pet, db.get(User, pet.tutor_id) if pet.tutor_id else None)
+    ]
+    return [_serialize_admin_pet(pet, db) for pet in pets]
 
 @router.get("/walkers")
 @api_router.get("/walkers")
@@ -545,17 +761,22 @@ def update_partner_application_admin_fields(candidate_id: str, payload: dict | N
     payload = payload or {}
     if "internal_notes" in payload:
         profile.internal_notes = payload.get("internal_notes") or ""
+    if "status" in payload:
+        _apply_application_status(profile, payload.get("status") or "submitted", payload.get("reason"))
+    if "reviewed_by_admin_id" in payload:
+        profile.reviewed_by_admin_id = payload.get("reviewed_by_admin_id") or None
+    if "resubmission_requested_documents" in payload:
+        profile.resubmission_requested_documents = _document_key_list(payload.get("resubmission_requested_documents") or [])
     if "active_as_walker" in payload:
         active_as_walker = bool(payload.get("active_as_walker"))
-        if active_as_walker and profile.status not in APPROVED_WALKER_STATUSES:
+        if active_as_walker and profile.status not in {"approved", "active"}:
             raise HTTPException(status_code=400, detail="Apenas candidatos aprovados podem ser ativados como passeador.")
-        profile.active_as_walker = active_as_walker
-        profile.status = "active" if active_as_walker else "approved"
-        if active_as_walker and not profile.approved_at:
-            profile.approved_at = datetime.utcnow()
+        _apply_application_status(profile, "active" if active_as_walker else "approved")
         user = db.get(User, profile.user_id)
         if active_as_walker and user:
             user.role = "walker"
+        if active_as_walker:
+            mark_referral_approved(profile.user_id, db)
     db.commit()
     db.refresh(profile)
     return _serialize_walker_profile(profile, db)
@@ -567,16 +788,8 @@ def approve_walker(walker_id: str, db: Session = Depends(get_db)):
     profile = db.get(WalkerProfile, walker_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Passeador nao encontrado")
-    profile.status = "active"
-    profile.active_as_walker = True
-    profile.approved_at = datetime.utcnow()
-    profile.rejected_at = None
-    profile.rejection_reason = None
-    user = db.get(User, profile.user_id)
-    if user:
-        user.role = "walker"
+    _apply_application_status(profile, "approved")
     db.commit()
-    mark_referral_approved(profile.user_id, db)
     db.refresh(profile)
     return _serialize_walker_profile(profile, db)
 
@@ -586,11 +799,7 @@ def reject_walker(walker_id: str, payload: dict | None = None, db: Session = Dep
     profile = db.get(WalkerProfile, walker_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Passeador nao encontrado")
-    profile.status = "rejected"
-    profile.active_as_walker = False
-    profile.rejection_reason = (payload or {}).get("reason")
-    profile.rejected_at = datetime.utcnow()
-    profile.approved_at = None
+    _apply_application_status(profile, "rejected", (payload or {}).get("reason"))
     db.commit()
     mark_referral_rejected(profile.user_id, profile.rejection_reason, db)
     db.refresh(profile)
@@ -600,11 +809,259 @@ def reject_walker(walker_id: str, payload: dict | None = None, db: Session = Dep
 @api_router.get("/walks")
 def walks(db: Session = Depends(get_db)):
     process_expired_attempts(db)
-    return [
+    rows = [
         _serialize_admin_walk(walk, db)
         for walk in db.query(Walk).order_by(Walk.created_at.desc()).all()
-        if _is_real_admin_walk(walk, db, require_walker=_is_completed_admin_walk(walk))
+        if _is_real_admin_walk(walk, db)
     ]
+    return rows
+
+@router.patch("/walks/{walk_id}/status")
+@api_router.patch("/walks/{walk_id}/status")
+def update_admin_walk_status(walk_id: str, payload: dict, db: Session = Depends(get_db)):
+    walk = db.get(Walk, walk_id)
+
+    if not walk:
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado")
+
+    status = payload.get("status")
+
+    if not status:
+        raise HTTPException(status_code=400, detail="Status nao informado")
+
+    operational_status_by_label = {
+        "pending_walker_confirmation": "pending_walker_confirmation",
+        "walker_confirmation_pending": "pending_walker_confirmation",
+
+        "walker_accepted": "walker_accepted",
+        "walker_confirmed": "walker_accepted",
+
+        "walker_declined": "walker_declined",
+
+        "auto_rematching": "auto_rematching",
+        "matching_walkers": "auto_rematching",
+
+        "no_walker_found": "no_walker_found",
+
+        "awaiting_tutor_reconfirmation": "awaiting_tutor_reconfirmation",
+
+        "ride_scheduled": "ride_scheduled",
+
+        "walker_arriving": "walker_arriving",
+        "walker_heading_to_pickup": "walker_arriving",
+
+        "ride_in_progress": "ride_in_progress",
+        "ride_completed": "ride_completed",
+
+        "ride_cancelled": "ride_cancelled",
+        "cancelled": "ride_cancelled",
+    }
+
+    status_label_by_operational_status = {
+        "pending_walker_confirmation": "Confirmando disponibilidade do passeador",
+        "walker_accepted": "Passeador confirmado",
+        "walker_declined": "Passeador recusou o passeio",
+        "auto_rematching": "Buscando substituto",
+        "no_walker_found": "Nenhum passeador encontrado",
+        "awaiting_tutor_reconfirmation": "Aguardando confirmação do tutor",
+        "ride_scheduled": "Agendado",
+        "walker_arriving": "Passeador a caminho",
+        "ride_in_progress": "Passeio em andamento",
+        "ride_completed": "Passeio finalizado",
+        "ride_cancelled": "Cancelado",
+    }
+
+    next_operational_status = operational_status_by_label.get(status, status)
+    previous_operational_status = walk.operational_status
+
+    walk.operational_status = next_operational_status
+    walk.status = status_label_by_operational_status.get(next_operational_status, status)
+
+    log_event(
+        db,
+        walk.id,
+        walk.operational_status,
+        actor_type="admin",
+        metadata={
+            "source": "admin_panel",
+            "previous_operational_status": previous_operational_status,
+            "status": walk.status,
+            "operational_status": walk.operational_status,
+        },
+    )
+
+    notification_copy_by_status = {
+        "pending_walker_confirmation": {
+            "title": "Estamos confirmando seu passeio",
+            "message": "Estamos confirmando a disponibilidade do passeador para o passeio do seu pet.",
+            "priority": "medium",
+        },
+        "walker_accepted": {
+            "title": "Passeador confirmado",
+            "message": "O passeador aceitou o passeio do seu pet.",
+            "priority": "medium",
+        },
+        "walker_declined": {
+            "title": "Passeador indisponível",
+            "message": "O passeador não pôde atender este passeio. Estamos avaliando a melhor alternativa.",
+            "priority": "high",
+        },
+        "auto_rematching": {
+            "title": "Buscando substituto",
+            "message": "Estamos buscando outro passeador disponível para manter seu passeio.",
+            "priority": "high",
+        },
+        "no_walker_found": {
+            "title": "Nenhum passeador encontrado",
+            "message": "Ainda não encontramos um passeador disponível para este horário. Nossa equipe pode orientar os próximos passos.",
+            "priority": "high",
+        },
+        "awaiting_tutor_reconfirmation": {
+            "title": "Confirme seu passeio",
+            "message": "Precisamos que você confirme se deseja continuar a busca, reagendar ou cancelar sem custo.",
+            "priority": "high",
+        },
+        "ride_scheduled": {
+            "title": "Passeio agendado",
+            "message": "Seu passeio está agendado e pronto para acompanhamento.",
+            "priority": "medium",
+        },
+        "walker_arriving": {
+            "title": "Passeador a caminho",
+            "message": "O passeador está a caminho para buscar seu pet.",
+            "priority": "high",
+        },
+        "ride_in_progress": {
+            "title": "Passeio iniciado",
+            "message": "O passeio do seu pet está em andamento.",
+            "priority": "high",
+        },
+        "ride_completed": {
+            "title": "Passeio finalizado",
+            "message": "O passeio do seu pet foi finalizado.",
+            "priority": "medium",
+        },
+        "ride_cancelled": {
+            "title": "Passeio cancelado",
+            "message": "O passeio foi cancelado.",
+            "priority": "high",
+        },
+    }
+
+    notification_copy = notification_copy_by_status.get(walk.operational_status)
+
+    if notification_copy and walk.tutor_id:
+        _create_notification(
+            db,
+            NotificationCreate(
+                user_id=walk.tutor_id,
+                user_role="tutor",
+                title=notification_copy["title"],
+                message=notification_copy["message"],
+                type="walk_status",
+                related_entity_type="walk",
+                related_entity_id=walk.id,
+                metadata={
+                    "priority": notification_copy["priority"],
+                    "channel": "in_app",
+                    "action": walk.operational_status,
+                    "previous_operational_status": previous_operational_status,
+                    "status": walk.status,
+                },
+            ),
+        )
+
+    db.commit()
+    db.refresh(walk)
+
+    return _serialize_admin_walk(walk, db)
+
+@router.post("/walks/{walk_id}/recovery")
+@api_router.post("/walks/{walk_id}/recovery")
+def recover_walk(walk_id: str, db: Session = Depends(get_db)):
+    walk = db.get(Walk, walk_id)
+
+    if not walk:
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado")
+
+    process_expired_attempts(db)
+
+    walk.walker_id = None
+    walk.assigned_walker_id = None
+    walk.operational_status = "awaiting_tutor_reconfirmation"
+    walk.status = "Aguardando confirmação do tutor"
+    walk.confirmation_expires_at = None
+    walk.matching_finished_at = None
+    walk.no_walker_reason = (
+        "Recuperacao operacional iniciada pelo admin. "
+        "Aguardando o tutor confirmar se deseja continuar a busca, alterar horario ou cancelar sem custo."
+    )
+
+    log_event( 
+        db,
+        walk.id,
+        "awaiting_tutor_reconfirmation",
+        actor_type="admin",
+        metadata={
+            "source": "admin_panel",
+            "reason": walk.no_walker_reason,
+            "available_options": ["continue_search", "reschedule", "cancel_without_fee"],
+        },
+    )
+
+    _create_notification(
+        db,
+        NotificationCreate(
+            user_id=walk.tutor_id,
+            user_role="tutor",
+            title="Confirme seu passeio",
+            message=(
+                "Encontramos uma situação operacional neste passeio. "
+                "Você pode continuar a busca por um passeador, reagendar ou cancelar sem custo."
+            ),
+            type="walk_recovery",
+            related_entity_type="walk",
+            related_entity_id=walk.id,
+            metadata={
+                "priority": "high",
+                "channel": "in_app",
+                "action": "awaiting_tutor_reconfirmation",
+                "available_options": ["continue_search", "reschedule", "cancel_without_fee"],
+            },
+        ),
+    )
+
+    db.commit()
+    db.refresh(walk)
+
+    return _serialize_admin_walk(walk, db)
+
+    _create_notification(
+        db,
+        NotificationCreate(
+            user_id=walk.tutor_id,
+            user_role="tutor",
+            title="Confirme seu passeio",
+            message=(
+                "Encontramos uma situação operacional neste passeio. "
+                "Você pode continuar a busca por um passeador, reagendar ou cancelar sem custo."
+            ),
+            type="walk_recovery",
+            related_entity_type="walk",
+            related_entity_id=walk.id,
+            metadata={
+                "priority": "high",
+                "channel": "in_app",
+                "action": "awaiting_tutor_reconfirmation",
+                "available_options": ["continue_search", "reschedule", "cancel_without_fee"],
+            },
+        ),
+    )
+
+    db.commit()
+    db.refresh(walk)
+
+    return _serialize_admin_walk(walk, db)
 
 @router.get("/payments")
 @api_router.get("/payments")

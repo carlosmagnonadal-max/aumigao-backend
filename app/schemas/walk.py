@@ -5,6 +5,7 @@ from app.schemas.common import ORMModel
 class WalkCreate(BaseModel):
     pet_id: str
     walker_id: str | None = None
+    walker_selection_mode: str | None = None
     scheduled_date: str
     duration_minutes: int
     price: float
@@ -32,6 +33,8 @@ class WalkResponse(ORMModel):
     status: str
     operational_status: str | None = None
     operationalStatus: str | None = None
+    walker_selection_mode: str | None = None
+    walkerSelectionMode: str | None = None
     assigned_walker_id: str | None = None
     assignedWalkerId: str | None = None
     current_attempt: int | None = None

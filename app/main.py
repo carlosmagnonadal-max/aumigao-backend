@@ -1,4 +1,6 @@
 import asyncio
+import logging
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,6 +35,8 @@ from app.models import (
 from app.routes import admin, auth, complaints, matching, notifications, operational_walks, payments, pets, referrals, reviews, tutor, walker, walker_quality, walks, weekly_missions
 from app.services.admin_seed_service import ensure_configured_admin_users
 from app.services.operational_matching_service import ensure_operational_schema, process_expired_attempts
+
+logger = logging.getLogger(__name__)
 
 
 def ensure_legacy_id_compatibility():
@@ -131,6 +135,9 @@ def ensure_walker_profile_schema():
             "active_as_walker": _sql_type("boolean_false"),
             "approved_at": _sql_type("datetime"),
             "rejected_at": _sql_type("datetime"),
+            "updated_at": _sql_type("datetime"),
+            "reviewed_by_admin_id": "VARCHAR",
+            "resubmission_requested_documents": "TEXT DEFAULT ''",
         },
     )
 
@@ -213,10 +220,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-try:
-    app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
-except RuntimeError:
-    pass
+Path("uploads").mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 app.include_router(auth.router)
 app.include_router(tutor.router)
@@ -272,6 +277,9 @@ async def _operational_matching_scheduler():
         db = SessionLocal()
         try:
             process_expired_attempts(db)
+        except Exception:
+            db.rollback()
+            logger.exception("Erro ao processar expiracoes operacionais de passeios.")
         finally:
             db.close()
 

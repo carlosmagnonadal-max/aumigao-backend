@@ -1,14 +1,16 @@
 import os
 import logging
+import shutil
 from datetime import datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.security import get_password_hash
+from app.core.security import get_password_hash, verify_password
 from app.dependencies.auth import get_current_user
 from app.models.payment import Payment
 from app.models.pet import Pet
@@ -25,8 +27,10 @@ from app.utils.registration_validation import normalize_cpf_or_raise, normalize_
 from app.services.operational_matching_service import (
     accept_walk as accept_operational_walk,
     decline_walk as decline_operational_walk,
+    log_event,
     process_expired_attempts,
     serialize_operational_walk,
+    start_matching,
     update_operational_status,
 )
 
@@ -35,14 +39,6 @@ api_public_router = APIRouter(prefix="/api", tags=["walkers"])
 partner_router = APIRouter(prefix="/api/partner-applications", tags=["partner-applications"])
 
 DEMO_MODE = os.getenv("EXPO_PUBLIC_DEMO_MODE", os.getenv("DEMO_MODE", "false")).strip().lower() in {"1", "true", "yes", "on"}
-
-DOG_PHOTOS = {
-    "Thor": "https://images.unsplash.com/photo-1552053831-71594a27632d?auto=format&fit=crop&w=500&q=85",
-    "Luna": "https://images.unsplash.com/photo-1551717743-49959800b1f6?auto=format&fit=crop&w=500&q=85",
-    "Mel": "https://images.unsplash.com/photo-1586671267731-da2cf3ceeb80?auto=format&fit=crop&w=500&q=85",
-    "Buddy": "https://images.unsplash.com/photo-1587300003388-59208cc962cb?auto=format&fit=crop&w=500&q=85",
-    "Tequila": "https://images.unsplash.com/photo-1537151625747-768eb6cf92b2?auto=format&fit=crop&w=500&q=85",
-}
 
 KIT_TIERS = [
     {
@@ -76,6 +72,15 @@ KIT_ITEM_DEFINITIONS = [
 
 WALKER_KIT_SUBMISSIONS: dict[str, dict] = {}
 LOGGER = logging.getLogger("aumigao.walker_applications")
+UPLOAD_ROOT = Path(__file__).resolve().parents[2] / "uploads" / "walker-documents"
+ALLOWED_UPLOAD_TYPES = {
+    "profile_photo",
+    "identity_front",
+    "identity_back",
+    "address_proof",
+    "selfie",
+}
+ALLOWED_UPLOAD_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
 FAKE_WALKER_TOKENS = (
     "passeador fluxo real",
     "passeador login",
@@ -119,11 +124,34 @@ class PartnerApplicationCreate(BaseModel):
 class PartnerApplicationStatusUpdate(BaseModel):
     status: str
     reason: str | None = None
+    resubmission_requested_documents: list[str] = Field(default_factory=list)
 
 
 class PartnerApplicationAdminFieldsUpdate(BaseModel):
     internal_notes: str | None = None
     active_as_walker: bool | None = None
+    status: str | None = None
+    reason: str | None = None
+    reviewed_by_admin_id: str | None = None
+    resubmission_requested_documents: list[str] = Field(default_factory=list)
+
+
+def _public_upload_url(request: Request, path: Path) -> str:
+    relative = path.relative_to(Path(__file__).resolve().parents[2] / "uploads").as_posix()
+    return f"{str(request.base_url).rstrip('/')}/uploads/{relative}"
+
+
+def _safe_upload_extension(filename: str | None, content_type: str | None) -> str:
+    suffix = Path(filename or "").suffix.lower()
+    if suffix in ALLOWED_UPLOAD_EXTENSIONS:
+        return suffix
+    if content_type == "image/png":
+        return ".png"
+    if content_type == "image/webp":
+        return ".webp"
+    if content_type in {"image/heic", "image/heif"}:
+        return ".heic"
+    return ".jpg"
 
 
 def _public_status_label(status: str | None) -> str:
@@ -154,6 +182,46 @@ def _raw_status_from_label(status: str) -> str:
     if normalized in {"suspenso", "suspended"}:
         return "suspended"
     return "pending"
+
+
+def _canonical_application_status(status: str | None) -> str:
+    normalized = (status or "submitted").strip().lower()
+    if normalized in {"active", "ativo", "passeador ativo"}:
+        return "active"
+    if normalized in {"approved", "aprovado", "candidato aprovado"}:
+        return "approved"
+    if normalized in {"rejected", "reprovado", "rejeitado", "candidatura recusada"}:
+        return "rejected"
+    if normalized in {"under_review", "document_review", "documents_review", "aprovação documental", "aprovacao documental", "documentos em análise", "documentos em analise", "em análise", "em analise"}:
+        return "under_review"
+    if normalized in {"resubmission_requested", "reenvio solicitado", "documents_pending"}:
+        return "resubmission_requested"
+    if normalized in {"blocked", "bloqueado", "restrito", "restricted", "suspenso", "suspended"}:
+        return "blocked"
+    if normalized in {"submitted", "cadastro enviado", "pending"}:
+        return "submitted"
+    return "submitted"
+
+
+def _raw_status_from_label(status: str) -> str:
+    return _canonical_application_status(status)
+
+
+def _public_status_label(status: str | None) -> str:
+    labels = {
+        "submitted": "Cadastro enviado",
+        "under_review": "Documentos em análise",
+        "resubmission_requested": "Reenvio solicitado",
+        "approved": "Candidato aprovado",
+        "active": "Passeador ativo",
+        "rejected": "Candidatura recusada",
+        "blocked": "Bloqueado",
+    }
+    return labels.get(_canonical_application_status(status), labels["submitted"])
+
+
+def _document_key_list(values: list[str] | None) -> str:
+    return ",".join([item.strip() for item in (values or []) if item.strip()])
 
 
 def _validate_password_or_raise(password: str):
@@ -188,17 +256,46 @@ def _serialize_partner_application(profile: WalkerProfile, db: Session, include_
         "selfie_url": profile.selfie_url or "",
         "accepted_declaration": True,
         "status": _public_status_label(profile.status),
-        "raw_status": profile.status,
-        "active_as_walker": bool(profile.active_as_walker and profile.status == "active"),
+        "raw_status": _canonical_application_status(profile.status),
+        "operational_status": _canonical_application_status(profile.status),
+        "active_as_walker": bool(profile.active_as_walker and _canonical_application_status(profile.status) == "active"),
         "approved_at": profile.approved_at,
         "rejected_at": profile.rejected_at,
         "rejection_reason": profile.rejection_reason,
+        "status_reason": profile.rejection_reason,
+        "reviewed_by_admin_id": profile.reviewed_by_admin_id,
+        "resubmission_requested_documents": [item for item in (profile.resubmission_requested_documents or "").split(",") if item],
         "created_at": profile.created_at,
-        "updated_at": profile.created_at,
+        "updated_at": profile.updated_at or profile.created_at,
     }
     if include_internal:
         payload["internal_notes"] = profile.internal_notes or ""
     return payload
+
+
+def _apply_partner_application_payload(profile: WalkerProfile, payload: PartnerApplicationCreate, *, cpf: str, phone: str):
+    identity_front_url = payload.identity_document_front_url or payload.document_url
+    presentation = (payload.bio or payload.experience_description or "").strip()
+    experience_parts = [presentation, *[item.strip() for item in payload.experience_options if item.strip()]]
+
+    profile.full_name = payload.full_name.strip()
+    profile.cpf = cpf
+    profile.phone = phone
+    profile.city = payload.neighborhood_region.strip()
+    profile.state = payload.neighborhood_region.strip()
+    profile.experience = " | ".join([item for item in experience_parts if item])
+    profile.bio = presentation
+    profile.profile_photo_url = payload.profile_photo_url
+    profile.document_url = identity_front_url
+    profile.identity_document_back_url = payload.identity_document_back_url
+    profile.proof_of_address_url = payload.proof_of_address_url
+    profile.selfie_url = payload.selfie_url
+    profile.status = "submitted"
+    profile.active_as_walker = False
+    profile.approved_at = None
+    profile.rejected_at = None
+    profile.updated_at = datetime.utcnow()
+    profile.rejection_reason = None
 
 
 def _extract_experience_options(value: str) -> list[str]:
@@ -208,17 +305,26 @@ def _extract_experience_options(value: str) -> list[str]:
 
 def _missing_application_fields(*, profile_photo_url: str | None, document_url: str | None, identity_document_back_url: str | None, proof_of_address_url: str | None, bio: str | None) -> list[str]:
     missing = []
-    if not (profile_photo_url or "").strip():
+    if not _is_persistent_upload_url(profile_photo_url):
         missing.append("Envie sua foto de perfil.")
     if len((bio or "").strip()) < 80:
         missing.append("Escreva uma breve apresentação para os tutores.")
-    if not (document_url or "").strip():
+    if not _is_persistent_upload_url(document_url):
         missing.append("Envie a frente do documento de identidade.")
-    if not (identity_document_back_url or "").strip():
+    if not _is_persistent_upload_url(identity_document_back_url):
         missing.append("Envie o verso do documento de identidade.")
-    if not (proof_of_address_url or "").strip():
+    if not _is_persistent_upload_url(proof_of_address_url):
         missing.append("Complete os documentos para enviar sua candidatura.")
     return missing
+
+
+def _is_persistent_upload_url(value: str | None) -> bool:
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized.startswith(("demo://", "mock://", "fallback://", "sample://", "local://", "beta://", "file://")):
+        return DEMO_MODE
+    return normalized.startswith(("http://", "https://", "/uploads/"))
 
 
 def _ensure_application_complete(*, profile_photo_url: str | None, document_url: str | None, identity_document_back_url: str | None, proof_of_address_url: str | None, bio: str | None):
@@ -237,11 +343,11 @@ def _require_active_walker(user: User, db: Session) -> WalkerProfile:
     profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == user.id).first()
     if not profile:
         raise HTTPException(status_code=403, detail="Cadastro de passeador nao encontrado.")
-    if profile.status in {"pending", "document_review"} or not profile.active_as_walker:
+    if _canonical_application_status(profile.status) in {"submitted", "under_review", "resubmission_requested", "approved"} or not profile.active_as_walker:
         raise HTTPException(status_code=403, detail="Candidatura ainda em analise.")
     if profile.status == "rejected":
         raise HTTPException(status_code=403, detail=profile.rejection_reason or "Candidatura rejeitada.")
-    if profile.status in {"suspended", "restricted"}:
+    if _canonical_application_status(profile.status) == "blocked":
         raise HTTPException(status_code=403, detail="Perfil com bloqueio operacional.")
     if user.role not in {"walker", "passeador"}:
         raise HTTPException(status_code=403, detail="Usuario ainda nao liberado como passeador.")
@@ -273,16 +379,26 @@ def _apply_profile_status(profile: WalkerProfile, status: str, reason: str | Non
     profile.status = raw_status
     if raw_status == "active":
         profile.active_as_walker = True
-        profile.approved_at = datetime.utcnow()
+        profile.approved_at = profile.approved_at or datetime.utcnow()
         profile.rejected_at = None
         profile.rejection_reason = None
         if db:
             user = db.get(User, profile.user_id)
             if user:
                 user.role = "walker"
+    elif raw_status == "approved":
+        profile.active_as_walker = False
+        profile.approved_at = datetime.utcnow()
+        profile.rejected_at = None
+        profile.rejection_reason = None
     elif raw_status == "rejected":
         profile.active_as_walker = False
         profile.rejected_at = datetime.utcnow()
+        profile.approved_at = None
+        profile.rejection_reason = reason
+    elif raw_status == "resubmission_requested":
+        profile.active_as_walker = False
+        profile.rejected_at = None
         profile.approved_at = None
         profile.rejection_reason = reason
     else:
@@ -290,6 +406,9 @@ def _apply_profile_status(profile: WalkerProfile, status: str, reason: str | Non
         profile.approved_at = None
         if raw_status != "rejected":
             profile.rejected_at = None
+            if raw_status in {"submitted", "under_review"}:
+                profile.rejection_reason = None
+    profile.updated_at = datetime.utcnow()
 
 
 def _parse_date(value: str | None) -> datetime | None:
@@ -317,6 +436,11 @@ def _walk_time_parts(walk: Walk) -> tuple[str, str]:
         return parsed.strftime("%H:%M"), parsed.strftime("%d/%m/%Y")
     return "18:00", walk.scheduled_date or "Hoje"
 
+def _public_pet_photo_url(pet: Pet | None, pet_name: str) -> str:
+    photo_url = (pet.photo_url if pet else "") or ""
+    if photo_url and not photo_url.startswith(("file://", "content://", "blob:")):
+        return photo_url
+    return ""
 
 def _walk_payload(walk: Walk, db: Session) -> dict:
     pet = db.get(Pet, walk.pet_id) if walk.pet_id else None
@@ -328,7 +452,7 @@ def _walk_payload(walk: Walk, db: Session) -> dict:
         "id": walk.id,
         "pet_id": walk.pet_id,
         "pet_name": pet_name,
-        "pet_photo_url": (pet.photo_url if pet else None) or DOG_PHOTOS.get(pet_name) or DOG_PHOTOS["Thor"],
+        "pet_photo_url": _public_pet_photo_url(pet, pet_name),
         "breed": pet.breed if pet else "",
         "age": pet.age if pet else None,
         "weight": pet.weight if pet else None,
@@ -511,8 +635,43 @@ def _build_walker_kit(user_id: str | None) -> dict:
     }
 
 
+@partner_router.post("/uploads", status_code=201)
+async def upload_partner_application_document(
+    request: Request,
+    document_type: str = Form(...),
+    owner_id: str = Form("anonymous"),
+    file: UploadFile = File(...),
+):
+    normalized_type = document_type.strip().lower()
+    if normalized_type not in ALLOWED_UPLOAD_TYPES:
+        raise HTTPException(status_code=400, detail="Tipo de documento invalido.")
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Envie uma imagem valida.")
+
+    safe_owner = "".join(char for char in owner_id.strip().lower() if char.isalnum() or char in {"-", "_", "@"})[:80] or "anonymous"
+    destination_dir = UPLOAD_ROOT / safe_owner
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    extension = _safe_upload_extension(file.filename, file.content_type)
+    destination = destination_dir / f"{normalized_type}-{uuid4().hex}{extension}"
+
+    try:
+        with destination.open("wb") as output:
+            shutil.copyfileobj(file.file, output)
+    finally:
+        await file.close()
+
+    file_url = _public_upload_url(request, destination)
+    LOGGER.info("upload de documento walker concluido", extra={"document_type": normalized_type, "owner_id": safe_owner})
+    return {
+        "documentType": normalized_type,
+        "fileUrl": file_url,
+        "uploadedAt": datetime.utcnow().isoformat(),
+        "reviewStatus": "pending_review",
+    }
+
+
 @partner_router.post("", status_code=201)
-def create_partner_application(payload: PartnerApplicationCreate, db: Session = Depends(get_db)):
+def create_partner_application(payload: PartnerApplicationCreate, response: Response, db: Session = Depends(get_db)):
     LOGGER.info("candidatura recebida", extra={"email": payload.email, "full_name": payload.full_name})
     _validate_password_or_raise(payload.password)
     if not payload.accepted_declaration:
@@ -534,6 +693,35 @@ def create_partner_application(payload: PartnerApplicationCreate, db: Session = 
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    existing_user = db.query(User).filter(User.email == email).first()
+    if existing_user:
+        existing_profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == existing_user.id).first()
+        if existing_profile and verify_password(payload.password, existing_user.password_hash):
+            ensure_unique_identity(db, cpf=cpf, phone=phone, current_user_id=existing_user.id)
+            previous_status = _canonical_application_status(existing_profile.status)
+            previous_active_as_walker = existing_profile.active_as_walker
+            previous_approved_at = existing_profile.approved_at
+            _apply_partner_application_payload(existing_profile, payload, cpf=cpf, phone=phone)
+            if previous_status in {"approved", "active"}:
+                existing_profile.status = previous_status
+                existing_profile.active_as_walker = previous_active_as_walker
+                existing_profile.approved_at = previous_approved_at
+            existing_user.full_name = payload.full_name.strip() or existing_user.full_name
+            existing_user.role = "walker"
+            db.commit()
+            db.refresh(existing_profile)
+            # mark_referral_under_review(existing_user.id, db)
+            response.status_code = 200
+            LOGGER.info(
+                "candidatura existente reaproveitada",
+                extra={"walker_profile_id": existing_profile.id, "user_id": existing_user.id, "status": existing_profile.status},
+            )
+            return {
+                "code": "WALKER_APPLICATION_ALREADY_EXISTS",
+                "application": _serialize_partner_application(existing_profile, db),
+            }
+        raise HTTPException(status_code=409, detail="Este e-mail já está cadastrado.")
+
     ensure_unique_identity(db, email=email, cpf=cpf, phone=phone)
 
     user = User(
@@ -547,29 +735,11 @@ def create_partner_application(payload: PartnerApplicationCreate, db: Session = 
     db.flush()
 
     profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == user.id).first()
-    document_status = "document_review" if payload.profile_photo_url else "pending"
     if not profile:
         profile = WalkerProfile(id=str(uuid4()), user_id=user.id)
         db.add(profile)
 
-    profile.full_name = payload.full_name.strip()
-    profile.cpf = cpf
-    profile.phone = phone
-    profile.city = payload.neighborhood_region.strip()
-    profile.state = payload.neighborhood_region.strip()
-    experience_parts = [presentation, *[item.strip() for item in payload.experience_options if item.strip()]]
-    profile.experience = " | ".join([item for item in experience_parts if item])
-    profile.bio = presentation
-    profile.profile_photo_url = payload.profile_photo_url
-    profile.document_url = identity_front_url
-    profile.identity_document_back_url = payload.identity_document_back_url
-    profile.proof_of_address_url = payload.proof_of_address_url
-    profile.selfie_url = payload.selfie_url
-    profile.status = document_status
-    profile.active_as_walker = False
-    profile.approved_at = None
-    profile.rejected_at = None
-    profile.rejection_reason = None
+    _apply_partner_application_payload(profile, payload, cpf=cpf, phone=phone)
     db.commit()
     db.refresh(profile)
     LOGGER.info(
@@ -581,7 +751,7 @@ def create_partner_application(payload: PartnerApplicationCreate, db: Session = 
             "active_as_walker": profile.active_as_walker,
         },
     )
-    mark_referral_under_review(user.id, db)
+    # mark_referral_under_review(user.id, db)
     LOGGER.info("candidatura salva", extra={"walker_profile_id": profile.id, "status": profile.status})
     return _serialize_partner_application(profile, db)
 
@@ -605,6 +775,8 @@ def update_partner_application_status(candidate_id: str, payload: PartnerApplica
     if not profile:
         raise HTTPException(status_code=404, detail="Candidatura nao encontrada")
     _apply_profile_status(profile, payload.status, payload.reason, db)
+    if payload.resubmission_requested_documents:
+        profile.resubmission_requested_documents = _document_key_list(payload.resubmission_requested_documents)
     db.commit()
     db.refresh(profile)
     if profile.status == "active":
@@ -621,6 +793,12 @@ def update_partner_application_admin_fields(candidate_id: str, payload: PartnerA
         raise HTTPException(status_code=404, detail="Candidatura nao encontrada")
     if payload.internal_notes is not None:
         profile.internal_notes = payload.internal_notes
+    if payload.status is not None:
+        _apply_profile_status(profile, payload.status, payload.reason, db)
+    if payload.reviewed_by_admin_id is not None:
+        profile.reviewed_by_admin_id = payload.reviewed_by_admin_id
+    if payload.resubmission_requested_documents:
+        profile.resubmission_requested_documents = _document_key_list(payload.resubmission_requested_documents)
     if payload.active_as_walker is not None:
         if payload.active_as_walker and profile.status not in {"approved", "active"}:
             raise HTTPException(status_code=400, detail="Apenas candidatos aprovados podem ser ativados como passeador.")
@@ -628,6 +806,12 @@ def update_partner_application_admin_fields(candidate_id: str, payload: PartnerA
         profile.status = "active" if payload.active_as_walker else "approved"
         if payload.active_as_walker and not profile.approved_at:
             profile.approved_at = datetime.utcnow()
+        if payload.active_as_walker:
+            user = db.get(User, profile.user_id)
+            if user:
+                user.role = "walker"
+            mark_referral_approved(profile.user_id, db)
+    profile.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(profile)
     return _serialize_partner_application(profile, db, include_internal=True)
@@ -666,7 +850,7 @@ def _available_balance(user: User, db: Session) -> float:
     if payments:
         return sum(float(payment.amount or 0) for payment in payments)
     completed_total = sum(float(walk.price or 0) for walk in _completed_walks(user, db))
-    return completed_total or 245.60
+    return completed_total or 0.0
 
 
 def _goals_evolution_payload(user: User, db: Session) -> dict:
@@ -770,8 +954,14 @@ def create_profile(payload: WalkerProfileCreate, user: User = Depends(get_curren
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     ensure_unique_identity(db, cpf=data.get("cpf") or None, phone=data.get("phone") or None, current_user_id=user.id)
-    has_documents = bool(data.get("document_url") or data.get("selfie_url") or data.get("proof_of_address_url"))
-    profile = WalkerProfile(id=str(uuid4()), user_id=user.id, status="document_review" if has_documents else "pending", **data)
+    profile = WalkerProfile(
+        id=str(uuid4()),
+        user_id=user.id,
+        status="submitted",
+        active_as_walker=False,
+        updated_at=datetime.utcnow(),
+        **data,
+    )    
     db.add(profile)
     db.commit()
     db.refresh(profile)
@@ -800,9 +990,15 @@ def update_profile(payload: WalkerProfileUpdate, user: User = Depends(get_curren
     ensure_unique_identity(db, cpf=data.get("cpf") or None, phone=data.get("phone") or None, current_user_id=user.id)
     for key, value in data.items():
         setattr(profile, key, value)
-    if profile.status in {"pending", ""} and (profile.document_url or profile.selfie_url or profile.proof_of_address_url):
-        profile.status = "document_review"
-    if profile.status in {"pending", "document_review"}:
+    current_status = _canonical_application_status(profile.status)
+
+    if current_status in {"resubmission_requested", "rejected"} and (
+         profile.document_url or profile.selfie_url or profile.proof_of_address_url
+    ):
+        profile.status = "under_review"
+        profile.rejection_reason = None
+        profile.resubmission_requested_documents = ""    
+    if _canonical_application_status(profile.status) in {"submitted", "under_review"}:
         _ensure_application_complete(
             profile_photo_url=profile.profile_photo_url,
             document_url=profile.document_url,
@@ -810,6 +1006,7 @@ def update_profile(payload: WalkerProfileUpdate, user: User = Depends(get_curren
             proof_of_address_url=profile.proof_of_address_url,
             bio=profile.bio,
         )
+    profile.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(profile)
     return profile
@@ -1096,6 +1293,80 @@ def update_availability(payload: dict, user: User = Depends(get_current_user), d
     _require_active_walker(user, db)
     return {"ok": True, "user_id": user.id, **payload}
 
+@router.post("/walks/{walk_id}/reconfirmation")
+def tutor_walk_reconfirmation(
+    walk_id: str,
+    payload: dict,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    walk = db.get(Walk, walk_id)
+
+    if not walk:
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado")
+
+    if str(walk.tutor_id) != str(user.id):
+        raise HTTPException(status_code=403, detail="Passeio nao pertence ao tutor")
+
+    decision = str(payload.get("decision") or "").strip()
+
+    if walk.operational_status not in {"awaiting_tutor_reconfirmation", "no_walker_found"}:
+        raise HTTPException(status_code=409, detail="Passeio nao aguarda confirmacao do tutor")
+
+    if decision == "continue_search":
+        walk.operational_status = "priority_matching"
+        walk.status = "Agendado"
+        walk.no_walker_reason = None
+        walk.matching_finished_at = None
+        walk.confirmation_expires_at = None
+
+        log_event(
+            db,
+            walk.id,
+            "tutor_reconfirmed_search",
+            actor_type="cliente",
+            actor_id=user.id,
+            metadata={"decision": decision},
+        )
+
+        start_matching(walk, db)
+
+    elif decision == "reschedule":
+        walk.operational_status = "reschedule_requested"
+        walk.status = "Reagendamento solicitado"
+        walk.confirmation_expires_at = None
+
+        log_event(
+            db,
+            walk.id,
+            "tutor_requested_reschedule",
+            actor_type="cliente",
+            actor_id=user.id,
+            metadata={"decision": decision},
+        )
+
+    elif decision == "cancel":
+        walk.operational_status = "canceled_by_tutor"
+        walk.status = "Cancelado"
+        walk.confirmation_expires_at = None
+        walk.no_walker_reason = "Cancelado sem custo pelo tutor apos falha na busca de passeador."
+
+        log_event(
+            db,
+            walk.id,
+            "tutor_cancelled_after_no_walker",
+            actor_type="cliente",
+            actor_id=user.id,
+            metadata={"decision": decision, "without_fee": True},
+        )
+
+    else:
+        raise HTTPException(status_code=400, detail="Decisao invalida")
+
+    db.commit()
+    db.refresh(walk)
+
+    return serialize_operational_walk(walk, db, user=user)
 
 @router.get("/requests")
 def requests(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -1132,7 +1403,26 @@ def requests(user: User = Depends(get_current_user), db: Session = Depends(get_d
 def walker_walks(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
     process_expired_attempts(db)
-    walks = db.query(Walk).filter(Walk.walker_id == user.id).all()
+
+    visible_statuses = {
+        "walker_accepted",
+        "ride_scheduled",
+        "walker_arriving",
+        "ride_in_progress",
+        "ride_completed",
+        "ride_cancelled",
+    }
+
+    walks = (
+        db.query(Walk)
+        .filter(
+            (Walk.walker_id == user.id) | (Walk.assigned_walker_id == user.id),
+            Walk.operational_status.in_(visible_statuses),
+        )
+        .order_by(Walk.created_at.desc())
+        .all()
+    )
+
     return [serialize_operational_walk(walk, db, user=user) for walk in walks]
 
 
@@ -1196,25 +1486,46 @@ def send_report(walk_id: str, payload: dict | None = None, user: User = Depends(
 
 @router.post("/walks/{walk_id}/occurrence")
 def create_walker_occurrence(walk_id: str, payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_active_walker(user, db)
     walk = db.get(Walk, walk_id)
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
-    if walk.walker_id != user.id:
+    if walk.walker_id != user.id and walk.assigned_walker_id != user.id:
         raise HTTPException(status_code=403, detail="Passeio nao pertence ao passeador")
-    target_type = payload.get("target_type") or "tutor"
+    occurrence_type = str(payload.get("type") or payload.get("category") or "operational_issue").strip() or "operational_issue"
+    message = str(payload.get("message") or payload.get("description") or payload.get("notes") or "").strip()
+    if not message:
+        message = "Passeador registrou uma ocorrencia operacional."
+    category_by_type = {
+        "delay": "atraso",
+        "operational_issue": "ocorrencia_operacional",
+    }
+    title_by_type = {
+        "delay": "Atraso informado pelo passeador",
+        "operational_issue": "Ocorrencia operacional do passeio",
+    }
+    target_type = payload.get("target_type") or "walk"
     complaint_payload = ComplaintCreate(
         source="walker",
         target_type=target_type,
         target_user_id=walk.tutor_id if target_type in {"tutor", "address", "service"} else payload.get("target_user_id"),
         target_pet_id=walk.pet_id if target_type == "pet" else payload.get("target_pet_id"),
         walk_id=walk.id,
-        category=payload.get("category") or "ocorrencia_operacional",
-        title=payload.get("title") or "Ocorrencia operacional do passeio",
-        description=payload.get("description") or payload.get("notes") or "Passeador registrou uma ocorrencia operacional.",
+        category=payload.get("category") or category_by_type.get(occurrence_type, "ocorrencia_operacional"),
+        title=payload.get("title") or title_by_type.get(occurrence_type, "Ocorrencia operacional do passeio"),
+        description=message,
         evidences=[ComplaintEvidenceCreate(**item) for item in payload.get("evidences", [])],
-        metadata={"origin": "walker_walk", **(payload.get("metadata") or {})},
+        metadata={"origin": "walker_walk", "type": occurrence_type, **(payload.get("metadata") or {})},
     )
-    return create_complaint(complaint_payload, user, db)
+    complaint = create_complaint(complaint_payload, user, db)
+    return {
+        "ok": True,
+        "walk_id": walk.id,
+        "occurrence_id": complaint.id,
+        "complaint_id": complaint.id,
+        "status": complaint.status,
+        "type": occurrence_type,
+    }
 
 
 @router.post("/withdrawals")

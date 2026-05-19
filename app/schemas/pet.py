@@ -16,7 +16,7 @@ class PetBase(BaseModel):
     afraid_of_noise: bool = False
     pulls_leash: bool = False
     can_walk_with_other_pets: bool = False
-    is_neutered: bool = False
+    is_neutered: bool | None = False
     allergies: str = ""
     medications: str = ""
     restrictions: str = ""

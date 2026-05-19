@@ -88,7 +88,7 @@ def _normalize(value: str | None) -> str:
 def _can_access_walk(walk: Walk, user: User) -> bool:
     if user.role in {"admin", "super_admin"}:
         return True
-    return walk.tutor_id == user.id or walk.walker_id == user.id
+    return walk.tutor_id == user.id or walk.walker_id == user.id or walk.assigned_walker_id == user.id
 
 
 def validate_complaint_access(payload: ComplaintCreate, user: User, db: Session) -> Walk | None:

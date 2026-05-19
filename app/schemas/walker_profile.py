@@ -33,3 +33,6 @@ class WalkerProfileResponse(WalkerProfileBase, ORMModel):
     rejected_at: datetime | None = None
     rejection_reason: str | None = None
     created_at: datetime
+    updated_at: datetime | None = None
+    reviewed_by_admin_id: str | None = None
+    resubmission_requested_documents: str = ""

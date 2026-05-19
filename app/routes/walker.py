@@ -75,6 +75,7 @@ KIT_ITEM_DEFINITIONS = [
 
 LOGGER = logging.getLogger("aumigao.walker_applications")
 UPLOAD_ROOT = Path(__file__).resolve().parents[2] / "uploads" / "walker-documents"
+WALK_COMPLETION_UPLOAD_ROOT = Path(__file__).resolve().parents[2] / "uploads" / "walk-completions"
 ALLOWED_UPLOAD_TYPES = {
     "profile_photo",
     "identity_front",
@@ -1519,6 +1520,13 @@ COMPLETION_REPORT_ALLOWED_STATUSES = {
     "walker_accepted",
 }
 
+COMPLETION_CHECKLIST_REQUIRED_KEYS = {
+    "pet_delivered",
+    "leash_returned",
+    "water_offered",
+    "incident_reported",
+}
+
 
 def _completion_review_payload(review: WalkCompletionReview) -> dict:
     checklist = {}
@@ -1545,6 +1553,63 @@ def _completion_review_payload(review: WalkCompletionReview) -> dict:
     }
 
 
+def _normalize_completion_checklist(payload: dict) -> dict:
+    checklist = payload.get("checklist") or payload.get("checklist_json") or {}
+    if isinstance(checklist, str):
+        try:
+            checklist = json.loads(checklist)
+        except (TypeError, ValueError):
+            checklist = {}
+    if not isinstance(checklist, dict):
+        checklist = {}
+    missing = [key for key in COMPLETION_CHECKLIST_REQUIRED_KEYS if key not in checklist]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Checklist incompleto. Campos obrigatorios: {', '.join(sorted(COMPLETION_CHECKLIST_REQUIRED_KEYS))}.",
+        )
+    return {key: bool(checklist.get(key)) for key in COMPLETION_CHECKLIST_REQUIRED_KEYS}
+
+
+@router.post("/walks/{walk_id}/completion-photo")
+async def upload_walk_completion_photo(
+    walk_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_active_walker(user, db)
+    walk = db.get(Walk, walk_id)
+    if not walk:
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado")
+    if walk.walker_id != user.id:
+        raise HTTPException(status_code=403, detail="Passeio nao pertence ao passeador")
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Envie uma imagem valida.")
+
+    safe_walker_id = "".join(char for char in user.id if char.isalnum() or char in {"-", "_"})[:80] or "walker"
+    safe_walk_id = "".join(char for char in walk.id if char.isalnum() or char in {"-", "_"})[:80] or "walk"
+    destination_dir = WALK_COMPLETION_UPLOAD_ROOT / safe_walker_id / safe_walk_id
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    extension = _safe_upload_extension(file.filename, file.content_type)
+    destination = destination_dir / f"completion-{uuid4().hex}{extension}"
+
+    try:
+        with destination.open("wb") as output:
+            shutil.copyfileobj(file.file, output)
+    finally:
+        await file.close()
+
+    photo_url = _public_upload_url(request, destination)
+    return {
+        "ok": True,
+        "photo_url": photo_url,
+        "url": photo_url,
+        "uploaded_at": datetime.utcnow().isoformat(),
+    }
+
+
 def _submit_completion_review(walk: Walk, payload: dict | None, user: User, db: Session) -> WalkCompletionReview:
     if walk.walker_id != user.id:
         raise HTTPException(status_code=403, detail="Passeio nao pertence ao passeador")
@@ -1552,9 +1617,13 @@ def _submit_completion_review(walk: Walk, payload: dict | None, user: User, db: 
         raise HTTPException(status_code=409, detail="Passeio nao esta em status permitido para solicitar finalizacao.")
 
     payload = payload or {}
-    checklist = payload.get("checklist") or payload.get("checklist_json") or {}
-    if not isinstance(checklist, dict):
-        checklist = {}
+    photo_url = str(payload.get("photo_url") or payload.get("url") or "").strip()
+    if not photo_url:
+        raise HTTPException(status_code=422, detail="photo_url e obrigatorio para solicitar finalizacao.")
+    notes = str(payload.get("notes") or "").strip()
+    if len(notes) < 8:
+        raise HTTPException(status_code=422, detail="notes deve ter pelo menos 8 caracteres.")
+    checklist = _normalize_completion_checklist(payload)
     review = (
         db.query(WalkCompletionReview)
         .filter(WalkCompletionReview.walk_id == walk.id, WalkCompletionReview.walker_user_id == user.id)
@@ -1572,8 +1641,8 @@ def _submit_completion_review(walk: Walk, payload: dict | None, user: User, db: 
 
     now = datetime.utcnow()
     review.status = "pending_review"
-    review.photo_url = payload.get("photo_url")
-    review.notes = payload.get("notes")
+    review.photo_url = photo_url
+    review.notes = notes
     review.checklist_json = json.dumps(checklist)
     review.admin_note = None
     review.reviewed_by_admin_id = None

@@ -1210,6 +1210,30 @@ def reject_walk_completion(review_id: str, payload: dict | None = None, admin: U
     walk.operational_status = "completion_rejected"
     walk.status = "Finalização rejeitada"
     log_event(db, walk.id, "completion_review_rejected", actor_type="admin", actor_id=admin.id, metadata={"review_id": review.id})
+    walker = db.get(User, review.walker_user_id) if review.walker_user_id else None
+    if walker:
+        admin_note = review.admin_note.strip() if review.admin_note else ""
+        message = "A finalização do passeio foi rejeitada pela revisão operacional. Ajuste as informações e reenvie a finalização."
+        if admin_note:
+            message = f"{message} Motivo: {admin_note}"
+        _create_notification(
+            db,
+            NotificationCreate(
+                user_id=walker.id,
+                user_role=walker.role,
+                title="Finalização precisa de ajuste",
+                message=message,
+                type="walk_completion_review_rejected",
+                related_entity_type="walk_completion_review",
+                related_entity_id=review.id,
+                metadata={
+                    "walk_id": walk.id,
+                    "review_id": review.id,
+                    "priority": "high",
+                    "channel": "in_app",
+                },
+            ),
+        )
     db.commit()
     db.refresh(review)
     db.refresh(walk)

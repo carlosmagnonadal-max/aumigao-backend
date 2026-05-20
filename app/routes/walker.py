@@ -18,6 +18,7 @@ from app.models.pet import Pet
 from app.models.user import User
 from app.models.walk import Walk, WalkMatchingAttempt
 from app.models.walk_completion_review import WalkCompletionReview
+from app.models.walk_review import WalkReview
 from app.models.walker_kit_submission import WalkerKitSubmission
 from app.models.walker_profile import WalkerProfile
 from app.schemas.walker_profile import WalkerProfileCreate, WalkerProfileResponse, WalkerProfileUpdate
@@ -657,6 +658,58 @@ def _build_walker_kit(user_id: str | None, db: Session | None = None) -> dict:
     }
 
 
+def _walk_review_tags(review: WalkReview) -> list[str]:
+    try:
+        parsed = json.loads(review.tags_json or "[]")
+        return [str(item) for item in parsed if item]
+    except (TypeError, ValueError):
+        return []
+
+
+def _walk_review_reputation_summary(walker_id: str | None, db: Session) -> dict:
+    if not walker_id:
+        return {
+            "rating_avg": 0,
+            "rating_count": 0,
+            "recent_review_comments": [],
+            "top_review_tags": [],
+        }
+
+    reviews = (
+        db.query(WalkReview)
+        .filter(WalkReview.walker_id == walker_id)
+        .order_by(WalkReview.created_at.desc())
+        .all()
+    )
+    rating_count = len(reviews)
+    rating_avg = round(sum(review.rating for review in reviews) / rating_count, 2) if rating_count else 0
+    tag_counts: dict[str, int] = {}
+    for review in reviews:
+        for tag in _walk_review_tags(review):
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    top_review_tags = [
+        {"tag": tag, "count": count}
+        for tag, count in sorted(tag_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+    ]
+    recent_review_comments = [
+        {
+            "id": review.id,
+            "walk_id": review.walk_id,
+            "rating": review.rating,
+            "comment": review.comment,
+            "created_at": review.created_at,
+        }
+        for review in reviews
+        if review.comment
+    ][:5]
+    return {
+        "rating_avg": rating_avg,
+        "rating_count": rating_count,
+        "recent_review_comments": recent_review_comments,
+        "top_review_tags": top_review_tags,
+    }
+
+
 @partner_router.post("/uploads", status_code=201)
 async def upload_partner_application_document(
     request: Request,
@@ -948,7 +1001,13 @@ def _goals_evolution_payload(user: User, db: Session) -> dict:
 
 @router.get("/profile", response_model=WalkerProfileResponse | None)
 def get_profile(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return db.query(WalkerProfile).filter(WalkerProfile.user_id == user.id).first()
+    profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == user.id).first()
+    if not profile:
+        return None
+    return {
+        **profile.__dict__,
+        **_walk_review_reputation_summary(user.id, db),
+    }
 
 
 @router.post("/profile", response_model=WalkerProfileResponse)
@@ -1242,6 +1301,15 @@ def _public_walker_rows(db: Session) -> list[dict]:
                     "rating": 4.9,
                     **demo_reputation,
                     "average_rating": 4.9,
+                    "rating_avg": 4.9,
+                    "rating_count": 126,
+                    "top_review_tags": [{"tag": "caring", "count": 48}, {"tag": "punctual", "count": 42}, {"tag": "excellent_walk", "count": 31}],
+                    "recent_review_comments": [
+                        {"id": "demo-review-1", "walk_id": "demo-walk-1", "rating": 5, "comment": "Muito cuidadoso e pontual.", "created_at": datetime.utcnow()},
+                    ],
+                    "recent_reviews": [
+                        {"id": "demo-review-1", "walk_id": "demo-walk-1", "rating": 5, "comment": "Muito cuidadoso e pontual.", "created_at": datetime.utcnow()},
+                    ],
                     "city": "Salvador",
                     "neighborhood": "Pituba",
                     "bio": "Passeador verificado com kit publicado para consulta do tutor.",
@@ -1262,6 +1330,7 @@ def _public_walker_rows(db: Session) -> list[dict]:
         seen_keys.add(dedupe_key)
         rows.append({
                 **(summary := reputation_summary(profile.user_id, db)),
+                **(walk_review_summary := _walk_review_reputation_summary(profile.user_id, db)),
                 "id": profile.user_id,
                 "partner_id": profile.id,
                 "name": profile.full_name or "Passeador",
@@ -1275,8 +1344,11 @@ def _public_walker_rows(db: Session) -> list[dict]:
                 "status": profile.status,
                 "raw_status": profile.status,
                 "active_as_walker": bool(profile.active_as_walker),
-                "rating": summary["rating_average"] or 0,
-                "average_rating": summary["rating_average"] or 0,
+                "rating": walk_review_summary["rating_avg"] or 0,
+                "average_rating": walk_review_summary["rating_avg"] or 0,
+                "rating_average": walk_review_summary["rating_avg"] or 0,
+                "reviews_count": walk_review_summary["rating_count"],
+                "recent_reviews": walk_review_summary["recent_review_comments"],
                 "city": profile.city,
                 "neighborhood": profile.state,
                 "bio": profile.bio or "Passeador disponivel com kit publicado para consulta.",

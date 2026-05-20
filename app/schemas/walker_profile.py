@@ -1,5 +1,5 @@
 ﻿from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from app.schemas.common import ORMModel
 
 class WalkerProfileBase(BaseModel):
@@ -36,3 +36,7 @@ class WalkerProfileResponse(WalkerProfileBase, ORMModel):
     updated_at: datetime | None = None
     reviewed_by_admin_id: str | None = None
     resubmission_requested_documents: str = ""
+    rating_avg: float = 0
+    rating_count: int = 0
+    recent_review_comments: list[dict] = Field(default_factory=list)
+    top_review_tags: list[dict] = Field(default_factory=list)

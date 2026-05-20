@@ -40,3 +40,8 @@ class WalkerProfileResponse(WalkerProfileBase, ORMModel):
     rating_count: int = 0
     recent_review_comments: list[dict] = Field(default_factory=list)
     top_review_tags: list[dict] = Field(default_factory=list)
+    operational_score: int = 0
+    reliability_label: str = "Em formação"
+    score_factors: dict = Field(default_factory=dict)
+    score_details: dict = Field(default_factory=dict)
+    score_policy: str = ""

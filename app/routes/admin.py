@@ -29,6 +29,7 @@ from app.services.operational_reliability_service import (
     record_late_cancellation_if_applicable,
     record_operational_recovery,
 )
+from app.services.walker_operational_score_service import calculate_walker_operational_score
 from app.routes.notifications import NotificationCreate, _create_notification
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -483,6 +484,7 @@ def _serialize_walker_profile(profile: WalkerProfile, db: Session, include_inter
         "created_at": profile.created_at,
         "updated_at": profile.updated_at or profile.created_at,
     }
+    payload.update(calculate_walker_operational_score(profile.user_id, db))
     if include_internal:
         payload["internal_notes"] = profile.internal_notes or ""
     return payload

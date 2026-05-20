@@ -37,6 +37,7 @@ from app.services.operational_matching_service import (
     start_matching,
     update_operational_status,
 )
+from app.services.walker_operational_score_service import calculate_walker_operational_score
 from app.routes.notifications import NotificationCreate, _create_notification
 
 router = APIRouter(prefix="/walker", tags=["walker"])
@@ -1007,6 +1008,7 @@ def get_profile(user: User = Depends(get_current_user), db: Session = Depends(ge
     return {
         **profile.__dict__,
         **_walk_review_reputation_summary(user.id, db),
+        **calculate_walker_operational_score(user.id, db),
     }
 
 

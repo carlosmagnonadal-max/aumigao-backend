@@ -19,6 +19,7 @@ from app.models.walker_profile import WalkerProfile
 from app.schemas.matching import MatchingWalkerRequest
 from app.services.matching_service import get_eligible_walkers, matched_walker_payload
 from app.services.operational_reliability_service import serialize_operational_event
+from app.services.walker_operational_score_service import calculate_walker_operational_score
 from app.routes.notifications import NotificationCreate, _create_notification
 
 PENDING_WALKER_CONFIRMATION = "pending_walker_confirmation"
@@ -320,6 +321,7 @@ def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None
         .first()
     )
     visible_tip = paid_tip or latest_tip
+    walker_operational_score = calculate_walker_operational_score(walker_id, db) if walker_id else None
     walk_date, _, walk_time = (walk.scheduled_date or "").partition("T")
     can_see_full = include_private or should_release_address(walk, user)
     address_payload = {"address_snapshot": walk.address_snapshot, "notes": walk.notes} if can_see_full else coarse_pickup_payload(walk)
@@ -338,6 +340,7 @@ def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None
         "tutor_name": (tutor.full_name if tutor else None) or (tutor.email if tutor else None),
         "client_name": (tutor.full_name if tutor else None) or (tutor.email if tutor else None),
         "walker_name": (walker.full_name if walker else None) or (walker.email if walker else None),
+        "walker_operational_score": walker_operational_score,
         "scheduled_date": walk.scheduled_date,
         "walk_date": walk_date or None,
         "walk_time": (walk_time[:5] if walk_time else None),

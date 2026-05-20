@@ -5,11 +5,12 @@ from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_admin
 from app.models.user import User
 from app.models.walker_profile import WalkerProfile
+from app.routes.walks import create_walk_review as create_post_walk_review
+from app.schemas.walk_review import WalkReviewCreate
 from app.schemas.walker_review import (
     AdminWalkerReputationListResponse,
     AdminWalkerReputationResponse,
     WalkerPerformanceResponse,
-    WalkerReviewCreate,
     WalkerReviewFlagUpdate,
     WalkerReviewListResponse,
     WalkerReviewResponse,
@@ -17,7 +18,6 @@ from app.schemas.walker_review import (
 )
 from app.services.reputation_service import (
     admin_walker_reputation,
-    create_walker_review,
     flag_review,
     public_review_payload,
     public_walker_profile,
@@ -36,10 +36,10 @@ admin_router = APIRouter(prefix="/admin", tags=["admin-reputation"], dependencie
 api_admin_router = APIRouter(prefix="/api/admin", tags=["admin-reputation"], dependencies=[Depends(require_admin)])
 
 
-@walks_router.post("/{walk_id}/review", response_model=WalkerReviewResponse)
-@api_walks_router.post("/{walk_id}/review", response_model=WalkerReviewResponse)
-def create_review_endpoint(walk_id: str, payload: WalkerReviewCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return create_walker_review(walk_id, payload, user, db)
+@walks_router.post("/{walk_id}/review")
+@api_walks_router.post("/{walk_id}/review")
+def create_review_endpoint(walk_id: str, payload: WalkReviewCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return create_post_walk_review(walk_id, payload, user, db)
 
 
 @walkers_router.get("/{walker_id}/reviews", response_model=WalkerReviewListResponse)

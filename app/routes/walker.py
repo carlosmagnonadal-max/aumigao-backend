@@ -1515,9 +1515,6 @@ def walker_status(walk_id: str, payload: dict, user: User = Depends(get_current_
 
 COMPLETION_REPORT_ALLOWED_STATUSES = {
     "ride_in_progress",
-    "walker_arriving",
-    "ride_scheduled",
-    "walker_accepted",
     "completion_rejected",
 }
 

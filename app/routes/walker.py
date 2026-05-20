@@ -36,6 +36,7 @@ from app.services.operational_matching_service import (
     start_matching,
     update_operational_status,
 )
+from app.routes.notifications import NotificationCreate, _create_notification
 
 router = APIRouter(prefix="/walker", tags=["walker"])
 api_public_router = APIRouter(prefix="/api", tags=["walkers"])
@@ -1569,6 +1570,40 @@ def _normalize_completion_checklist(payload: dict) -> dict:
     return {key: bool(checklist.get(key)) for key in COMPLETION_CHECKLIST_REQUIRED_KEYS}
 
 
+def _notify_admins_completion_review_pending(db: Session, walk: Walk, review: WalkCompletionReview, walker: User, resubmission: bool) -> None:
+    admins = db.query(User).filter(User.role.in_(["admin", "super_admin"])).all()
+    if not admins:
+        return
+
+    pet = db.get(Pet, walk.pet_id) if walk.pet_id else None
+    tutor = db.get(User, walk.tutor_id) if walk.tutor_id else None
+    pet_name = pet.name if pet and pet.name else "pet"
+    tutor_name = tutor.full_name if tutor and tutor.full_name else "tutor"
+    walker_name = walker.full_name if walker.full_name else "passeador"
+    message = f"Finalizacao do passeio de {pet_name}, tutor {tutor_name}, enviada por {walker_name} aguarda revisao operacional."
+
+    for admin in admins:
+        _create_notification(
+            db,
+            NotificationCreate(
+                user_id=admin.id,
+                user_role=admin.role,
+                title="Nova finalização aguardando revisão",
+                message=message,
+                type="walk_completion_review_pending",
+                related_entity_type="walk_completion_review",
+                related_entity_id=review.id,
+                metadata={
+                    "walk_id": walk.id,
+                    "review_id": review.id,
+                    "priority": "high",
+                    "channel": "in_app",
+                    "resubmission": resubmission,
+                },
+            ),
+        )
+
+
 @router.post("/walks/{walk_id}/completion-photo")
 async def upload_walk_completion_photo(
     walk_id: str,
@@ -1628,6 +1663,7 @@ def _submit_completion_review(walk: Walk, payload: dict | None, user: User, db: 
         .order_by(WalkCompletionReview.created_at.desc())
         .first()
     )
+    resubmission = review is not None
     if not review:
         review = WalkCompletionReview(
             walk_id=walk.id,
@@ -1650,6 +1686,7 @@ def _submit_completion_review(walk: Walk, payload: dict | None, user: User, db: 
     walk.operational_status = "awaiting_completion_review"
     walk.status = "Aguardando validação da finalização"
     log_event(db, walk.id, "completion_report_submitted", actor_type=user.role, actor_id=user.id, metadata={"review_id": review.id})
+    _notify_admins_completion_review_pending(db, walk, review, user, resubmission)
     return review
 
 

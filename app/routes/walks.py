@@ -1,5 +1,5 @@
 ﻿from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -10,10 +10,12 @@ from app.models.payment import Payment
 from app.models.walk import Walk, WalkMatchingAttempt
 from app.models.walk_completion_review import WalkCompletionReview
 from app.models.walk_review import WalkReview
+from app.models.walk_tip import WalkTip
 from app.models.user import User
 from app.models.pet import Pet
 from app.schemas.walk import WalkCreate, WalkResponse, WalkUpdateStatus
 from app.schemas.walk_review import ALLOWED_WALK_REVIEW_TAGS, WalkReviewCreate
+from app.schemas.walk_tip import WalkTipCheckoutCreate
 from app.schemas.complaint import ComplaintCreate, ComplaintEvidenceCreate
 from app.services.complaint_service import create_complaint
 from app.services.operational_matching_service import (
@@ -31,6 +33,8 @@ router = APIRouter(prefix="/walks", tags=["walks"])
 COMPLETED_WALK_STATUSES = {"Finalizado", "Concluido", "Concluído", "finalizado", "completed", "finished"}
 DIRECT_COMPLETION_STATUSES = {"ride_completed", "Finalizado", "finalizado", "completed", "finished"}
 REVIEWABLE_COMPLETION_STATUSES = {"ride_completed"}
+TIP_STATUSES = {"pending", "paid", "failed", "cancelled"}
+TIP_PROVIDER = "internal_mock"
 
 
 class WalkTipCreate(BaseModel):
@@ -89,6 +93,31 @@ def _serialize_walk_review(review: WalkReview) -> dict:
         "tags": tags if isinstance(tags, list) else [],
         "created_at": review.created_at,
     }
+
+
+def _serialize_walk_tip(tip: WalkTip) -> dict:
+    return {
+        "id": tip.id,
+        "tip_id": tip.id,
+        "walk_id": tip.walk_id,
+        "tutor_id": tip.tutor_id,
+        "walker_id": tip.walker_id,
+        "amount": tip.amount,
+        "status": tip.status,
+        "provider": tip.provider,
+        "checkout_url": tip.checkout_url,
+        "created_at": tip.created_at,
+        "paid_at": tip.paid_at,
+    }
+
+
+def _approved_completion_review_exists(walk_id: str, db: Session) -> bool:
+    return (
+        db.query(WalkCompletionReview)
+        .filter(WalkCompletionReview.walk_id == walk_id, WalkCompletionReview.status == "approved")
+        .first()
+        is not None
+    )
 
 
 def _get_walk_for_user(walk_id: str, user: User, db: Session) -> Walk:
@@ -195,6 +224,71 @@ def create_walk_review(walk_id: str, payload: WalkReviewCreate, user: User = Dep
         "ok": True,
         "review": _serialize_walk_review(review),
         "walk": serialize_operational_walk(walk, db, user=user),
+    }
+
+
+@router.post("/{walk_id}/tip-checkout")
+def create_walk_tip_checkout(walk_id: str, payload: WalkTipCheckoutCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    walk = _get_walk_for_user(walk_id, user, db)
+    if walk.tutor_id != user.id:
+        raise HTTPException(status_code=403, detail="Apenas o tutor dono do passeio pode enviar gorjeta.")
+    if walk.operational_status != "ride_completed":
+        raise HTTPException(status_code=409, detail="Gorjeta disponível apenas após finalização operacional aprovada.")
+    if not _approved_completion_review_exists(walk.id, db):
+        raise HTTPException(status_code=409, detail="Gorjeta exige finalização aprovada pela revisão operacional.")
+
+    walker_id = walk.walker_id or walk.assigned_walker_id
+    if not walker_id:
+        raise HTTPException(status_code=400, detail="Gorjeta exige passeador atribuído ao passeio.")
+
+    recent_cutoff = datetime.utcnow() - timedelta(minutes=15)
+    duplicate_paid = (
+        db.query(WalkTip)
+        .filter(
+            WalkTip.walk_id == walk.id,
+            WalkTip.tutor_id == user.id,
+            WalkTip.walker_id == walker_id,
+            WalkTip.amount == float(payload.amount),
+            WalkTip.status == "paid",
+            WalkTip.paid_at >= recent_cutoff,
+        )
+        .first()
+    )
+    if duplicate_paid:
+        raise HTTPException(status_code=409, detail="Gorjeta idêntica já confirmada recentemente.")
+
+    tip = WalkTip(
+        id=str(uuid4()),
+        walk_id=walk.id,
+        tutor_id=user.id,
+        walker_id=walker_id,
+        amount=float(payload.amount),
+        status="pending",
+        provider=TIP_PROVIDER,
+    )
+    tip.checkout_url = f"aumigao://tip-checkout/{tip.id}?status=pending"
+    db.add(tip)
+    db.commit()
+    db.refresh(tip)
+    return {
+        **_serialize_walk_tip(tip),
+        "checkout_url": tip.checkout_url,
+        "status": tip.status,
+        "tip_id": tip.id,
+    }
+
+
+@router.get("/tips/{tip_id}/status")
+def get_walk_tip_status(tip_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    tip = db.get(WalkTip, tip_id)
+    if not tip:
+        raise HTTPException(status_code=404, detail="Gorjeta não encontrada.")
+    if tip.tutor_id != user.id and tip.walker_id != user.id and user.role not in {"admin", "super_admin"}:
+        raise HTTPException(status_code=403, detail="Sem permissão para consultar esta gorjeta.")
+    return {
+        **_serialize_walk_tip(tip),
+        "tip_id": tip.id,
+        "payment_status": tip.status,
     }
 
 

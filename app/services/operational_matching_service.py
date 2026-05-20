@@ -13,6 +13,7 @@ from app.models.user import User
 from app.models.walk import Walk, WalkMatchingAttempt, WalkOperationalLog
 from app.models.walk_completion_review import WalkCompletionReview
 from app.models.walk_review import WalkReview
+from app.models.walk_tip import WalkTip
 from app.models.walker_profile import WalkerProfile
 from app.schemas.matching import MatchingWalkerRequest
 from app.services.matching_service import get_eligible_walkers, matched_walker_payload
@@ -251,6 +252,24 @@ def _serialize_walk_review(review: WalkReview | None) -> dict | None:
     }
 
 
+def _serialize_walk_tip(tip: WalkTip | None) -> dict | None:
+    if not tip:
+        return None
+
+    return {
+        "id": tip.id,
+        "walk_id": tip.walk_id,
+        "tutor_id": tip.tutor_id,
+        "walker_id": tip.walker_id,
+        "amount": tip.amount,
+        "status": tip.status,
+        "provider": tip.provider,
+        "checkout_url": tip.checkout_url,
+        "created_at": tip.created_at,
+        "paid_at": tip.paid_at,
+    }
+
+
 def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None, include_private: bool = False) -> dict:
     pet = db.get(Pet, walk.pet_id) if walk.pet_id else None
     tutor = db.get(User, walk.tutor_id) if walk.tutor_id else None
@@ -280,6 +299,19 @@ def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None
         .order_by(WalkReview.created_at.desc())
         .first()
     )
+    paid_tip = (
+        db.query(WalkTip)
+        .filter(WalkTip.walk_id == walk.id, WalkTip.status == "paid")
+        .order_by(WalkTip.paid_at.desc(), WalkTip.created_at.desc())
+        .first()
+    )
+    latest_tip = (
+        db.query(WalkTip)
+        .filter(WalkTip.walk_id == walk.id)
+        .order_by(WalkTip.created_at.desc())
+        .first()
+    )
+    visible_tip = paid_tip or latest_tip
     walk_date, _, walk_time = (walk.scheduled_date or "").partition("T")
     can_see_full = include_private or should_release_address(walk, user)
     address_payload = {"address_snapshot": walk.address_snapshot, "notes": walk.notes} if can_see_full else coarse_pickup_payload(walk)
@@ -324,6 +356,11 @@ def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None
         "operational_logs": [serialize_log(item) for item in logs],
         "completion_review": _serialize_completion_review(completion_review),
         "review": _serialize_walk_review(walk_review),
+        "tip": _serialize_walk_tip(visible_tip),
+        "tip_id": visible_tip.id if visible_tip else None,
+        "tip_amount": visible_tip.amount if visible_tip and visible_tip.status == "paid" else 0,
+        "tip_status": visible_tip.status if visible_tip else None,
+        "tip_paid_at": visible_tip.paid_at if visible_tip else None,
         "created_at": walk.created_at,
     }
 

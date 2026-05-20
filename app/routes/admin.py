@@ -24,6 +24,11 @@ from app.services.operational_matching_service import (
     serialize_operational_walk,
     start_matching,
 )
+from app.services.operational_reliability_service import (
+    detect_reliability_events,
+    record_late_cancellation_if_applicable,
+    record_operational_recovery,
+)
 from app.routes.notifications import NotificationCreate, _create_notification
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -545,6 +550,14 @@ def _serialize_admin_walk(walk: Walk, db: Session) -> dict:
     return serialize_operational_walk(walk, db, include_private=True)
 
 
+def _refresh_reliability_events(walks: list[Walk], db: Session) -> None:
+    created = False
+    for walk in walks:
+        created = bool(detect_reliability_events(walk, db)) or created
+    if created:
+        db.commit()
+
+
 def _serialize_admin_payment(payment: Payment, db: Session) -> dict:
     walk = db.get(Walk, payment.walk_id) if payment.walk_id else None
     tutor = db.get(User, payment.tutor_id) if payment.tutor_id else None
@@ -641,6 +654,7 @@ def operational_alerts(db: Session = Depends(get_db)):
         for walk in db.query(Walk).order_by(Walk.created_at.desc()).all()
         if _is_real_admin_walk(walk, db)
     ]
+    _refresh_reliability_events(real_walks, db)
 
     alert_walks = [
         walk
@@ -905,10 +919,15 @@ def reject_walker(walker_id: str, payload: dict | None = None, db: Session = Dep
 @api_router.get("/walks")
 def walks(db: Session = Depends(get_db)):
     process_expired_attempts(db)
-    rows = [
-        _serialize_admin_walk(walk, db)
+    real_walks = [
+        walk
         for walk in db.query(Walk).order_by(Walk.created_at.desc()).all()
         if _is_real_admin_walk(walk, db)
+    ]
+    _refresh_reliability_events(real_walks, db)
+    rows = [
+        _serialize_admin_walk(walk, db)
+        for walk in real_walks
     ]
     return rows
 
@@ -975,6 +994,7 @@ def update_admin_walk_status(walk_id: str, payload: dict, db: Session = Depends(
 
     walk.operational_status = next_operational_status
     walk.status = status_label_by_operational_status.get(next_operational_status, status)
+    record_late_cancellation_if_applicable(walk, db)
 
     log_event(
         db,
@@ -1107,6 +1127,7 @@ def recover_walk(walk_id: str, db: Session = Depends(get_db)):
             "available_options": ["continue_search", "reschedule", "cancel_without_fee"],
         },
     )
+    record_operational_recovery(walk, db)
 
     _create_notification(
         db,

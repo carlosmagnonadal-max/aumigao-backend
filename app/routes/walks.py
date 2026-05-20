@@ -27,6 +27,7 @@ from app.services.operational_matching_service import (
     start_matching,
     update_operational_status,
 )
+from app.services.operational_reliability_service import detect_reliability_events, record_late_cancellation_if_applicable
 
 router = APIRouter(prefix="/walks", tags=["walks"])
 
@@ -128,6 +129,14 @@ def _get_walk_for_user(walk_id: str, user: User, db: Session) -> Walk:
         raise HTTPException(status_code=403, detail="Sem permissao")
     return walk
 
+
+def _refresh_reliability_events(walks: list[Walk], db: Session) -> None:
+    created = False
+    for walk in walks:
+        created = bool(detect_reliability_events(walk, db)) or created
+    if created:
+        db.commit()
+
 @router.get("", response_model=list[WalkResponse])
 def list_walks(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     process_expired_attempts(db)
@@ -136,7 +145,9 @@ def list_walks(user: User = Depends(get_current_user), db: Session = Depends(get
         query = query.filter((Walk.walker_id == user.id) | (Walk.walker_id.is_(None)))
     elif user.role not in {"admin", "super_admin"}:
         query = query.filter(Walk.tutor_id == user.id)
-    return [serialize_operational_walk(walk, db, user=user) for walk in query.order_by(Walk.created_at.desc()).all()]
+    walks = query.order_by(Walk.created_at.desc()).all()
+    _refresh_reliability_events(walks, db)
+    return [serialize_operational_walk(walk, db, user=user) for walk in walks]
 
 @router.post("", response_model=WalkResponse)
 def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -165,6 +176,7 @@ def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db:
 def get_walk(walk_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     process_expired_attempts(db)
     walk = _get_walk_for_user(walk_id, user, db)
+    _refresh_reliability_events([walk], db)
     return serialize_operational_walk(walk, db, user=user)
 
 @router.put("/{walk_id}/status", response_model=WalkResponse)
@@ -173,6 +185,7 @@ def update_status(walk_id: str, payload: WalkUpdateStatus, user: User = Depends(
     if payload.status in DIRECT_COMPLETION_STATUSES:
         raise HTTPException(status_code=400, detail="Finalização deve ocorrer via revisão operacional.")
     update_operational_status(walk, payload.status, db, actor=user)
+    record_late_cancellation_if_applicable(walk, db)
     db.commit()
     db.refresh(walk)
     return serialize_operational_walk(walk, db, user=user)

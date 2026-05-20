@@ -3,6 +3,7 @@ from app.models.tutor_profile import TutorProfile
 from app.models.pet import Pet
 from app.models.walker_profile import WalkerProfile
 from app.models.walk import Walk, WalkMatchingAttempt, WalkOperationalLog
+from app.models.walk_operational_event import WalkOperationalEvent
 from app.models.payment import Payment
 from app.models.walker_referral import WalkerReferral
 from app.models.walker_review import WalkerReview

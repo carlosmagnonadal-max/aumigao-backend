@@ -12,11 +12,13 @@ from app.models.pet import Pet
 from app.models.user import User
 from app.models.walk import Walk, WalkMatchingAttempt, WalkOperationalLog
 from app.models.walk_completion_review import WalkCompletionReview
+from app.models.walk_operational_event import WalkOperationalEvent
 from app.models.walk_review import WalkReview
 from app.models.walk_tip import WalkTip
 from app.models.walker_profile import WalkerProfile
 from app.schemas.matching import MatchingWalkerRequest
 from app.services.matching_service import get_eligible_walkers, matched_walker_payload
+from app.services.operational_reliability_service import serialize_operational_event
 from app.routes.notifications import NotificationCreate, _create_notification
 
 PENDING_WALKER_CONFIRMATION = "pending_walker_confirmation"
@@ -287,6 +289,12 @@ def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None
         .order_by(WalkOperationalLog.created_at.asc())
         .all()
     )
+    operational_events = (
+        db.query(WalkOperationalEvent)
+        .filter(WalkOperationalEvent.walk_id == walk.id)
+        .order_by(WalkOperationalEvent.created_at.desc())
+        .all()
+    )
     completion_review = (
         db.query(WalkCompletionReview)
         .filter(WalkCompletionReview.walk_id == walk.id)
@@ -354,6 +362,7 @@ def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None
         "no_walker_reason": walk.no_walker_reason,
         "matching_attempts": [serialize_attempt(item) for item in attempts],
         "operational_logs": [serialize_log(item) for item in logs],
+        "operational_events": [serialize_operational_event(item) for item in operational_events],
         "completion_review": _serialize_completion_review(completion_review),
         "review": _serialize_walk_review(walk_review),
         "tip": _serialize_walk_tip(visible_tip),

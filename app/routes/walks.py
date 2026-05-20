@@ -25,6 +25,7 @@ from app.services.operational_matching_service import (
 router = APIRouter(prefix="/walks", tags=["walks"])
 
 COMPLETED_WALK_STATUSES = {"Finalizado", "Concluido", "Concluído", "finalizado", "completed", "finished"}
+DIRECT_COMPLETION_STATUSES = {"ride_completed", "Finalizado", "finalizado", "completed", "finished"}
 
 
 class WalkTipCreate(BaseModel):
@@ -118,6 +119,8 @@ def get_walk(walk_id: str, user: User = Depends(get_current_user), db: Session =
 @router.put("/{walk_id}/status", response_model=WalkResponse)
 def update_status(walk_id: str, payload: WalkUpdateStatus, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     walk = _get_walk_for_user(walk_id, user, db)
+    if payload.status in DIRECT_COMPLETION_STATUSES:
+        raise HTTPException(status_code=400, detail="Finalização deve ocorrer via revisão operacional.")
     update_operational_status(walk, payload.status, db, actor=user)
     db.commit()
     db.refresh(walk)

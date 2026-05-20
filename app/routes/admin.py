@@ -32,6 +32,7 @@ api_router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depend
 APPROVED_WALKER_STATUSES = {"active"}
 PAID_PAYMENT_STATUSES = {"paid", "Pago", "pagamento_confirmado_sandbox", "payment_confirmed", "confirmed"}
 IN_PROGRESS_WALK_STATUSES = {"Indo buscar o pet", "Passeando agora", "walker_arriving", "ride_in_progress"}
+DIRECT_COMPLETION_STATUSES = {"ride_completed", "Finalizado", "finalizado", "completed", "finished"}
 
 RECOVERY_WALK_STATUSES = {
     "no_walker_found",
@@ -951,6 +952,9 @@ def update_admin_walk_status(walk_id: str, payload: dict, db: Session = Depends(
     }
 
     next_operational_status = operational_status_by_label.get(status, status)
+    if status in DIRECT_COMPLETION_STATUSES or next_operational_status in DIRECT_COMPLETION_STATUSES:
+        raise HTTPException(status_code=400, detail="Finalização deve ocorrer via revisão operacional.")
+
     previous_operational_status = walk.operational_status
 
     walk.operational_status = next_operational_status

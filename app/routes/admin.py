@@ -1185,6 +1185,26 @@ def approve_walk_completion(review_id: str, payload: dict | None = None, admin: 
     walk.matching_finished_at = walk.matching_finished_at or now
     _ensure_internal_walk_payment(walk, db)
     log_event(db, walk.id, "completion_review_approved", actor_type="admin", actor_id=admin.id, metadata={"review_id": review.id})
+    tutor = db.get(User, walk.tutor_id) if walk.tutor_id else None
+    if tutor:
+        _create_notification(
+            db,
+            NotificationCreate(
+                user_id=tutor.id,
+                user_role=tutor.role,
+                title="Passeio finalizado com sucesso",
+                message="A finalização do passeio foi validada pela equipe operacional. Evidências e resumo já estão disponíveis; você também pode avaliar o passeio e enviar uma gorjeta opcional.",
+                type="walk_completion_review_approved",
+                related_entity_type="walk",
+                related_entity_id=walk.id,
+                metadata={
+                    "walk_id": walk.id,
+                    "review_id": review.id,
+                    "priority": "normal",
+                    "channel": "in_app",
+                },
+            ),
+        )
     db.commit()
     db.refresh(review)
     db.refresh(walk)

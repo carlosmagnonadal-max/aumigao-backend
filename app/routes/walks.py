@@ -1,5 +1,6 @@
 ﻿from uuid import uuid4
 from datetime import datetime
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -7,9 +8,12 @@ from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.payment import Payment
 from app.models.walk import Walk, WalkMatchingAttempt
+from app.models.walk_completion_review import WalkCompletionReview
+from app.models.walk_review import WalkReview
 from app.models.user import User
 from app.models.pet import Pet
 from app.schemas.walk import WalkCreate, WalkResponse, WalkUpdateStatus
+from app.schemas.walk_review import ALLOWED_WALK_REVIEW_TAGS, WalkReviewCreate
 from app.schemas.complaint import ComplaintCreate, ComplaintEvidenceCreate
 from app.services.complaint_service import create_complaint
 from app.services.operational_matching_service import (
@@ -26,6 +30,7 @@ router = APIRouter(prefix="/walks", tags=["walks"])
 
 COMPLETED_WALK_STATUSES = {"Finalizado", "Concluido", "Concluído", "finalizado", "completed", "finished"}
 DIRECT_COMPLETION_STATUSES = {"ride_completed", "Finalizado", "finalizado", "completed", "finished"}
+REVIEWABLE_COMPLETION_STATUSES = {"ride_completed"}
 
 
 class WalkTipCreate(BaseModel):
@@ -67,6 +72,23 @@ def _parse_scheduled_at(value: str) -> datetime:
 
 def _serialize_walk(walk: Walk, db: Session) -> dict:
     return serialize_operational_walk(walk, db, include_private=True)
+
+
+def _serialize_walk_review(review: WalkReview) -> dict:
+    try:
+        tags = json.loads(review.tags_json or "[]")
+    except (TypeError, ValueError):
+        tags = []
+    return {
+        "id": review.id,
+        "walk_id": review.walk_id,
+        "tutor_id": review.tutor_id,
+        "walker_id": review.walker_id,
+        "rating": review.rating,
+        "comment": review.comment,
+        "tags": tags if isinstance(tags, list) else [],
+        "created_at": review.created_at,
+    }
 
 
 def _get_walk_for_user(walk_id: str, user: User, db: Session) -> Walk:
@@ -125,6 +147,55 @@ def update_status(walk_id: str, payload: WalkUpdateStatus, user: User = Depends(
     db.commit()
     db.refresh(walk)
     return serialize_operational_walk(walk, db, user=user)
+
+
+@router.post("/{walk_id}/review")
+def create_walk_review(walk_id: str, payload: WalkReviewCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    walk = _get_walk_for_user(walk_id, user, db)
+    if walk.tutor_id != user.id:
+        raise HTTPException(status_code=403, detail="Apenas o tutor dono do passeio pode avaliar.")
+    if walk.operational_status not in REVIEWABLE_COMPLETION_STATUSES:
+        raise HTTPException(status_code=409, detail="Avaliação disponível apenas após finalização operacional aprovada.")
+    if not walk.walker_id and not walk.assigned_walker_id:
+        raise HTTPException(status_code=400, detail="Avaliação exige passeador atribuído ao passeio.")
+
+    completion_review = (
+        db.query(WalkCompletionReview)
+        .filter(WalkCompletionReview.walk_id == walk.id, WalkCompletionReview.status == "approved")
+        .order_by(WalkCompletionReview.reviewed_at.desc())
+        .first()
+    )
+    if not completion_review:
+        raise HTTPException(status_code=409, detail="Avaliação exige finalização aprovada pela revisão operacional.")
+
+    existing_review = db.query(WalkReview).filter(WalkReview.walk_id == walk.id).first()
+    if existing_review:
+        raise HTTPException(status_code=409, detail="Este passeio já possui avaliação registrada.")
+
+    tags = []
+    for tag in payload.tags or []:
+        normalized = str(tag).strip()
+        if normalized and normalized in ALLOWED_WALK_REVIEW_TAGS and normalized not in tags:
+            tags.append(normalized)
+
+    review = WalkReview(
+        id=str(uuid4()),
+        walk_id=walk.id,
+        tutor_id=user.id,
+        walker_id=walk.walker_id or walk.assigned_walker_id,
+        rating=payload.rating,
+        comment=(payload.comment or "").strip() or None,
+        tags_json=json.dumps(tags),
+    )
+    db.add(review)
+    db.commit()
+    db.refresh(review)
+    db.refresh(walk)
+    return {
+        "ok": True,
+        "review": _serialize_walk_review(review),
+        "walk": serialize_operational_walk(walk, db, user=user),
+    }
 
 
 @router.post("/{walk_id}/reconfirmation")

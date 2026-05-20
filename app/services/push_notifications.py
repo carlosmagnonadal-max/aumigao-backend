@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.notification import Notification
 from app.models.push_token import PushToken
+from app.services.operational_observability_service import record_operational_exception
 
 LOGGER = logging.getLogger("aumigao.push_notifications")
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
@@ -85,3 +86,11 @@ def send_push_for_notification(db: Session, notification: Notification) -> None:
             response.read()
     except Exception as exc:
         LOGGER.warning("push notification skipped notification_id=%s error=%s", notification.id, exc)
+        record_operational_exception(
+            db,
+            event_type="push_failed",
+            source="push_notifications",
+            exc=exc,
+            severity="warning",
+            context={"notification_id": notification.id, "type": notification.type},
+        )

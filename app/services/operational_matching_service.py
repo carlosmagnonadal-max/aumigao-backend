@@ -18,6 +18,7 @@ from app.models.walk_tip import WalkTip
 from app.models.walker_profile import WalkerProfile
 from app.schemas.matching import MatchingWalkerRequest
 from app.services.matching_service import get_eligible_walkers, matched_walker_payload
+from app.services.operational_observability_service import record_operational_exception, record_operational_log
 from app.services.operational_reliability_service import serialize_operational_event
 from app.services.walker_operational_score_service import calculate_walker_operational_score
 from app.routes.notifications import NotificationCreate, _create_notification
@@ -587,6 +588,14 @@ def start_matching(walk: Walk, db: Session, actor: User | None = None) -> Walk:
         walk.no_walker_reason = "Nenhum passeador elegivel encontrado."
         walk.matching_finished_at = utcnow()
         log_event(db, walk.id, "no_walker_found", metadata={"reason": walk.no_walker_reason})
+        record_operational_log(
+            db,
+            event_type="matching_failed",
+            severity="warning",
+            source="matching.start",
+            message="Nenhum passeador elegível encontrado para o passeio.",
+            context={"walk_id": walk.id, "reason": walk.no_walker_reason},
+        )
         return walk
 
     _create_attempt(db, walk, candidate, 1)
@@ -632,6 +641,14 @@ def rematch(walk: Walk, db: Session, reason: str = "rematch") -> Walk:
                 "max_attempts": walk.max_attempts or MAX_ATTEMPTS,
             }
         )
+        record_operational_log(
+            db,
+            event_type="operational_recovery_triggered",
+            severity="warning",
+            source="matching.rematch",
+            message="Recovery operacional acionado após limite de tentativas.",
+            context={"walk_id": walk.id, "attempts": len(attempts), "max_attempts": walk.max_attempts or MAX_ATTEMPTS},
+        )
         notify_tutor_walk_event(
             db,
             walk,
@@ -654,6 +671,14 @@ def rematch(walk: Walk, db: Session, reason: str = "rematch") -> Walk:
         walk.matching_finished_at = utcnow()
         walk.confirmation_expires_at = None
         log_event(db, walk.id, "no_walker_found", metadata={"reason": walk.no_walker_reason})
+        record_operational_log(
+            db,
+            event_type="matching_failed",
+            severity="warning",
+            source="matching.rematch",
+            message="Rematch sem passeadores elegíveis.",
+            context={"walk_id": walk.id, "reason": walk.no_walker_reason, "attempts": len(attempts)},
+        )
         notify_tutor_walk_event(
             db,
             walk,
@@ -825,6 +850,14 @@ def process_expired_attempts(db: Session, commit: bool = True) -> int:
                 continue
             _finish_attempt(attempt, EXPIRED_ATTEMPT, "confirmation_timeout")
             log_event(db, walk.id, "walker_expired", actor_type="system", metadata={"walker_id": attempt.walker_id, "attempt_number": attempt.attempt_number})
+            record_operational_log(
+                db,
+                event_type="matching_timeout",
+                severity="warning",
+                source="matching.timeout",
+                message="Tempo de aceite do passeador expirou.",
+                context={"walk_id": walk.id, "walker_id": attempt.walker_id, "attempt_number": attempt.attempt_number},
+            )
 
             notify_walker_walk_event(
                 db,
@@ -857,9 +890,20 @@ def process_expired_attempts(db: Session, commit: bool = True) -> int:
         if count and commit:
             db.commit()
         return count
-    except Exception:
+    except Exception as exc:
         if commit:
             db.rollback()
+            try:
+                record_operational_exception(
+                    db,
+                    event_type="matching_exception",
+                    source="matching.process_expired_attempts",
+                    exc=exc,
+                    severity="error",
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
         raise
 
 def notify_walker_walk_event(

@@ -13,6 +13,7 @@ from app.models import (
     ComplaintDecision,
     ComplaintEvidence,
     ComplaintStatusHistory,
+    OperationalBetaLog,
     Payment,
     Pet,
     RiskScore,
@@ -36,7 +37,13 @@ from app.models import (
 )
 from app.routes import admin, auth, complaints, matching, notifications, operational_walks, payments, pets, referrals, reviews, tutor, walker, walker_quality, walks, weekly_missions
 from app.services.admin_seed_service import ensure_configured_admin_users
-from app.services.operational_matching_service import ensure_operational_schema, process_expired_attempts
+from app.services.operational_matching_service import ensure_operational_schema
+from app.services.operational_scheduler_service import (
+    mark_operational_scheduler_started,
+    mark_operational_scheduler_stopped,
+    run_operational_scheduler_cycle,
+    scheduler_interval_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -272,23 +279,49 @@ app.include_router(complaints.api_admin_router)
 app.include_router(complaints.legacy_admin_occurrences_router)
 app.include_router(complaints.api_legacy_admin_occurrences_router)
 
+_operational_scheduler_task: asyncio.Task | None = None
 
-async def _operational_matching_scheduler():
-    while True:
-        await asyncio.sleep(30)
-        db = SessionLocal()
-        try:
-            process_expired_attempts(db)
-        except Exception:
-            db.rollback()
-            logger.exception("Erro ao processar expiracoes operacionais de passeios.")
-        finally:
-            db.close()
+
+async def _operational_scheduler_loop():
+    mark_operational_scheduler_started()
+    try:
+        while True:
+            await asyncio.sleep(scheduler_interval_seconds())
+            try:
+                await run_operational_scheduler_cycle(SessionLocal)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                mark_operational_scheduler_stopped(str(exc))
+                logger.exception("Erro no scheduler operacional do beta.")
+    except asyncio.CancelledError:
+        mark_operational_scheduler_stopped()
+        raise
 
 
 @app.on_event("startup")
-async def start_operational_matching_scheduler():
-    asyncio.create_task(_operational_matching_scheduler())
+async def start_operational_scheduler():
+    global _operational_scheduler_task
+    if _operational_scheduler_task and not _operational_scheduler_task.done():
+        mark_operational_scheduler_started()
+        return
+    _operational_scheduler_task = asyncio.create_task(_operational_scheduler_loop())
+
+
+@app.on_event("shutdown")
+async def stop_operational_scheduler():
+    global _operational_scheduler_task
+    if not _operational_scheduler_task:
+        mark_operational_scheduler_stopped()
+        return
+    if not _operational_scheduler_task.done():
+        _operational_scheduler_task.cancel()
+        try:
+            await _operational_scheduler_task
+        except asyncio.CancelledError:
+            pass
+    _operational_scheduler_task = None
+    mark_operational_scheduler_stopped()
 
 
 @app.get("/")

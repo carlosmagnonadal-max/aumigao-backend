@@ -9,6 +9,7 @@ from app.models.walker_referral import WalkerReferral
 from app.models.walker_review import WalkerReview
 from app.models.walk_review import WalkReview
 from app.models.walk_tip import WalkTip
+from app.models.operational_beta_log import OperationalBetaLog
 from app.models.walker_weekly_mission import WalkerWeeklyMission
 from app.models.walker_boost import WalkerBoost
 from app.models.walker_reputation_snapshot import WalkerReputationSnapshot

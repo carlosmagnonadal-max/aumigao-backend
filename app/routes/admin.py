@@ -4,9 +4,10 @@ import json
 from app.models.tutor_profile import TutorProfile
 from fastapi import APIRouter, Depends
 from fastapi import HTTPException
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
+from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies.auth import require_admin
@@ -15,6 +16,9 @@ from app.models.pet import Pet
 from app.models.user import User
 from app.models.walk import Walk
 from app.models.walk_completion_review import WalkCompletionReview
+from app.models.walk_operational_event import WalkOperationalEvent
+from app.models.walk_review import WalkReview
+from app.models.walk_tip import WalkTip
 from app.models.walker_kit_submission import WalkerKitSubmission
 from app.models.walker_profile import WalkerProfile
 from app.services.walker_referrals import mark_referral_approved, mark_referral_rejected
@@ -29,6 +33,12 @@ from app.services.operational_reliability_service import (
     record_late_cancellation_if_applicable,
     record_operational_recovery,
 )
+from app.services.operational_observability_service import (
+    get_operational_observability_snapshot,
+    record_operational_exception,
+    record_operational_log,
+)
+from app.services.operational_scheduler_service import get_operational_scheduler_status
 from app.services.walker_operational_score_service import calculate_walker_operational_score
 from app.routes.notifications import NotificationCreate, _create_notification
 
@@ -552,12 +562,128 @@ def _serialize_admin_walk(walk: Walk, db: Session) -> dict:
     return serialize_operational_walk(walk, db, include_private=True)
 
 
+def _table_exists(db: Session, table_name: str) -> bool:
+    try:
+        bind = db.get_bind()
+        return inspect(bind).has_table(table_name)
+    except Exception:
+        return False
+
+
 def _refresh_reliability_events(walks: list[Walk], db: Session) -> None:
+    if not _table_exists(db, "walk_operational_events"):
+        return
+
     created = False
     for walk in walks:
         created = bool(detect_reliability_events(walk, db)) or created
     if created:
         db.commit()
+
+
+def _build_beta_operational_health(
+    db: Session,
+    real_walks: list[Walk],
+    completed_real_walks: list[Walk],
+    critical_walks: list[Walk],
+) -> dict:
+    real_walk_ids = {walk.id for walk in real_walks}
+    completed_walk_ids = {walk.id for walk in completed_real_walks}
+    recent_cutoff = datetime.utcnow() - timedelta(hours=24)
+    has_completion_reviews_table = _table_exists(db, "walk_completion_reviews")
+    has_operational_events_table = _table_exists(db, "walk_operational_events")
+    has_reviews_table = _table_exists(db, "walk_reviews")
+    has_tips_table = _table_exists(db, "walk_tips")
+
+    if real_walk_ids:
+        completion_reviews = db.query(WalkCompletionReview).filter(WalkCompletionReview.walk_id.in_(real_walk_ids)).all() if has_completion_reviews_table else []
+        operational_events = db.query(WalkOperationalEvent).filter(WalkOperationalEvent.walk_id.in_(real_walk_ids)).all() if has_operational_events_table else []
+        reviews = db.query(WalkReview).filter(WalkReview.walk_id.in_(real_walk_ids)).all() if has_reviews_table else []
+        tips = db.query(WalkTip).filter(WalkTip.walk_id.in_(real_walk_ids)).all() if has_tips_table else []
+    else:
+        completion_reviews = []
+        operational_events = []
+        reviews = []
+        tips = []
+
+    pending_completion_reviews = len([review for review in completion_reviews if review.status in COMPLETION_REVIEW_MUTABLE_STATUSES])
+    rejected_completion_reviews = len([review for review in completion_reviews if review.status in COMPLETION_REVIEW_REJECTED_STATUSES])
+    approved_completion_reviews = len([review for review in completion_reviews if review.status in COMPLETION_REVIEW_APPROVED_STATUSES])
+
+    high_severity_events = len([event for event in operational_events if event.severity == "high"])
+    medium_severity_events = len([event for event in operational_events if event.severity == "medium"])
+    recent_events = len([event for event in operational_events if event.created_at and event.created_at >= recent_cutoff])
+    missing_checkins = len([event for event in operational_events if event.event_type == "missing_checkin"])
+    late_events = len([event for event in operational_events if event.event_type in {"walker_late", "late_cancellation"}])
+
+    paid_tips = [tip for tip in tips if tip.status == "paid"]
+    pending_tips = [tip for tip in tips if tip.status == "pending"]
+    reviewed_completed_walk_ids = {review.walk_id for review in reviews}
+
+    attention_points = (
+        pending_completion_reviews
+        + rejected_completion_reviews
+        + high_severity_events
+        + len(critical_walks)
+        + missing_checkins
+    )
+    if high_severity_events > 0 or missing_checkins > 0 or attention_points >= 5:
+        status = "attention"
+        status_label = "Atenção operacional"
+        summary = "Há pontos pendentes que exigem acompanhamento ativo da operação beta."
+    elif attention_points > 0 or medium_severity_events > 0:
+        status = "watch"
+        status_label = "Monitoramento assistido"
+        summary = "Operação está controlada, com sinais pontuais em acompanhamento."
+    else:
+        status = "stable"
+        status_label = "Operação estável"
+        summary = "Sem sinais críticos no fluxo auditável do beta neste momento."
+
+    return {
+        "status": status,
+        "status_label": status_label,
+        "summary": summary,
+        "pending_completion_reviews": pending_completion_reviews,
+        "approved_completion_reviews": approved_completion_reviews,
+        "rejected_completion_reviews": rejected_completion_reviews,
+        "active_walks": len([walk for walk in real_walks if walk.status in IN_PROGRESS_WALK_STATUSES or walk.operational_status in IN_PROGRESS_WALK_STATUSES]),
+        "critical_recovery_walks": len(critical_walks),
+        "high_severity_events": high_severity_events,
+        "medium_severity_events": medium_severity_events,
+        "recent_operational_events": recent_events,
+        "missing_checkins": missing_checkins,
+        "late_events": late_events,
+        "completed_walks": len(completed_real_walks),
+        "completed_walks_reviewed": len(completed_walk_ids.intersection(reviewed_completed_walk_ids)),
+        "reviews_submitted": len(reviews),
+        "tips_paid": len(paid_tips),
+        "tips_pending": len(pending_tips),
+        "tips_paid_amount": round(sum(float(tip.amount or 0) for tip in paid_tips), 2),
+        "data_availability": {
+            "walk_completion_reviews": has_completion_reviews_table,
+            "walk_operational_events": has_operational_events_table,
+            "walk_reviews": has_reviews_table,
+            "walk_tips": has_tips_table,
+        },
+    }
+
+
+def _weekly_walk_tip_amount(db: Session, real_walk_ids: set[str]) -> float:
+    if not real_walk_ids or not _table_exists(db, "walk_tips"):
+        return 0
+
+    week_cutoff = datetime.utcnow() - timedelta(days=7)
+    tips = (
+        db.query(WalkTip)
+        .filter(
+            WalkTip.walk_id.in_(real_walk_ids),
+            WalkTip.status == "paid",
+            WalkTip.paid_at >= week_cutoff,
+        )
+        .all()
+    )
+    return round(sum(float(tip.amount or 0) for tip in tips), 2)
 
 
 def _serialize_admin_payment(payment: Payment, db: Session) -> dict:
@@ -679,6 +805,7 @@ def dashboard(db: Session = Depends(get_db)):
         if _is_real_pet(pet, db.get(User, pet.tutor_id) if pet.tutor_id else None)
     ]
     real_walks = [walk for walk in db.query(Walk).all() if _is_real_admin_walk(walk, db)]
+    _refresh_reliability_events(real_walks, db)
     critical_walks = [
     walk
     for walk in real_walks
@@ -705,6 +832,9 @@ def dashboard(db: Session = Depends(get_db)):
         for profile in db.query(WalkerProfile).filter(WalkerProfile.status.in_(["restricted", "suspended"])).all()
         if not _is_fake_walker_profile(profile, _profile_user(profile, db))
     )
+    beta_operational_health = _build_beta_operational_health(db, real_walks, completed_real_walks, critical_walks)
+    operational_observability = get_operational_observability_snapshot(db)
+    operational_scheduler = get_operational_scheduler_status()
     return {
         "total_clients": len(real_clients),
         "total_tutors": len(real_clients),
@@ -736,8 +866,11 @@ def dashboard(db: Session = Depends(get_db)):
             }
             for walk in critical_walks
         ],
-        "weekly_tips_amount": sum(float(payment.amount or 0) for payment in payments if payment.provider == "internal_tip"),
+        "weekly_tips_amount": _weekly_walk_tip_amount(db, {walk.id for walk in real_walks}),
         "no_show_rate": round((no_show_total / walk_total) * 100, 2) if walk_total else 0,
+        "beta_operational_health": beta_operational_health,
+        "operational_observability": operational_observability,
+        "operational_scheduler": operational_scheduler,
     }
 
 @router.get("/users")
@@ -1130,6 +1263,14 @@ def recover_walk(walk_id: str, db: Session = Depends(get_db)):
         },
     )
     record_operational_recovery(walk, db)
+    record_operational_log(
+        db,
+        event_type="operational_recovery_triggered",
+        severity="warning",
+        source="admin.recovery",
+        message="Recovery operacional acionado pelo admin.",
+        context={"walk_id": walk.id, "status": walk.operational_status},
+    )
 
     _create_notification(
         db,
@@ -1208,11 +1349,41 @@ def pending_walk_completions(db: Session = Depends(get_db)):
 def approve_walk_completion(review_id: str, payload: dict | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     review = db.get(WalkCompletionReview, review_id)
     if not review:
+        record_operational_log(
+            db,
+            event_type="completion_approve_failed",
+            severity="warning",
+            source="admin.approve_completion",
+            message="Tentativa de aprovar finalização inexistente.",
+            context={"review_id": review_id, "admin_id": admin.id},
+        )
+        db.commit()
         raise HTTPException(status_code=404, detail="Revisao de finalizacao nao encontrada.")
     walk = db.get(Walk, review.walk_id)
     if not walk:
+        record_operational_log(
+            db,
+            event_type="completion_approve_failed",
+            severity="error",
+            source="admin.approve_completion",
+            message="Finalização sem passeio associado para aprovação.",
+            context={"review_id": review.id, "walk_id": review.walk_id, "admin_id": admin.id},
+        )
+        db.commit()
         raise HTTPException(status_code=404, detail="Passeio nao encontrado.")
-    _ensure_completion_review_can_transition(review, "approve")
+    try:
+        _ensure_completion_review_can_transition(review, "approve")
+    except HTTPException as exc:
+        record_operational_log(
+            db,
+            event_type="completion_approve_blocked",
+            severity="warning",
+            source="admin.approve_completion",
+            message=str(exc.detail),
+            context={"review_id": review.id, "walk_id": walk.id, "status": review.status, "admin_id": admin.id},
+        )
+        db.commit()
+        raise
 
     now = datetime.utcnow()
     review.status = "approved"
@@ -1278,11 +1449,41 @@ def approve_walk_completion(review_id: str, payload: dict | None = None, admin: 
 def reject_walk_completion(review_id: str, payload: dict | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     review = db.get(WalkCompletionReview, review_id)
     if not review:
+        record_operational_log(
+            db,
+            event_type="completion_reject_failed",
+            severity="warning",
+            source="admin.reject_completion",
+            message="Tentativa de rejeitar finalização inexistente.",
+            context={"review_id": review_id, "admin_id": admin.id},
+        )
+        db.commit()
         raise HTTPException(status_code=404, detail="Revisao de finalizacao nao encontrada.")
     walk = db.get(Walk, review.walk_id)
     if not walk:
+        record_operational_log(
+            db,
+            event_type="completion_reject_failed",
+            severity="error",
+            source="admin.reject_completion",
+            message="Finalização sem passeio associado para rejeição.",
+            context={"review_id": review.id, "walk_id": review.walk_id, "admin_id": admin.id},
+        )
+        db.commit()
         raise HTTPException(status_code=404, detail="Passeio nao encontrado.")
-    _ensure_completion_review_can_transition(review, "reject")
+    try:
+        _ensure_completion_review_can_transition(review, "reject")
+    except HTTPException as exc:
+        record_operational_log(
+            db,
+            event_type="completion_reject_blocked",
+            severity="warning",
+            source="admin.reject_completion",
+            message=str(exc.detail),
+            context={"review_id": review.id, "walk_id": walk.id, "status": review.status, "admin_id": admin.id},
+        )
+        db.commit()
+        raise
 
     now = datetime.utcnow()
     review.status = "rejected"

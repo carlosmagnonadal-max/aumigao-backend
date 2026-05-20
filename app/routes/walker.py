@@ -1518,6 +1518,7 @@ COMPLETION_REPORT_ALLOWED_STATUSES = {
     "walker_arriving",
     "ride_scheduled",
     "walker_accepted",
+    "completion_rejected",
 }
 
 COMPLETION_CHECKLIST_REQUIRED_KEYS = {

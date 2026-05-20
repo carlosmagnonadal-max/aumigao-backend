@@ -1205,6 +1205,28 @@ def approve_walk_completion(review_id: str, payload: dict | None = None, admin: 
                 },
             ),
         )
+    walker_id = review.walker_user_id or walk.walker_id
+    walker = db.get(User, walker_id) if walker_id else None
+    if walker:
+        _create_notification(
+            db,
+            NotificationCreate(
+                user_id=walker.id,
+                user_role=walker.role,
+                title="Pagamento operacional liberado",
+                message="A finalização do passeio foi aprovada pela revisão operacional. O pagamento operacional foi liberado para o seu extrato.",
+                type="walk_payment_released",
+                related_entity_type="walk",
+                related_entity_id=walk.id,
+                metadata={
+                    "walk_id": walk.id,
+                    "review_id": review.id,
+                    "payment_provider": "internal",
+                    "priority": "normal",
+                    "channel": "in_app",
+                },
+            ),
+        )
     db.commit()
     db.refresh(review)
     db.refresh(walk)

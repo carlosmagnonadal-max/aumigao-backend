@@ -38,6 +38,7 @@ from app.services.operational_observability_service import (
     record_operational_exception,
     record_operational_log,
 )
+from app.services.beta_readiness_service import build_beta_readiness_checklist
 from app.services.operational_scheduler_service import get_operational_scheduler_status
 from app.services.walker_operational_score_service import calculate_walker_operational_score
 from app.routes.notifications import NotificationCreate, _create_notification
@@ -835,6 +836,13 @@ def dashboard(db: Session = Depends(get_db)):
     beta_operational_health = _build_beta_operational_health(db, real_walks, completed_real_walks, critical_walks)
     operational_observability = get_operational_observability_snapshot(db)
     operational_scheduler = get_operational_scheduler_status()
+    beta_readiness = build_beta_readiness_checklist(
+        db,
+        beta_operational_health=beta_operational_health,
+        operational_observability=operational_observability,
+        operational_scheduler=operational_scheduler,
+        recovery_statuses=RECOVERY_WALK_STATUSES,
+    )
     return {
         "total_clients": len(real_clients),
         "total_tutors": len(real_clients),
@@ -871,6 +879,7 @@ def dashboard(db: Session = Depends(get_db)):
         "beta_operational_health": beta_operational_health,
         "operational_observability": operational_observability,
         "operational_scheduler": operational_scheduler,
+        "beta_readiness": beta_readiness,
     }
 
 @router.get("/users")

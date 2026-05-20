@@ -33,6 +33,9 @@ APPROVED_WALKER_STATUSES = {"active"}
 PAID_PAYMENT_STATUSES = {"paid", "Pago", "pagamento_confirmado_sandbox", "payment_confirmed", "confirmed"}
 IN_PROGRESS_WALK_STATUSES = {"Indo buscar o pet", "Passeando agora", "walker_arriving", "ride_in_progress"}
 DIRECT_COMPLETION_STATUSES = {"ride_completed", "Finalizado", "finalizado", "completed", "finished"}
+COMPLETION_REVIEW_MUTABLE_STATUSES = {"pending", "pending_review", "under_review"}
+COMPLETION_REVIEW_APPROVED_STATUSES = {"approved"}
+COMPLETION_REVIEW_REJECTED_STATUSES = {"rejected", "completion_rejected"}
 
 RECOVERY_WALK_STATUSES = {
     "no_walker_found",
@@ -70,6 +73,19 @@ def _walk_completion_checklist(review: WalkCompletionReview) -> dict:
         return parsed if isinstance(parsed, dict) else {}
     except (TypeError, ValueError):
         return {}
+
+
+def _ensure_completion_review_can_transition(review: WalkCompletionReview, action: str) -> None:
+    status = (review.status or "").strip().lower()
+    if status in COMPLETION_REVIEW_MUTABLE_STATUSES:
+        return
+    if status in COMPLETION_REVIEW_APPROVED_STATUSES:
+        detail = "Revisao de finalizacao ja aprovada." if action == "approve" else "Revisao ja aprovada nao pode ser rejeitada."
+        raise HTTPException(status_code=409, detail=detail)
+    if status in COMPLETION_REVIEW_REJECTED_STATUSES:
+        detail = "Revisao rejeitada exige novo reenvio antes da aprovacao." if action == "approve" else "Revisao de finalizacao ja rejeitada."
+        raise HTTPException(status_code=409, detail=detail)
+    raise HTTPException(status_code=409, detail="Revisao de finalizacao nao esta pendente para decisao operacional.")
 
 
 def _serialize_walk_completion_review(review: WalkCompletionReview, db: Session) -> dict:
@@ -1173,6 +1189,7 @@ def approve_walk_completion(review_id: str, payload: dict | None = None, admin: 
     walk = db.get(Walk, review.walk_id)
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado.")
+    _ensure_completion_review_can_transition(review, "approve")
 
     now = datetime.utcnow()
     review.status = "approved"
@@ -1242,6 +1259,7 @@ def reject_walk_completion(review_id: str, payload: dict | None = None, admin: U
     walk = db.get(Walk, review.walk_id)
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado.")
+    _ensure_completion_review_can_transition(review, "reject")
 
     now = datetime.utcnow()
     review.status = "rejected"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import func, inspect
@@ -11,6 +11,15 @@ from app.models.operational_beta_log import OperationalBetaLog
 
 SEVERITY_ORDER = ("critical", "error", "warning", "info")
 DEFAULT_COUNTS = {severity: 0 for severity in SEVERITY_ORDER}
+DEDUPLICATION_WINDOW_SECONDS = 5 * 60
+CONTEXT_IDENTITY_KEYS = (
+    "walk_id",
+    "review_id",
+    "tip_id",
+    "payment_id",
+    "attempt_id",
+    "user_id",
+)
 
 
 def _ensure_operational_log_table(db: Session) -> bool:
@@ -34,9 +43,78 @@ def _serialize_context(context: dict | str | None) -> str | None:
     if isinstance(context, str):
         return context[:4000]
     try:
-        return json.dumps(context, ensure_ascii=False, default=str)[:4000]
+        return json.dumps(context, ensure_ascii=False, default=str, sort_keys=True)[:4000]
     except Exception:
         return json.dumps({"raw": str(context)}, ensure_ascii=False)[:4000]
+
+
+def _context_identity_from_payload(context: dict | str | None, serialized_context: str | None) -> str:
+    try:
+        payload = context
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        if not isinstance(payload, dict) and serialized_context:
+            payload = json.loads(serialized_context)
+        if isinstance(payload, dict):
+            for key in CONTEXT_IDENTITY_KEYS:
+                value = payload.get(key)
+                if value not in (None, ""):
+                    return f"{key}:{value}"
+        return serialized_context or ""
+    except Exception:
+        return serialized_context or ""
+
+
+def _context_identity_from_log(log: OperationalBetaLog) -> str:
+    return _context_identity_from_payload(None, log.context_json)
+
+
+def _find_recent_duplicate_log(
+    db: Session,
+    event_type: str,
+    severity: str,
+    source: str,
+    message: str,
+    context: dict | str | None,
+    serialized_context: str | None,
+) -> OperationalBetaLog | None:
+    target_identity = _context_identity_from_payload(context, serialized_context)
+    try:
+        for pending in list(db.new):
+            if not isinstance(pending, OperationalBetaLog):
+                continue
+            if (
+                pending.event_type == event_type
+                and pending.severity == severity
+                and pending.source == source
+                and pending.message == message
+                and _context_identity_from_log(pending) == target_identity
+            ):
+                return pending
+    except Exception:
+        pass
+
+    try:
+        cutoff = datetime.utcnow() - timedelta(seconds=DEDUPLICATION_WINDOW_SECONDS)
+        candidates = (
+            db.query(OperationalBetaLog)
+            .filter(
+                OperationalBetaLog.event_type == event_type,
+                OperationalBetaLog.severity == severity,
+                OperationalBetaLog.source == source,
+                OperationalBetaLog.message == message,
+                OperationalBetaLog.created_at >= cutoff,
+            )
+            .order_by(OperationalBetaLog.created_at.desc())
+            .limit(25)
+            .all()
+        )
+        for candidate in candidates:
+            if _context_identity_from_log(candidate) == target_identity:
+                return candidate
+    except Exception:
+        return None
+    return None
 
 
 def record_operational_log(
@@ -51,13 +129,30 @@ def record_operational_log(
         if not _ensure_operational_log_table(db):
             return None
 
+        normalized_event_type = str(event_type or "operational_event")[:120]
+        normalized_severity = _normalize_severity(severity)
+        normalized_source = str(source or "backend")[:120]
+        normalized_message = str(message or "Evento operacional registrado.")[:1000]
+        serialized_context = _serialize_context(context)
+        duplicate = _find_recent_duplicate_log(
+            db,
+            normalized_event_type,
+            normalized_severity,
+            normalized_source,
+            normalized_message,
+            context,
+            serialized_context,
+        )
+        if duplicate:
+            return duplicate
+
         log = OperationalBetaLog(
             id=str(uuid4()),
-            event_type=str(event_type or "operational_event")[:120],
-            severity=_normalize_severity(severity),
-            source=str(source or "backend")[:120],
-            message=str(message or "Evento operacional registrado.")[:1000],
-            context_json=_serialize_context(context),
+            event_type=normalized_event_type,
+            severity=normalized_severity,
+            source=normalized_source,
+            message=normalized_message,
+            context_json=serialized_context,
             created_at=datetime.utcnow(),
         )
         db.add(log)

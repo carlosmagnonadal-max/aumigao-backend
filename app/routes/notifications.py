@@ -16,6 +16,8 @@ from app.models.user import User
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 api_router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
+ADMIN_NOTIFICATION_ROLES = {"admin", "super_admin", "superadmin"}
+
 
 class NotificationCreate(BaseModel):
     user_id: str | None = None
@@ -90,6 +92,22 @@ def _create_notification(db: Session, payload: NotificationCreate) -> Notificati
     return notification
 
 
+def _is_admin_role(role: str | None) -> bool:
+    return role in ADMIN_NOTIFICATION_ROLES
+
+
+def _visible_notifications_query(query, current_user: User):
+    if _is_admin_role(current_user.role):
+        return query.filter(
+            (Notification.user_id == current_user.id)
+            | (
+                Notification.user_id.is_(None)
+                & Notification.user_role.in_(list(ADMIN_NOTIFICATION_ROLES))
+            )
+        )
+    return query.filter(Notification.user_id == current_user.id)
+
+
 def _list_notifications(
     db: Session,
     current_user: User,
@@ -97,14 +115,7 @@ def _list_notifications(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     query = db.query(Notification)
-
-    if current_user.role in {"admin", "superadmin"}:
-        query = query.filter(
-            (Notification.user_id == current_user.id)
-            | (Notification.user_role.in_(["admin", "superadmin"]))
-        )
-    else:
-        query = query.filter(Notification.user_id == current_user.id)
+    query = _visible_notifications_query(query, current_user)
 
     if only_unread:
         query = query.filter(Notification.is_read.is_(False))
@@ -120,14 +131,7 @@ def _list_notifications(
 
 def _unread_count(db: Session, current_user: User) -> dict[str, int]:
     query = db.query(Notification)
-
-    if current_user.role in {"admin", "superadmin"}:
-        query = query.filter(
-            (Notification.user_id == current_user.id)
-            | (Notification.user_role.in_(["admin", "superadmin"]))
-        )
-    else:
-        query = query.filter(Notification.user_id == current_user.id)
+    query = _visible_notifications_query(query, current_user)
 
     count = query.filter(Notification.is_read.is_(False)).count()
     return {"count": count}
@@ -139,11 +143,11 @@ def _mark_as_read(db: Session, notification_id: str, current_user: User) -> dict
     if not notification:
         raise HTTPException(status_code=404, detail="Notificação não encontrada.")
 
-    is_admin = current_user.role in {"admin", "superadmin"}
+    is_admin = _is_admin_role(current_user.role)
     owns_notification = notification.user_id == current_user.id
-    is_admin_notification = notification.user_role in {"admin", "superadmin"}
+    is_global_admin_notification = notification.user_id is None and notification.user_role in ADMIN_NOTIFICATION_ROLES
 
-    if not owns_notification and not (is_admin and is_admin_notification):
+    if not owns_notification and not (is_admin and is_global_admin_notification):
         raise HTTPException(status_code=403, detail="Você não pode alterar esta notificação.")
 
     notification.is_read = True
@@ -158,14 +162,7 @@ def _mark_as_read(db: Session, notification_id: str, current_user: User) -> dict
 
 def _mark_all_as_read(db: Session, current_user: User) -> dict[str, int]:
     notifications = db.query(Notification)
-
-    if current_user.role in {"admin", "superadmin"}:
-        notifications = notifications.filter(
-            (Notification.user_id == current_user.id)
-            | (Notification.user_role.in_(["admin", "superadmin"]))
-        )
-    else:
-        notifications = notifications.filter(Notification.user_id == current_user.id)
+    notifications = _visible_notifications_query(notifications, current_user)
 
     rows = notifications.filter(Notification.is_read.is_(False)).all()
 
@@ -192,7 +189,7 @@ def _seed_demo_notifications(db: Session, current_user: User) -> list[dict[str, 
 
     role = current_user.role or "tutor"
 
-    if role in {"admin", "superadmin"}:
+    if _is_admin_role(role):
         samples = [
             NotificationCreate(
                 user_id=current_user.id,
@@ -295,7 +292,7 @@ def create_notification(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role not in {"admin", "superadmin"}:
+    if not _is_admin_role(current_user.role):
         raise HTTPException(status_code=403, detail="Apenas admin pode criar notificações manualmente.")
 
     notification = _create_notification(db, payload)

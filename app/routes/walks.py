@@ -439,43 +439,12 @@ def reschedule_selected_walker_walk(
 
 @router.post("/{walk_id}/tip")
 def create_walk_tip(walk_id: str, payload: WalkTipCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    walk = _get_walk_for_user(walk_id, user, db)
-    if walk.tutor_id != user.id:
-        raise HTTPException(status_code=403, detail="Apenas o tutor dono do passeio pode registrar gorjeta.")
-
-    status = (walk.status or "").strip()
-    if status not in COMPLETED_WALK_STATUSES:
-        raise HTTPException(status_code=400, detail="Gorjeta disponivel apenas para passeio finalizado.")
-
-    walker_id = walk.walker_id or walk.assigned_walker_id
-    if not walker_id:
-        raise HTTPException(status_code=400, detail="Gorjeta exige passeador atribuido ao passeio.")
-
-    payment = Payment(
-        id=str(uuid4()),
-        tutor_id=user.id,
-        walk_id=walk.id,
-        amount=float(payload.amount),
-        status="tip_registered",
-        provider="internal_tip",
+    return create_walk_tip_checkout(
+        walk_id,
+        WalkTipCheckoutCreate(amount=payload.amount),
+        user,
+        db,
     )
-    db.add(payment)
-    db.commit()
-    db.refresh(payment)
-    return {
-        "id": payment.id,
-        "walk_id": walk.id,
-        "tutor_id": user.id,
-        "walker_id": walker_id,
-        "amount": payment.amount,
-        "status": payment.status,
-        "provider": payment.provider,
-        "provider_payment_id": payment.provider_payment_id,
-        "created_at": payment.created_at,
-        "note": (payload.note or "").strip() or None,
-        "requires_payment_capture": False,
-        "message": "Gorjeta registrada para conciliacao futura. Nenhuma cobranca real foi feita.",
-    }
 
 @router.delete("/{walk_id}")
 def delete_walk(walk_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):

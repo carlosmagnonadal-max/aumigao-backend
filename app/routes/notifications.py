@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.notification import Notification
+from app.models.push_token import PushToken
 from app.models.user import User
+from app.services.push_notifications import send_push_for_notification
 
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
@@ -28,6 +30,11 @@ class NotificationCreate(BaseModel):
     related_entity_type: str | None = None
     related_entity_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PushTokenCreate(BaseModel):
+    expo_push_token: str
+    platform: str = "unknown"
 
 
 class NotificationResponse(BaseModel):
@@ -89,6 +96,7 @@ def _create_notification(db: Session, payload: NotificationCreate) -> Notificati
     )
     db.add(notification)
     db.flush()
+    send_push_for_notification(db, notification)
     return notification
 
 
@@ -283,6 +291,34 @@ def get_unread_count(
     current_user: User = Depends(get_current_user),
 ):
     return _unread_count(db, current_user)
+
+
+@router.post("/push-token")
+@api_router.post("/push-token")
+def register_push_token(
+    payload: PushTokenCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    token = payload.expo_push_token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Token de push invalido.")
+
+    row = db.query(PushToken).filter(PushToken.expo_push_token == token).first()
+    if not row:
+        row = PushToken(
+            id=str(uuid.uuid4()),
+            user_id=current_user.id,
+            expo_push_token=token,
+        )
+        db.add(row)
+
+    row.user_id = current_user.id
+    row.platform = (payload.platform or "unknown").strip() or "unknown"
+    row.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(row)
+    return {"ok": True, "user_id": row.user_id, "platform": row.platform, "updated_at": row.updated_at}
 
 
 @router.post("")

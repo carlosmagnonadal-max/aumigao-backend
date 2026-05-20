@@ -17,5 +17,6 @@ from app.models.walker_recovery_plan import WalkerRecoveryPlan
 from app.models.tip_integrity_flag import TipIntegrityFlag
 from app.models.complaint import Complaint, ComplaintDecision, ComplaintEvidence, ComplaintStatusHistory, RiskScore
 from app.models.notification import Notification
+from app.models.push_token import PushToken
 from app.models.walker_kit_submission import WalkerKitSubmission
 from app.models.walk_completion_review import WalkCompletionReview

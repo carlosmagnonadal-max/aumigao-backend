@@ -321,6 +321,40 @@ def register_push_token(
     return {"ok": True, "user_id": row.user_id, "platform": row.platform, "updated_at": row.updated_at}
 
 
+@router.post("/push-test")
+@api_router.post("/push-test")
+def create_push_test_notification(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    has_token = (
+        db.query(PushToken)
+        .filter(PushToken.user_id == current_user.id)
+        .first()
+        is not None
+    )
+    if not has_token:
+        raise HTTPException(
+            status_code=409,
+            detail="Nenhum token push registrado para este usuário. Ative as notificações no dispositivo físico e tente novamente.",
+        )
+
+    notification = _create_notification(
+        db,
+        NotificationCreate(
+            user_id=current_user.id,
+            user_role=current_user.role or "tutor",
+            title="Teste de push beta",
+            message="Se você recebeu este alerta no dispositivo físico, o push real está ativo para este perfil.",
+            type="push_test",
+            metadata={"origin": "manual_push_test", "priority": "high"},
+        ),
+    )
+    db.commit()
+    db.refresh(notification)
+    return {"ok": True, "notification": _serialize_notification(notification)}
+
+
 @router.post("")
 @api_router.post("")
 def create_notification(

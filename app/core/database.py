@@ -13,7 +13,11 @@ load_dotenv(ENV_PATH)
 
 
 def _database_url() -> str:
-    return os.getenv("DATABASE_URL", "sqlite:///./aumigao.db").strip().strip('"').strip("'")
+    return (
+        os.getenv("DATABASE_URL")
+        or os.getenv("URL_DO_BANCO_DE_DADOS")
+        or "sqlite:///./aumigao.db"
+    ).strip().strip('"').strip("'")
 
 
 SQLALCHEMY_DATABASE_URL = _database_url()

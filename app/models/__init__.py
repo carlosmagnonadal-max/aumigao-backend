@@ -22,3 +22,4 @@ from app.models.notification import Notification
 from app.models.push_token import PushToken
 from app.models.walker_kit_submission import WalkerKitSubmission
 from app.models.walk_completion_review import WalkCompletionReview
+from app.models.legal_acceptance import LegalAcceptance

@@ -34,8 +34,9 @@ from app.models import (
     WalkerReview,
     WalkerWeeklyMission,
     WalkCompletionReview,
+    LegalAcceptance,
 )
-from app.routes import admin, auth, complaints, matching, notifications, operational_walks, payments, pets, referrals, reviews, tutor, walker, walker_quality, walks, weekly_missions
+from app.routes import admin, auth, complaints, legal, matching, notifications, operational_walks, payments, pets, referrals, reviews, tutor, walker, walker_quality, walks, weekly_missions
 from app.services.admin_seed_service import ensure_configured_admin_users
 from app.services.operational_matching_service import ensure_operational_schema
 from app.services.operational_scheduler_service import (
@@ -278,6 +279,8 @@ app.include_router(complaints.admin_router)
 app.include_router(complaints.api_admin_router)
 app.include_router(complaints.legacy_admin_occurrences_router)
 app.include_router(complaints.api_legacy_admin_occurrences_router)
+app.include_router(legal.router)
+app.include_router(legal.api_router)
 
 _operational_scheduler_task: asyncio.Task | None = None
 

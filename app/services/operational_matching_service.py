@@ -279,6 +279,14 @@ def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None
     tutor = db.get(User, walk.tutor_id) if walk.tutor_id else None
     walker_id = walk.walker_id or walk.assigned_walker_id
     walker = db.get(User, walker_id) if walker_id else None
+    walker_profile = (
+      db.query(WalkerProfile)
+      .filter(WalkerProfile.user_id == walker_id)
+      .first()
+      if walker_id
+      else None
+    )
+    walker_photo_url = (walker_profile.profile_photo_url if walker_profile else "") or ""
     attempts = (
         db.query(WalkMatchingAttempt)
         .filter(WalkMatchingAttempt.walk_id == walk.id)
@@ -341,6 +349,9 @@ def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None
         "tutor_name": (tutor.full_name if tutor else None) or (tutor.email if tutor else None),
         "client_name": (tutor.full_name if tutor else None) or (tutor.email if tutor else None),
         "walker_name": (walker.full_name if walker else None) or (walker.email if walker else None),
+        "walker_photo_url": walker_photo_url,
+        "profile_photo_url": walker_photo_url,
+        "photo_url": walker_photo_url,
         "walker_operational_score": walker_operational_score,
         "scheduled_date": walk.scheduled_date,
         "walk_date": walk_date or None,

@@ -202,18 +202,13 @@ def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db:
         db.add(walk)
 
         logger.warning(
-            "create_walk.before_matching walk_id=%s",
+            "create_walk.matching_deferred walk_id=%s",
             walk.id,
         )
 
-        try:
-            start_matching(walk, db, actor=user)
-        except Exception as exc:
-            logger.exception(
-        "create_walk.matching_failed walk_id=%s error=%s",
-        walk.id,
-        str(exc),
-    )
+        walk.operational_status = "pending_walker_confirmation"
+        walk.status = "Agendado"
+        walk.no_walker_reason = "Matching inicial adiado para evitar timeout no beta."
 
         logger.warning(
             "create_walk.before_commit walk_id=%s operational_status=%s",

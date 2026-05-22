@@ -1,4 +1,6 @@
-﻿import logging
+﻿from email.iterators import walk
+from os import walk
+import logging
 import traceback
 from uuid import uuid4
 from datetime import datetime, timedelta
@@ -204,7 +206,14 @@ def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db:
             walk.id,
         )
 
-        start_matching(walk, db, actor=user)
+        try:
+            start_matching(walk, db, actor=user)
+        except Exception as exc:
+            logger.exception(
+        "create_walk.matching_failed walk_id=%s error=%s",
+        walk.id,
+        str(exc),
+    )
 
         logger.warning(
             "create_walk.before_commit walk_id=%s operational_status=%s",

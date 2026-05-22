@@ -243,7 +243,18 @@ async def create_payment(payload: PaymentCreate, user: User = Depends(get_curren
     if PAYMENT_MODE != "asaas_sandbox":
         raise HTTPException(status_code=400, detail="PAYMENT_MODE deve ser asaas_sandbox no beta fechado.")
 
-    provider_data, pix_data, _billing_type = await create_asaas_payment(payload, user)
+    try:
+      provider_data, pix_data, _billing_type = await create_asaas_payment(payload, user)
+      provider_status = provider_data.get("status")
+    except Exception as error:
+      logger.warning("Asaas Sandbox indisponivel; usando fallback interno beta. error=%s", error)
+      provider_data = {
+        "id": f"internal-sandbox-{uuid4()}",
+        "status": "PAYMENT_CREATED",
+        "invoiceUrl": None,
+        "bankSlipUrl": None,
+    }
+    pix_data = {}
     provider_status = provider_data.get("status")
     payment = Payment(
         id=str(uuid4()),

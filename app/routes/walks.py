@@ -226,11 +226,40 @@ def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db:
         db.refresh(walk)
 
         logger.warning(
-            "create_walk.success walk_id=%s",
+            "create_walk.success_light_response walk_id=%s",
             walk.id,
         )
 
-        return serialize_operational_walk(walk, db, user=user)
+        return {
+            "id": walk.id,
+            "tutor_id": walk.tutor_id,
+            "walker_id": walk.walker_id,
+            "assigned_walker_id": walk.assigned_walker_id,
+            "pet_id": walk.pet_id,
+            "scheduled_date": walk.scheduled_date,
+            "walk_date": _split_scheduled_date(walk.scheduled_date)[0],
+            "walk_time": _split_scheduled_date(walk.scheduled_date)[1],
+            "duration_minutes": walk.duration_minutes,
+            "price": walk.price,
+            "status": walk.status,
+            "operational_status": walk.operational_status,
+            "operationalStatus": walk.operational_status,
+            "walker_selection_mode": walk.walker_selection_mode,
+            "walkerSelectionMode": walk.walker_selection_mode,
+            "assignedWalkerId": walk.assigned_walker_id,
+            "current_attempt": walk.current_attempt,
+            "current_matching_attempt": walk.current_attempt,
+            "max_attempts": walk.max_attempts,
+            "max_matching_attempts": walk.max_attempts,
+            "confirmation_expires_at": walk.confirmation_expires_at,
+            "matching_started_at": walk.matching_started_at,
+            "matching_finished_at": walk.matching_finished_at,
+            "no_walker_reason": walk.no_walker_reason,
+            "pickup_method": walk.pickup_method,
+            "address_snapshot": walk.address_snapshot,
+            "notes": walk.notes,
+            "created_at": walk.created_at,
+    }
 
     except Exception as error:
         db.rollback()

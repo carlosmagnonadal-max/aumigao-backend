@@ -1,4 +1,6 @@
-﻿from uuid import uuid4
+﻿import logging
+import traceback
+from uuid import uuid4
 from datetime import datetime, timedelta
 import json
 from fastapi import APIRouter, Depends, HTTPException
@@ -30,6 +32,7 @@ from app.services.operational_matching_service import (
 from app.services.operational_reliability_service import detect_reliability_events, record_late_cancellation_if_applicable
 
 router = APIRouter(prefix="/walks", tags=["walks"])
+logger = logging.getLogger(__name__)
 
 COMPLETED_WALK_STATUSES = {"Finalizado", "Concluido", "Concluído", "finalizado", "completed", "finished"}
 DIRECT_COMPLETION_STATUSES = {"ride_completed", "Finalizado", "finalizado", "completed", "finished"}
@@ -151,26 +154,91 @@ def list_walks(user: User = Depends(get_current_user), db: Session = Depends(get
 
 @router.post("", response_model=WalkResponse)
 def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    data = payload.model_dump()
-    selected_walker_id = data.pop("walker_id", None)
-    requested_selection_mode = data.pop("walker_selection_mode", None)
-    walker_selection_mode = "only_selected" if requested_selection_mode == "only_selected" else "auto"
-    walk = Walk(
-        id=str(uuid4()),
-        tutor_id=user.id,
-        walker_id=selected_walker_id,
-        assigned_walker_id=selected_walker_id,
-        walker_selection_mode=walker_selection_mode,
-        operational_status="pending_walker_confirmation",
-        current_attempt=0,
-        max_attempts=3,
-        **data,
+    logger.warning(
+        "create_walk.start user_id=%s role=%s payload=%s",
+        user.id,
+        user.role,
+        payload.model_dump(),
     )
-    db.add(walk)
-    start_matching(walk, db, actor=user)
-    db.commit()
-    db.refresh(walk)
-    return serialize_operational_walk(walk, db, user=user)
+
+    try:
+        data = payload.model_dump()
+
+        selected_walker_id = data.pop("walker_id", None)
+        requested_selection_mode = data.pop("walker_selection_mode", None)
+
+        walker_selection_mode = (
+            "only_selected"
+            if requested_selection_mode == "only_selected"
+            else "auto"
+        )
+
+        logger.warning(
+            "create_walk.resolved_selection selected_walker_id=%s selection_mode=%s",
+            selected_walker_id,
+            walker_selection_mode,
+        )
+
+        walk = Walk(
+            id=str(uuid4()),
+            tutor_id=user.id,
+            walker_id=selected_walker_id,
+            assigned_walker_id=selected_walker_id,
+            walker_selection_mode=walker_selection_mode,
+            operational_status="pending_walker_confirmation",
+            current_attempt=0,
+            max_attempts=3,
+            **data,
+        )
+
+        logger.warning(
+            "create_walk.walk_initialized walk_id=%s pet_id=%s",
+            walk.id,
+            walk.pet_id,
+        )
+
+        db.add(walk)
+
+        logger.warning(
+            "create_walk.before_matching walk_id=%s",
+            walk.id,
+        )
+
+        start_matching(walk, db, actor=user)
+
+        logger.warning(
+            "create_walk.before_commit walk_id=%s operational_status=%s",
+            walk.id,
+            walk.operational_status,
+        )
+
+        db.commit()
+
+        logger.warning(
+            "create_walk.after_commit walk_id=%s",
+            walk.id,
+        )
+
+        db.refresh(walk)
+
+        logger.warning(
+            "create_walk.success walk_id=%s",
+            walk.id,
+        )
+
+        return serialize_operational_walk(walk, db, user=user)
+
+    except Exception as error:
+        db.rollback()
+
+        logger.exception(
+            "create_walk.failed user_id=%s error=%s traceback=%s",
+            user.id,
+            error,
+            traceback.format_exc(),
+        )
+
+        raise
 
 @router.get("/{walk_id}", response_model=WalkResponse)
 def get_walk(walk_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):

@@ -1,23 +1,28 @@
 from fastapi import HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.tip_integrity_flag import TipIntegrityFlag
 from app.models.user import User
+from app.models.walk import Walk
 from app.models.walker_incentive import WalkerIncentive
 from app.models.walker_monitoring_alert import WalkerMonitoringAlert
 from app.models.walker_profile import WalkerProfile
+from app.models.walker_recovery_plan import WalkerRecoveryPlan
 from app.models.walker_reputation_snapshot import WalkerReputationSnapshot
 from app.models.walker_review import WalkerReview
 from app.services.incentive_engine_service import evaluate_incentives, incentive_payload, list_incentives
 from app.services.monitoring_service import alert_payload, evaluate_monitoring_alerts, open_alerts
 from app.services.recovery_service import active_recovery_plan, build_recommendations, get_or_create_recovery_plan, recovery_payload
 from app.services.reputation_service import (
+    COMPLETED_STATUSES,
     admin_review_payload,
     calculate_basic_behavior_score,
     calculate_hybrid_reputation_score,
     create_reputation_snapshot,
     get_walker_identity,
     reputation_summary,
+    walker_level,
 )
 from app.services.tip_integrity_service import TIP_REPUTATION_POLICY, evaluate_tip_patterns, tip_flag_payload
 
@@ -120,6 +125,134 @@ def walker_quality_item(profile: WalkerProfile, db: Session) -> dict:
     }
 
 
+def _safe_count_map(query, key_index: int = 0, value_index: int = 1) -> dict:
+    try:
+        return {row[key_index]: row[value_index] for row in query.all()}
+    except Exception:
+        try:
+            query.session.rollback()
+        except Exception:
+            pass
+        return {}
+
+
+def _safe_review_map(query) -> dict:
+    try:
+        return {row[0]: (row[1], row[2]) for row in query.all()}
+    except Exception:
+        try:
+            query.session.rollback()
+        except Exception:
+            pass
+        return {}
+
+
+def _safe_latest_snapshots(db: Session, walker_ids: list[str]) -> dict:
+    if not walker_ids:
+        return {}
+    try:
+        snapshots = (
+            db.query(WalkerReputationSnapshot)
+            .filter(WalkerReputationSnapshot.walker_id.in_(walker_ids))
+            .order_by(WalkerReputationSnapshot.calculated_at.desc())
+            .limit(len(walker_ids) * 5)
+            .all()
+        )
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return {}
+    latest = {}
+    for snapshot in snapshots:
+        latest.setdefault(snapshot.walker_id, snapshot)
+    return latest
+
+
+def _light_walker_quality_items(profiles: list[WalkerProfile], db: Session) -> list[dict]:
+    # Otimizacao beta: lista administrativa usa agregados leves e evita recalcular reputacao de todos.
+    walker_ids = [profile.user_id for profile in profiles if profile.user_id]
+    if not walker_ids:
+        return []
+
+    review_rows = _safe_review_map(
+        db.query(
+            WalkerReview.walker_id,
+            func.count(WalkerReview.id),
+            func.coalesce(func.avg(WalkerReview.rating), 0),
+        )
+        .filter(WalkerReview.walker_id.in_(walker_ids))
+        .group_by(WalkerReview.walker_id)
+    )
+    completed_counts = _safe_count_map(
+        db.query(Walk.walker_id, func.count(Walk.id))
+        .filter(Walk.walker_id.in_(walker_ids), Walk.status.in_(COMPLETED_STATUSES))
+        .group_by(Walk.walker_id)
+    )
+    total_walk_counts = _safe_count_map(
+        db.query(Walk.walker_id, func.count(Walk.id))
+        .filter(Walk.walker_id.in_(walker_ids))
+        .group_by(Walk.walker_id)
+    )
+    cancelled_counts = _safe_count_map(
+        db.query(Walk.walker_id, func.count(Walk.id))
+        .filter(Walk.walker_id.in_(walker_ids), func.lower(Walk.status) == "cancelado")
+        .group_by(Walk.walker_id)
+    )
+    alert_counts = _safe_count_map(
+        db.query(WalkerMonitoringAlert.walker_id, func.count(WalkerMonitoringAlert.id))
+        .filter(WalkerMonitoringAlert.walker_id.in_(walker_ids), WalkerMonitoringAlert.status == "open")
+        .group_by(WalkerMonitoringAlert.walker_id)
+    )
+    incentive_counts = _safe_count_map(
+        db.query(WalkerIncentive.walker_id, func.count(WalkerIncentive.id))
+        .filter(WalkerIncentive.walker_id.in_(walker_ids), WalkerIncentive.status.in_(["active", "granted"]))
+        .group_by(WalkerIncentive.walker_id)
+    )
+    recovery_counts = _safe_count_map(
+        db.query(WalkerRecoveryPlan.walker_id, func.count(WalkerRecoveryPlan.id))
+        .filter(WalkerRecoveryPlan.walker_id.in_(walker_ids), WalkerRecoveryPlan.status == "active")
+        .group_by(WalkerRecoveryPlan.walker_id)
+    )
+    tip_counts = _safe_count_map(
+        db.query(TipIntegrityFlag.walker_id, func.count(TipIntegrityFlag.id))
+        .filter(TipIntegrityFlag.walker_id.in_(walker_ids), TipIntegrityFlag.status == "open")
+        .group_by(TipIntegrityFlag.walker_id)
+    )
+    latest_snapshots = _safe_latest_snapshots(db, walker_ids)
+
+    rows = []
+    for profile in profiles:
+        walker_id = profile.user_id
+        if not walker_id:
+            continue
+        reviews_count, rating_average = review_rows.get(walker_id, (0, 0))
+        total_walks = int(completed_counts.get(walker_id, 0) or 0)
+        all_walks = int(total_walk_counts.get(walker_id, 0) or 0)
+        cancellations = int(cancelled_counts.get(walker_id, 0) or 0)
+        snapshot = latest_snapshots.get(walker_id)
+        hybrid_score = float(snapshot.hybrid_reputation_score) if snapshot else 75.0
+        risk_level = snapshot.risk_level if snapshot else "normal"
+        rows.append({
+            "walker_id": walker_id,
+            "name": profile.full_name or "Passeador Aumigao",
+            "status": profile.status,
+            "rating_average": round(float(rating_average or 0), 2),
+            "reviews_count": int(reviews_count or 0),
+            "total_walks": total_walks,
+            "level": walker_level(total_walks, float(rating_average or 0), int(reviews_count or 0)),
+            "hybrid_reputation_score": hybrid_score,
+            "risk_level": risk_level,
+            "open_alerts_count": int(alert_counts.get(walker_id, 0) or 0),
+            "active_incentives_count": int(incentive_counts.get(walker_id, 0) or 0),
+            "active_recovery_plan": bool(recovery_counts.get(walker_id, 0)),
+            "tip_flags_count": int(tip_counts.get(walker_id, 0) or 0),
+            "cancellation_rate": round((cancellations / max(1, all_walks)) * 100, 2) if all_walks else 0.0,
+        })
+    return rows
+
+
 def get_quality_dashboard(
     db: Session,
     risk_level: str | None = None,
@@ -127,14 +260,23 @@ def get_quality_dashboard(
     has_open_alerts: bool | None = None,
     has_recovery_plan: bool | None = None,
     has_tip_flags: bool | None = None,
+    limit: int = 50,
 ) -> dict:
-    profiles = db.query(WalkerProfile).all()
+    query = db.query(WalkerProfile)
+    if status and status != "all":
+        query = query.filter(WalkerProfile.status == status)
+    try:
+        profiles = query.order_by(WalkerProfile.updated_at.desc(), WalkerProfile.created_at.desc()).limit(limit).all()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return {"items": [], "total": 0}
+
     rows = []
-    for profile in profiles:
-        item = walker_quality_item(profile, db)
+    for item in _light_walker_quality_items(profiles, db):
         if risk_level and risk_level != "all" and item["risk_level"] != risk_level:
-            continue
-        if status and status != "all" and item["status"] != status:
             continue
         if has_open_alerts is not None and bool(item["open_alerts_count"]) != has_open_alerts:
             continue

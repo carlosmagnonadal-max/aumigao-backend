@@ -22,6 +22,7 @@ class WalkResponse(ORMModel):
     walker_id: str | None = None
     pet_id: str
     pet_name: str | None = None
+    pet_photo_url: str | None = None
     tutor_name: str | None = None
     client_name: str | None = None
     walker_name: str | None = None

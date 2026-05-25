@@ -230,12 +230,19 @@ def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db:
             walk.id,
         )
 
+        pet = db.get(Pet, walk.pet_id) if walk.pet_id else None
+        pet_photo_url = (pet.photo_url if pet else "") or ""
+        if pet_photo_url.startswith(("file://", "content://", "blob:")):
+            pet_photo_url = ""
+
         return {
             "id": walk.id,
             "tutor_id": walk.tutor_id,
             "walker_id": walk.walker_id,
             "assigned_walker_id": walk.assigned_walker_id,
             "pet_id": walk.pet_id,
+            "pet_name": pet.name if pet else None,
+            "pet_photo_url": pet_photo_url,
             "scheduled_date": walk.scheduled_date,
             "walk_date": _split_scheduled_date(walk.scheduled_date)[0],
             "walk_time": _split_scheduled_date(walk.scheduled_date)[1],

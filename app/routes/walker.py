@@ -144,7 +144,30 @@ class PartnerApplicationAdminFieldsUpdate(BaseModel):
 
 def _public_upload_url(request: Request, path: Path) -> str:
     relative = path.relative_to(Path(__file__).resolve().parents[2] / "uploads").as_posix()
-    return f"{str(request.base_url).rstrip('/')}/uploads/{relative}"
+    configured_base_url = os.getenv("PUBLIC_BACKEND_URL", "").strip().rstrip("/")
+    base_url = configured_base_url or str(request.base_url).rstrip("/")
+    if "railway.app" in base_url and base_url.startswith("http://"):
+        base_url = base_url.replace("http://", "https://", 1)
+    return f"{base_url}/uploads/{relative}"
+
+
+def _normalize_public_walker_image_url(value: str | None) -> str | None:
+    image_url = (value or "").strip()
+    if not image_url:
+        return None
+    if image_url.startswith(("file:", "content:", "blob:", "data:image")):
+        return None
+    if image_url.startswith("http://aumigao-backend-production.up.railway.app"):
+        return image_url.replace(
+            "http://aumigao-backend-production.up.railway.app",
+            "https://aumigao-backend-production.up.railway.app",
+            1,
+        )
+    return image_url
+
+
+def _public_walker_avatar_url(profile: WalkerProfile) -> str:
+    return _normalize_public_walker_image_url(profile.profile_photo_url) or _normalize_public_walker_image_url(profile.selfie_url) or ""
 
 
 def _safe_upload_extension(filename: str | None, content_type: str | None) -> str:
@@ -240,6 +263,7 @@ def _serialize_partner_application(profile: WalkerProfile, db: Session, include_
     identity_front_url = profile.document_url or ""
     identity_back_url = profile.identity_document_back_url or ""
     presentation = profile.bio or profile.experience or ""
+    profile_photo_url = _normalize_public_walker_image_url(profile.profile_photo_url) or ""
     payload = {
         "id": profile.id,
         "user_id": profile.user_id,
@@ -254,7 +278,7 @@ def _serialize_partner_application(profile: WalkerProfile, db: Session, include_
         "bio": presentation,
         "experience_options": _extract_experience_options(profile.experience or ""),
         "availability": "",
-        "profile_photo_url": profile.profile_photo_url or "",
+        "profile_photo_url": profile_photo_url,
         "document_url": identity_front_url,
         "identity_document_front_url": identity_front_url,
         "identity_document_back_url": identity_back_url,
@@ -291,7 +315,7 @@ def _apply_partner_application_payload(profile: WalkerProfile, payload: PartnerA
     profile.state = payload.neighborhood_region.strip()
     profile.experience = " | ".join([item for item in experience_parts if item])
     profile.bio = presentation
-    profile.profile_photo_url = payload.profile_photo_url
+    profile.profile_photo_url = _normalize_public_walker_image_url(payload.profile_photo_url)
     profile.document_url = identity_front_url
     profile.identity_document_back_url = payload.identity_document_back_url
     profile.proof_of_address_url = payload.proof_of_address_url
@@ -328,7 +352,7 @@ def _is_persistent_upload_url(value: str | None) -> bool:
     normalized = (value or "").strip().lower()
     if not normalized:
         return False
-    if normalized.startswith(("demo://", "mock://", "fallback://", "sample://", "local://", "beta://", "file://")):
+    if normalized.startswith(("demo://", "mock://", "fallback://", "sample://", "local://", "beta://", "file://", "content://", "blob:", "data:image")):
         return DEMO_MODE
     return normalized.startswith(("http://", "https://", "/uploads/"))
 
@@ -1022,6 +1046,7 @@ def create_profile(payload: WalkerProfileCreate, user: User = Depends(get_curren
         data["document_url"] = data.pop("identity_document_front_url")
     else:
         data.pop("identity_document_front_url", None)
+    data["profile_photo_url"] = _normalize_public_walker_image_url(data.get("profile_photo_url"))
     _ensure_application_complete(
         profile_photo_url=data.get("profile_photo_url"),
         document_url=data.get("document_url"),
@@ -1063,6 +1088,8 @@ def update_profile(payload: WalkerProfileUpdate, user: User = Depends(get_curren
         data["document_url"] = data.pop("identity_document_front_url")
     else:
         data.pop("identity_document_front_url", None)
+    if "profile_photo_url" in data:
+        data["profile_photo_url"] = _normalize_public_walker_image_url(data.get("profile_photo_url"))
     try:
         if data.get("cpf"):
             data["cpf"] = normalize_cpf_or_raise(data.get("cpf"))
@@ -1341,8 +1368,8 @@ def _public_walker_rows(db: Session) -> list[dict]:
                 "phone": profile.phone or "",
                 "email": user.email if user else "",
                 "role": user.role if user else "",
-                "photo_url": profile.profile_photo_url or "",
-                "profile_photo_url": profile.profile_photo_url or "",
+                "photo_url": _public_walker_avatar_url(profile),
+                "profile_photo_url": _public_walker_avatar_url(profile),
                 "status": profile.status,
                 "raw_status": profile.status,
                 "active_as_walker": bool(profile.active_as_walker),

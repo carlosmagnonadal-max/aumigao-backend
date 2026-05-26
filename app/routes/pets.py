@@ -1,4 +1,5 @@
-﻿from pathlib import Path
+﻿import os
+from pathlib import Path
 from uuid import uuid4
 from datetime import datetime, timedelta
 
@@ -33,15 +34,20 @@ def _safe_upload_extension(filename: str | None, content_type: str | None) -> st
 
 def _public_upload_url(request: Request, path: Path) -> str:
     relative = path.relative_to(Path(__file__).resolve().parents[2] / "uploads").as_posix()
-    return f"{str(request.base_url).rstrip('/')}/uploads/{relative}"
+    public_base_url = (os.getenv("PUBLIC_BACKEND_URL") or str(request.base_url)).strip().rstrip("/")
+    if "railway.app" in public_base_url and public_base_url.startswith("http://"):
+        public_base_url = public_base_url.replace("http://", "https://", 1)
+    return f"{public_base_url}/uploads/{relative}"
 
 
 def _normalize_pet_photo_url(value: str | None) -> str | None:
     photo_url = (value or "").strip()
     if not photo_url:
         return None
-    if photo_url.startswith(("file:", "content:", "blob:")):
+    if photo_url.startswith(("file:", "content:", "blob:", "data:image")):
         return None
+    if photo_url.startswith("http://aumigao-backend-production.up.railway.app"):
+        return photo_url.replace("http://aumigao-backend-production.up.railway.app", "https://aumigao-backend-production.up.railway.app", 1)
     return photo_url
 
 

@@ -9,6 +9,7 @@ from sqlalchemy import inspect, text
 
 from app.core.database import Base, SessionLocal, engine, get_database_diagnostics, mask_database_url
 from app.models import (
+    AdminOperationalEvent,
     Complaint,
     ComplaintDecision,
     ComplaintEvidence,

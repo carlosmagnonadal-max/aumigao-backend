@@ -15,6 +15,7 @@ from app.services.operational_matching_service import (
     serialize_operational_walk,
     start_matching,
 )
+from app.services.admin_operational_event_service import record_admin_operational_event
 
 router = APIRouter(prefix="/walks", tags=["walk-operational"])
 api_router = APIRouter(prefix="/api/walks", tags=["walk-operational"])
@@ -76,6 +77,19 @@ def rematch_walk_request(walk_id: str, user: User = Depends(get_current_user), d
     if not _can_manage_matching(walk, user):
         raise HTTPException(status_code=403, detail="Sem permissao")
     rematch(walk, db, reason="manual")
+    if user.role in {"admin", "super_admin"}:
+        record_admin_operational_event(
+            db,
+            event_type="rematch_started",
+            entity_type="walk",
+            entity_id=walk.id,
+            severity="high",
+            title="Rematch manual iniciado",
+            description="Rematch manual iniciado pela operacao administrativa.",
+            actor=user,
+            source="admin.walk.rematch",
+            metadata={"reason": "manual"},
+        )
     db.commit()
     db.refresh(walk)
     return serialize_operational_walk(walk, db, user=user)

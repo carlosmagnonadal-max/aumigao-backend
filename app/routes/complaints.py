@@ -21,6 +21,7 @@ from app.services.complaint_service import (
     get_complaint_or_403,
     list_complaints_for_user,
 )
+from app.services.admin_operational_event_service import record_admin_operational_event
 
 router = APIRouter(prefix="/complaints", tags=["complaints"])
 api_router = APIRouter(prefix="/api/complaints", tags=["complaints"])
@@ -94,14 +95,42 @@ def admin_get_case(complaint_id: str, admin: User = Depends(require_admin), db: 
 @api_admin_router.patch("/{complaint_id}", response_model=ComplaintResponse)
 def admin_update_case(complaint_id: str, payload: ComplaintAdminUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     complaint = get_complaint_or_403(complaint_id, admin, db)
-    return admin_update_complaint(complaint, payload.status, payload.severity, payload.internal_note, admin, db)
+    updated = admin_update_complaint(complaint, payload.status, payload.severity, payload.internal_note, admin, db)
+    record_admin_operational_event(
+        db,
+        event_type="status_changed" if payload.status else "escalated",
+        entity_type="complaint",
+        entity_id=updated.id,
+        severity=updated.severity,
+        title="Ocorrencia atualizada",
+        description=payload.internal_note or "Ocorrencia atualizada pela operacao administrativa.",
+        actor=admin,
+        source="admin.complaint.update",
+        metadata={"status": updated.status, "severity": updated.severity},
+    )
+    db.commit()
+    return updated
 
 
 @admin_router.post("/{complaint_id}/decision", response_model=ComplaintResponse)
 @api_admin_router.post("/{complaint_id}/decision", response_model=ComplaintResponse)
 def admin_decide_case(complaint_id: str, payload: ComplaintDecisionReview, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     complaint = get_complaint_or_403(complaint_id, admin, db)
-    return admin_review_decision(complaint, payload.decision_type, payload.decision_status, payload.reason, admin, db)
+    updated = admin_review_decision(complaint, payload.decision_type, payload.decision_status, payload.reason, admin, db)
+    record_admin_operational_event(
+        db,
+        event_type="complaint_decided",
+        entity_type="complaint",
+        entity_id=updated.id,
+        severity=updated.severity,
+        title="Decisao de ocorrencia registrada",
+        description=payload.reason,
+        actor=admin,
+        source="admin.complaint.decision",
+        metadata={"decision_type": payload.decision_type, "decision_status": payload.decision_status},
+    )
+    db.commit()
+    return updated
 
 
 @admin_router.get("/risk-scores/list", response_model=list[RiskScoreResponse])

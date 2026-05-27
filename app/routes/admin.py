@@ -2,7 +2,7 @@
 
 import json
 from app.models.tutor_profile import TutorProfile
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi import HTTPException
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -14,6 +14,7 @@ from app.dependencies.auth import require_admin
 from app.models.payment import Payment
 from app.models.pet import Pet
 from app.models.user import User
+from app.models.admin_operational_event import AdminOperationalEvent
 from app.models.walk import Walk
 from app.models.walk_completion_review import WalkCompletionReview
 from app.models.walk_operational_event import WalkOperationalEvent
@@ -22,6 +23,10 @@ from app.models.walk_tip import WalkTip
 from app.models.walker_kit_submission import WalkerKitSubmission
 from app.models.walker_profile import WalkerProfile
 from app.services.walker_referrals import mark_referral_approved, mark_referral_rejected
+from app.services.admin_operational_event_service import (
+    record_admin_operational_event,
+    serialize_admin_operational_event,
+)
 from app.services.operational_matching_service import (
     log_event,
     process_expired_attempts,
@@ -63,6 +68,87 @@ RECOVERY_WALK_STATUSES = {
     "support_followup",
     "auto_rematching",
 }
+
+OPERATIONAL_EVENT_ENTITY_TYPES = {
+    "walk",
+    "walker",
+    "tutor",
+    "pet",
+    "complaint",
+    "finalization",
+    "payment",
+    "kit",
+    "referral",
+    "mission",
+    "incentive",
+    "system",
+}
+
+
+def _validate_operational_event_payload(payload: dict) -> dict:
+    entity_type = str(payload.get("entity_type") or "").strip().lower()
+    entity_id = str(payload.get("entity_id") or "").strip()
+    title = str(payload.get("title") or "").strip()
+    if entity_type not in OPERATIONAL_EVENT_ENTITY_TYPES:
+        raise HTTPException(status_code=400, detail="entity_type invalido.")
+    if not entity_id:
+        raise HTTPException(status_code=400, detail="entity_id obrigatorio.")
+    if not title:
+        raise HTTPException(status_code=400, detail="title obrigatorio.")
+    return {
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "title": title,
+        "event_type": str(payload.get("event_type") or "admin_note_added").strip() or "admin_note_added",
+        "severity": str(payload.get("severity") or "info").strip() or "info",
+        "description": str(payload.get("description") or "").strip(),
+        "source": str(payload.get("source") or "admin-web.manual").strip() or "admin-web.manual",
+        "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+    }
+
+
+@router.get("/operational-events")
+@api_router.get("/operational-events")
+def list_operational_events(
+    entity_type: str | None = Query(None),
+    entity_id: str | None = Query(None),
+    event_type: str | None = Query(None),
+    severity: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    query = db.query(AdminOperationalEvent)
+    if entity_type:
+        query = query.filter(AdminOperationalEvent.entity_type == entity_type)
+    if entity_id:
+        query = query.filter(AdminOperationalEvent.entity_id == entity_id)
+    if event_type:
+        query = query.filter(AdminOperationalEvent.event_type == event_type)
+    if severity:
+        query = query.filter(AdminOperationalEvent.severity == severity)
+    rows = query.order_by(AdminOperationalEvent.created_at.desc()).limit(limit).all()
+    return {"items": [serialize_admin_operational_event(row) for row in rows], "total": len(rows)}
+
+
+@router.post("/operational-events")
+@api_router.post("/operational-events")
+def create_operational_event(payload: dict, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    data = _validate_operational_event_payload(payload or {})
+    event = record_admin_operational_event(
+        db,
+        event_type=data["event_type"],
+        entity_type=data["entity_type"],
+        entity_id=data["entity_id"],
+        severity=data["severity"],
+        title=data["title"],
+        description=data["description"],
+        actor=admin,
+        source=data["source"],
+        metadata=data["metadata"],
+    )
+    db.commit()
+    db.refresh(event)
+    return serialize_admin_operational_event(event)
 
 
 def _serialize_walker_kit_submission(submission: WalkerKitSubmission, db: Session) -> dict:
@@ -1008,7 +1094,7 @@ def partner_application_detail(candidate_id: str, db: Session = Depends(get_db))
 
 @router.patch("/partner-applications/{candidate_id}/admin-fields")
 @api_router.patch("/partner-applications/{candidate_id}/admin-fields")
-def update_partner_application_admin_fields(candidate_id: str, payload: dict | None = None, db: Session = Depends(get_db)):
+def update_partner_application_admin_fields(candidate_id: str, payload: dict | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     profile = db.get(WalkerProfile, candidate_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Candidatura nao encontrada")
@@ -1031,6 +1117,22 @@ def update_partner_application_admin_fields(candidate_id: str, payload: dict | N
             user.role = "walker"
         if active_as_walker:
             mark_referral_approved(profile.user_id, db)
+    if any(key in payload for key in ("internal_notes", "status", "active_as_walker")):
+        event_type = "admin_note_added" if "internal_notes" in payload else "status_changed"
+        if payload.get("active_as_walker"):
+            event_type = "approved"
+        record_admin_operational_event(
+            db,
+            event_type=event_type,
+            entity_type="walker",
+            entity_id=profile.user_id,
+            severity="info",
+            title="Candidatura atualizada",
+            description=payload.get("internal_notes") or payload.get("reason") or "Campos administrativos da candidatura atualizados.",
+            actor=admin,
+            source="admin.partner_application.update",
+            metadata={"candidate_id": profile.id, "fields": sorted(payload.keys())},
+        )
     db.commit()
     db.refresh(profile)
     return _serialize_walker_profile(profile, db)
@@ -1038,22 +1140,46 @@ def update_partner_application_admin_fields(candidate_id: str, payload: dict | N
 
 @router.post("/walkers/{walker_id}/approve")
 @api_router.post("/walkers/{walker_id}/approve")
-def approve_walker(walker_id: str, db: Session = Depends(get_db)):
+def approve_walker(walker_id: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     profile = db.get(WalkerProfile, walker_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Passeador nao encontrado")
     _apply_application_status(profile, "approved")
+    record_admin_operational_event(
+        db,
+        event_type="approved",
+        entity_type="walker",
+        entity_id=profile.user_id,
+        severity="info",
+        title="Candidatura aprovada",
+        description="Candidatura de passeador aprovada pela administracao.",
+        actor=admin,
+        source="admin.walker.approve",
+        metadata={"candidate_id": profile.id},
+    )
     db.commit()
     db.refresh(profile)
     return _serialize_walker_profile(profile, db)
 
 @router.post("/walkers/{walker_id}/reject")
 @api_router.post("/walkers/{walker_id}/reject")
-def reject_walker(walker_id: str, payload: dict | None = None, db: Session = Depends(get_db)):
+def reject_walker(walker_id: str, payload: dict | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     profile = db.get(WalkerProfile, walker_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Passeador nao encontrado")
     _apply_application_status(profile, "rejected", (payload or {}).get("reason"))
+    record_admin_operational_event(
+        db,
+        event_type="rejected",
+        entity_type="walker",
+        entity_id=profile.user_id,
+        severity="warning",
+        title="Candidatura reprovada",
+        description=(payload or {}).get("reason") or "Candidatura reprovada pela administracao.",
+        actor=admin,
+        source="admin.walker.reject",
+        metadata={"candidate_id": profile.id},
+    )
     db.commit()
     mark_referral_rejected(profile.user_id, profile.rejection_reason, db)
     db.refresh(profile)
@@ -1077,7 +1203,7 @@ def walks(db: Session = Depends(get_db)):
 
 @router.patch("/walks/{walk_id}/status")
 @api_router.patch("/walks/{walk_id}/status")
-def update_admin_walk_status(walk_id: str, payload: dict, db: Session = Depends(get_db)):
+def update_admin_walk_status(walk_id: str, payload: dict, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     walk = db.get(Walk, walk_id)
 
     if not walk:
@@ -1151,6 +1277,18 @@ def update_admin_walk_status(walk_id: str, payload: dict, db: Session = Depends(
             "status": walk.status,
             "operational_status": walk.operational_status,
         },
+    )
+    record_admin_operational_event(
+        db,
+        event_type="status_changed",
+        entity_type="walk",
+        entity_id=walk.id,
+        severity="info",
+        title="Status do passeio alterado",
+        description=f"{previous_operational_status or ''} -> {walk.operational_status}",
+        actor=admin,
+        source="admin.walk.status",
+        metadata={"previous_operational_status": previous_operational_status, "status": walk.status},
     )
 
     notification_copy_by_status = {
@@ -1241,7 +1379,7 @@ def update_admin_walk_status(walk_id: str, payload: dict, db: Session = Depends(
 
 @router.post("/walks/{walk_id}/recovery")
 @api_router.post("/walks/{walk_id}/recovery")
-def recover_walk(walk_id: str, db: Session = Depends(get_db)):
+def recover_walk(walk_id: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     walk = db.get(Walk, walk_id)
 
     if not walk:
@@ -1279,6 +1417,18 @@ def recover_walk(walk_id: str, db: Session = Depends(get_db)):
         source="admin.recovery",
         message="Recovery operacional acionado pelo admin.",
         context={"walk_id": walk.id, "status": walk.operational_status},
+    )
+    record_admin_operational_event(
+        db,
+        event_type="recovered",
+        entity_type="walk",
+        entity_id=walk.id,
+        severity="high",
+        title="Recovery operacional iniciado",
+        description=walk.no_walker_reason,
+        actor=admin,
+        source="admin.walk.recovery",
+        metadata={"status": walk.operational_status},
     )
 
     _create_notification(
@@ -1405,6 +1555,18 @@ def approve_walk_completion(review_id: str, payload: dict | None = None, admin: 
     walk.matching_finished_at = walk.matching_finished_at or now
     _ensure_internal_walk_payment(walk, db)
     log_event(db, walk.id, "completion_review_approved", actor_type="admin", actor_id=admin.id, metadata={"review_id": review.id})
+    record_admin_operational_event(
+        db,
+        event_type="finalization_approved",
+        entity_type="finalization",
+        entity_id=review.id,
+        severity="info",
+        title="Finalizacao aprovada",
+        description=review.admin_note or "Finalizacao aprovada pela revisao operacional.",
+        actor=admin,
+        source="admin.finalization.approve",
+        metadata={"walk_id": walk.id, "walker_user_id": review.walker_user_id},
+    )
     tutor = db.get(User, walk.tutor_id) if walk.tutor_id else None
     if tutor:
         _create_notification(
@@ -1503,6 +1665,18 @@ def reject_walk_completion(review_id: str, payload: dict | None = None, admin: U
     walk.operational_status = "completion_rejected"
     walk.status = "Finalização rejeitada"
     log_event(db, walk.id, "completion_review_rejected", actor_type="admin", actor_id=admin.id, metadata={"review_id": review.id})
+    record_admin_operational_event(
+        db,
+        event_type="finalization_rejected",
+        entity_type="finalization",
+        entity_id=review.id,
+        severity="warning",
+        title="Finalizacao rejeitada",
+        description=review.admin_note or "Finalizacao rejeitada pela revisao operacional.",
+        actor=admin,
+        source="admin.finalization.reject",
+        metadata={"walk_id": walk.id, "walker_user_id": review.walker_user_id},
+    )
     walker = db.get(User, review.walker_user_id) if review.walker_user_id else None
     if walker:
         admin_note = review.admin_note.strip() if review.admin_note else ""
@@ -1558,6 +1732,18 @@ def approve_walker_kit(submission_id: str, admin: User = Depends(require_admin),
     submission.reviewed_by_admin_id = admin.id
     submission.reviewed_at = now
     submission.updated_at = now
+    record_admin_operational_event(
+        db,
+        event_type="approved",
+        entity_type="kit",
+        entity_id=submission.id,
+        severity="info",
+        title="Kit aprovado",
+        description=submission.audit_note,
+        actor=admin,
+        source="admin.kit.approve",
+        metadata={"walker_user_id": submission.walker_user_id},
+    )
     db.commit()
     db.refresh(submission)
     return _serialize_walker_kit_submission(submission, db)
@@ -1576,6 +1762,18 @@ def reject_walker_kit(submission_id: str, payload: dict | None = None, admin: Us
     submission.reviewed_by_admin_id = admin.id
     submission.reviewed_at = now
     submission.updated_at = now
+    record_admin_operational_event(
+        db,
+        event_type="rejected",
+        entity_type="kit",
+        entity_id=submission.id,
+        severity="warning",
+        title="Kit rejeitado",
+        description=submission.audit_note,
+        actor=admin,
+        source="admin.kit.reject",
+        metadata={"walker_user_id": submission.walker_user_id},
+    )
     db.commit()
     db.refresh(submission)
     return _serialize_walker_kit_submission(submission, db)
@@ -1707,17 +1905,41 @@ def review_tip(tip_id: str, payload: dict):
     return {"ok": True, "action": action}
 
 @router.post("/withdrawals/{payment_id}/approve")
-def approve_withdrawal(payment_id: str, db: Session = Depends(get_db)):
+def approve_withdrawal(payment_id: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     payment = db.get(Payment, payment_id)
     if payment:
         payment.status = "paid"
+        record_admin_operational_event(
+            db,
+            event_type="payout_approved",
+            entity_type="payment",
+            entity_id=payment.id,
+            severity="info",
+            title="Saque aprovado",
+            description="Saque aprovado pela operacao administrativa.",
+            actor=admin,
+            source="admin.withdrawal.approve",
+            metadata={"walk_id": payment.walk_id, "provider": payment.provider},
+        )
         db.commit()
     return {"ok": True}
 
 @router.post("/withdrawals/{payment_id}/reject")
-def reject_withdrawal(payment_id: str, db: Session = Depends(get_db)):
+def reject_withdrawal(payment_id: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     payment = db.get(Payment, payment_id)
     if payment:
         payment.status = "rejected"
+        record_admin_operational_event(
+            db,
+            event_type="payout_rejected",
+            entity_type="payment",
+            entity_id=payment.id,
+            severity="warning",
+            title="Saque rejeitado",
+            description="Saque rejeitado pela operacao administrativa.",
+            actor=admin,
+            source="admin.withdrawal.reject",
+            metadata={"walk_id": payment.walk_id, "provider": payment.provider},
+        )
         db.commit()
     return {"ok": True}

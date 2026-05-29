@@ -19,6 +19,7 @@ from app.models import (
     OperationalBetaLog,
     Payment,
     Pet,
+    ProtectedChatMessage,
     RiskScore,
     TipIntegrityFlag,
     TutorProfile,
@@ -39,7 +40,7 @@ from app.models import (
     WalkCompletionReview,
     LegalAcceptance,
 )
-from app.routes import admin, auth, complaints, legal, matching, notifications, operational_walks, payments, pets, referrals, reviews, tutor, walker, walker_quality, walks, weekly_missions
+from app.routes import admin, auth, complaints, legal, matching, notifications, operational_walks, payments, pets, protected_chat, referrals, reviews, tutor, walker, walker_quality, walks, weekly_missions
 from app.services.admin_seed_service import ensure_configured_admin_users
 from app.services.operational_matching_service import ensure_operational_schema
 from app.services.operational_scheduler_service import (
@@ -242,6 +243,8 @@ app.include_router(pets.router)
 app.include_router(walks.router)
 app.include_router(notifications.router)
 app.include_router(notifications.api_router)
+app.include_router(protected_chat.router)
+app.include_router(protected_chat.api_router)
 app.include_router(operational_walks.router)
 app.include_router(operational_walks.api_router)
 app.include_router(walker.router)

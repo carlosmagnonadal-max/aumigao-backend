@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -9,6 +11,7 @@ from sqlalchemy import inspect, text
 
 from app.core.database import Base, SessionLocal, engine, get_database_diagnostics, mask_database_url
 from app.models import (
+    AdminOperationalEvent,
     Complaint,
     ComplaintDecision,
     ComplaintEvidence,
@@ -330,3 +333,21 @@ async def stop_operational_scheduler():
 @app.get("/")
 def root():
     return {"message": "Aumigao Walk API rodando"}
+
+
+@app.get("/health")
+def health():
+    database_status = "ok"
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except Exception:
+        database_status = "unavailable"
+
+    return {
+        "status": "ok",
+        "service": "aumigao-backend",
+        "environment": os.getenv("ENVIRONMENT") or os.getenv("RAILWAY_ENVIRONMENT") or "local",
+        "timestamp": datetime.utcnow().isoformat(),
+        "database": database_status,
+    }

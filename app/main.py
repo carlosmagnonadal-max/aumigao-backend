@@ -53,6 +53,18 @@ from app.services.operational_scheduler_service import (
 logger = logging.getLogger(__name__)
 
 
+def get_bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _is_production_environment() -> bool:
+    environment = (os.getenv("ENVIRONMENT") or os.getenv("RAILWAY_ENVIRONMENT") or "").strip().lower()
+    return environment in {"production", "prod"}
+
+
 def ensure_legacy_id_compatibility():
     if engine.dialect.name != "postgresql":
         return
@@ -86,10 +98,6 @@ def ensure_legacy_id_compatibility():
                         text(f"ALTER TABLE {table_name} ALTER COLUMN {column_name} TYPE VARCHAR USING {column_name}::VARCHAR")
                     )
 
-
-ensure_legacy_id_compatibility()
-Base.metadata.create_all(bind=engine)
-ensure_operational_schema(engine)
 _db_diagnostics = get_database_diagnostics()
 print(f"[database] backend DATABASE_URL={mask_database_url(_db_diagnostics['database_url'])}")
 if "sqlite_path" in _db_diagnostics:
@@ -136,8 +144,6 @@ def ensure_user_schema():
             connection.execute(text("UPDATE users SET password_hash = password WHERE COALESCE(password_hash, '') = ''"))
 
 
-ensure_user_schema()
-
 def ensure_walker_profile_schema():
     _add_missing_columns(
         "walker_profiles",
@@ -154,8 +160,6 @@ def ensure_walker_profile_schema():
             "resubmission_requested_documents": "TEXT DEFAULT ''",
         },
     )
-
-ensure_walker_profile_schema()
 
 def ensure_tutor_profile_schema():
     _add_missing_columns(
@@ -179,8 +183,6 @@ def ensure_tutor_profile_schema():
             connection.execute(text("UPDATE tutor_profiles SET pickup_notes = pet_pickup_notes WHERE COALESCE(pickup_notes, '') = ''"))
         if {"preferred_pickup_method", "preferred_method"}.issubset(existing):
             connection.execute(text("UPDATE tutor_profiles SET preferred_method = preferred_pickup_method WHERE COALESCE(preferred_method, '') = ''"))
-
-ensure_tutor_profile_schema()
 
 def ensure_pet_schema():
     _add_missing_columns(
@@ -219,10 +221,28 @@ def ensure_pet_schema():
                 )
             )
 
+_production_environment = _is_production_environment()
+_run_startup_schema_ensure = get_bool_env("RUN_STARTUP_SCHEMA_ENSURE", default=not _production_environment)
+_run_startup_admin_seed = get_bool_env("RUN_STARTUP_ADMIN_SEED", default=not _production_environment)
 
-ensure_pet_schema()
-with SessionLocal() as db:
-    ensure_configured_admin_users(db)
+if _run_startup_schema_ensure:
+    print("[startup] schema ensure enabled")
+    ensure_legacy_id_compatibility()
+    Base.metadata.create_all(bind=engine)
+    ensure_operational_schema(engine)
+    ensure_user_schema()
+    ensure_walker_profile_schema()
+    ensure_tutor_profile_schema()
+    ensure_pet_schema()
+else:
+    print("[startup] schema ensure skipped")
+
+if _run_startup_admin_seed:
+    print("[startup] admin seed enabled")
+    with SessionLocal() as db:
+        ensure_configured_admin_users(db)
+else:
+    print("[startup] admin seed skipped")
 
 app = FastAPI(title="Aumigao Walk API")
 

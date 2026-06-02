@@ -4,6 +4,7 @@ from uuid import uuid4
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -12,7 +13,7 @@ from app.models.pet import Pet
 from app.models.walk import Walk
 from app.models.user import User
 from app.schemas.pet import PetCreate, PetResponse, PetUpdate
-from app.services.tenant_seed_service import default_tenant_id
+from app.services.tenant_context import resolve_current_tenant_id
 
 router = APIRouter(prefix="/pets", tags=["pets"])
 
@@ -87,6 +88,17 @@ def _has_blocking_walk(pet_id: str, db: Session) -> bool:
 
     return False
 
+
+def _current_tenant_id(user: User, db: Session) -> str:
+    tenant_id = user.tenant_id or resolve_current_tenant_id(db)
+    if not user.tenant_id:
+        user.tenant_id = tenant_id
+    return tenant_id
+
+
+def _pet_tenant_filter(tenant_id: str):
+    return or_(Pet.tenant_id == tenant_id, Pet.tenant_id.is_(None))
+
 @router.post("/upload-photo", status_code=201)
 async def upload_pet_photo(
     request: Request,
@@ -115,7 +127,8 @@ async def upload_pet_photo(
 
 @router.get("", response_model=list[PetResponse])
 def list_pets(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    pets = db.query(Pet).filter(Pet.tutor_id == user.id).order_by(Pet.created_at.desc()).all()
+    tenant_id = _current_tenant_id(user, db)
+    pets = db.query(Pet).filter(Pet.tutor_id == user.id, _pet_tenant_filter(tenant_id)).order_by(Pet.created_at.desc()).all()
 
     for pet in pets:
         if pet.is_neutered is None:
@@ -128,8 +141,7 @@ def list_pets(user: User = Depends(get_current_user), db: Session = Depends(get_
 def create_pet(payload: PetCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     data = payload.model_dump()
     data["photo_url"] = _normalize_pet_photo_url(data.get("photo_url"))
-    tenant_id = user.tenant_id or default_tenant_id(db)
-    user.tenant_id = user.tenant_id or tenant_id
+    tenant_id = _current_tenant_id(user, db)
     pet = Pet(id=str(uuid4()), tutor_id=user.id, tenant_id=tenant_id, **data)
     db.add(pet)
     db.commit()
@@ -138,8 +150,9 @@ def create_pet(payload: PetCreate, user: User = Depends(get_current_user), db: S
 
 @router.get("/{pet_id}", response_model=PetResponse)
 def get_pet(pet_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    pet = db.get(Pet, pet_id)
-    if not pet or pet.tutor_id != user.id:
+    tenant_id = _current_tenant_id(user, db)
+    pet = db.query(Pet).filter(Pet.id == pet_id, Pet.tutor_id == user.id, _pet_tenant_filter(tenant_id)).first()
+    if not pet:
         raise HTTPException(status_code=404, detail="Pet nao encontrado")
     return pet
 

@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -13,7 +14,7 @@ from app.models.notification import Notification
 from app.models.push_token import PushToken
 from app.models.user import User
 from app.services.push_notifications import send_push_for_notification
-from app.services.tenant_seed_service import default_tenant_id
+from app.services.tenant_context import resolve_current_tenant_id
 
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
@@ -85,7 +86,7 @@ def _serialize_notification(notification: Notification) -> dict[str, Any]:
 
 def _create_notification(db: Session, payload: NotificationCreate) -> Notification:
     user = db.get(User, payload.user_id) if payload.user_id else None
-    tenant_id = payload.tenant_id or (user.tenant_id if user else None) or default_tenant_id(db)
+    tenant_id = payload.tenant_id or (user.tenant_id if user else None) or resolve_current_tenant_id(db)
     notification = Notification(
         id=str(uuid.uuid4()),
         tenant_id=tenant_id,
@@ -109,7 +110,16 @@ def _is_admin_role(role: str | None) -> bool:
     return role in ADMIN_NOTIFICATION_ROLES
 
 
-def _visible_notifications_query(query, current_user: User):
+def _current_tenant_id(current_user: User, db: Session) -> str:
+    return current_user.tenant_id or resolve_current_tenant_id(db)
+
+
+def _notification_tenant_filter(tenant_id: str):
+    return or_(Notification.tenant_id == tenant_id, Notification.tenant_id.is_(None))
+
+
+def _visible_notifications_query(query, current_user: User, tenant_id: str):
+    query = query.filter(_notification_tenant_filter(tenant_id))
     if _is_admin_role(current_user.role):
         return query.filter(
             (Notification.user_id == current_user.id)
@@ -127,8 +137,9 @@ def _list_notifications(
     only_unread: bool = False,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
+    tenant_id = _current_tenant_id(current_user, db)
     query = db.query(Notification)
-    query = _visible_notifications_query(query, current_user)
+    query = _visible_notifications_query(query, current_user, tenant_id)
 
     if only_unread:
         query = query.filter(Notification.is_read.is_(False))
@@ -143,15 +154,17 @@ def _list_notifications(
 
 
 def _unread_count(db: Session, current_user: User) -> dict[str, int]:
+    tenant_id = _current_tenant_id(current_user, db)
     query = db.query(Notification)
-    query = _visible_notifications_query(query, current_user)
+    query = _visible_notifications_query(query, current_user, tenant_id)
 
     count = query.filter(Notification.is_read.is_(False)).count()
     return {"count": count}
 
 
 def _mark_as_read(db: Session, notification_id: str, current_user: User) -> dict[str, Any]:
-    notification = db.query(Notification).filter(Notification.id == notification_id).first()
+    tenant_id = _current_tenant_id(current_user, db)
+    notification = db.query(Notification).filter(Notification.id == notification_id, _notification_tenant_filter(tenant_id)).first()
 
     if not notification:
         raise HTTPException(status_code=404, detail="Notificação não encontrada.")
@@ -174,8 +187,9 @@ def _mark_as_read(db: Session, notification_id: str, current_user: User) -> dict
 
 
 def _mark_all_as_read(db: Session, current_user: User) -> dict[str, int]:
+    tenant_id = _current_tenant_id(current_user, db)
     notifications = db.query(Notification)
-    notifications = _visible_notifications_query(notifications, current_user)
+    notifications = _visible_notifications_query(notifications, current_user, tenant_id)
 
     rows = notifications.filter(Notification.is_read.is_(False)).all()
 
@@ -193,7 +207,7 @@ def _mark_all_as_read(db: Session, current_user: User) -> dict[str, int]:
 def _seed_demo_notifications(db: Session, current_user: User) -> list[dict[str, Any]]:
     existing = (
         db.query(Notification)
-        .filter(Notification.user_id == current_user.id)
+        .filter(Notification.user_id == current_user.id, _notification_tenant_filter(_current_tenant_id(current_user, db)))
         .count()
     )
 

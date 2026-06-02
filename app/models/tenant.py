@@ -28,6 +28,7 @@ class Tenant(Base):
 
     branding: Mapped["TenantBranding | None"] = relationship(back_populates="tenant", uselist=False, cascade="all, delete-orphan")
     settings: Mapped["TenantSettings | None"] = relationship(back_populates="tenant", uselist=False, cascade="all, delete-orphan")
+    onboarding: Mapped["TenantOnboarding | None"] = relationship(back_populates="tenant", uselist=False, cascade="all, delete-orphan")
     features: Mapped[list["TenantFeature"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
     units: Mapped[list["TenantUnit"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
 

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies.auth import require_admin
 from app.models.tenant import Tenant, TenantBranding, TenantFeature, TenantSettings, TenantUnit
+from app.models.tenant_onboarding import TenantOnboarding
 from app.schemas.tenant import (
     TENANT_PLANS,
     TENANT_STATUSES,
@@ -22,6 +23,11 @@ from app.schemas.tenant import (
     TenantUnitCreate,
     TenantUnitResponse,
     TenantUpdate,
+)
+from app.schemas.tenant_onboarding import (
+    TENANT_ONBOARDING_STATUSES,
+    TenantOnboardingResponse,
+    TenantOnboardingUpdate,
 )
 
 router = APIRouter(prefix="/admin/tenants", tags=["admin-tenants"], dependencies=[Depends(require_admin)])
@@ -65,6 +71,21 @@ def _default_settings(tenant: Tenant) -> TenantSettings:
     return TenantSettings(tenant_id=tenant.id, timezone="America/Bahia")
 
 
+def _default_onboarding(tenant: Tenant) -> TenantOnboarding:
+    return TenantOnboarding(tenant_id=tenant.id, onboarding_status="created")
+
+
+def _ensure_tenant_onboarding(tenant: Tenant, db: Session) -> TenantOnboarding:
+    onboarding = tenant.onboarding
+    if onboarding:
+        return onboarding
+    onboarding = _default_onboarding(tenant)
+    db.add(onboarding)
+    db.commit()
+    db.refresh(onboarding)
+    return onboarding
+
+
 @router.get("", response_model=list[TenantResponse])
 @api_router.get("", response_model=list[TenantResponse])
 def list_tenants(db: Session = Depends(get_db)):
@@ -95,6 +116,7 @@ def create_tenant(payload: TenantCreate, db: Session = Depends(get_db)):
     db.flush()
     db.add(_default_branding(tenant))
     db.add(_default_settings(tenant))
+    db.add(_default_onboarding(tenant))
     db.commit()
     db.refresh(tenant)
     return tenant
@@ -169,6 +191,29 @@ def update_tenant_settings(tenant_id: str, payload: TenantSettingsUpdate, db: Se
     db.commit()
     db.refresh(settings)
     return settings
+
+
+@router.get("/{tenant_id}/onboarding", response_model=TenantOnboardingResponse)
+@api_router.get("/{tenant_id}/onboarding", response_model=TenantOnboardingResponse)
+def get_tenant_onboarding(tenant_id: str, db: Session = Depends(get_db)):
+    tenant = _tenant_or_404(tenant_id, db)
+    return _ensure_tenant_onboarding(tenant, db)
+
+
+@router.patch("/{tenant_id}/onboarding", response_model=TenantOnboardingResponse)
+@api_router.patch("/{tenant_id}/onboarding", response_model=TenantOnboardingResponse)
+def update_tenant_onboarding(tenant_id: str, payload: TenantOnboardingUpdate, db: Session = Depends(get_db)):
+    tenant = _tenant_or_404(tenant_id, db)
+    onboarding = tenant.onboarding or _default_onboarding(tenant)
+    db.add(onboarding)
+    values = payload.model_dump(exclude_unset=True)
+    _ensure_status(values.get("onboarding_status"), TENANT_ONBOARDING_STATUSES, "onboarding_status")
+    for field, value in values.items():
+        setattr(onboarding, field, value)
+    onboarding.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(onboarding)
+    return onboarding
 
 
 @router.get("/{tenant_id}/features", response_model=list[TenantFeatureResponse])

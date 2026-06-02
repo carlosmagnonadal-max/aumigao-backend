@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.models.notification import Notification
 from app.models.pet import Pet
 from app.models.tenant import Tenant, TenantBranding, TenantFeature, TenantSettings, TenantUnit
+from app.models.tenant_onboarding import TenantOnboarding
 from app.models.tutor_profile import TutorProfile
 from app.models.user import User
 from app.models.walk import Walk
@@ -50,6 +51,10 @@ def ensure_default_tenant(db: Session) -> Tenant:
     settings = db.query(TenantSettings).filter(TenantSettings.tenant_id == tenant.id).first()
     if not settings:
         db.add(TenantSettings(tenant_id=tenant.id, timezone="America/Bahia"))
+
+    onboarding = db.query(TenantOnboarding).filter(TenantOnboarding.tenant_id == tenant.id).first()
+    if not onboarding:
+        db.add(TenantOnboarding(tenant_id=tenant.id, onboarding_status="created"))
 
     existing_features = {
         item.feature_key

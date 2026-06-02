@@ -13,6 +13,7 @@ from app.models.notification import Notification
 from app.models.push_token import PushToken
 from app.models.user import User
 from app.services.push_notifications import send_push_for_notification
+from app.services.tenant_seed_service import default_tenant_id
 
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
@@ -22,6 +23,7 @@ ADMIN_NOTIFICATION_ROLES = {"admin", "super_admin", "superadmin"}
 
 
 class NotificationCreate(BaseModel):
+    tenant_id: str | None = None
     user_id: str | None = None
     user_role: str = Field(default="tutor")
     title: str
@@ -82,8 +84,11 @@ def _serialize_notification(notification: Notification) -> dict[str, Any]:
 
 
 def _create_notification(db: Session, payload: NotificationCreate) -> Notification:
+    user = db.get(User, payload.user_id) if payload.user_id else None
+    tenant_id = payload.tenant_id or (user.tenant_id if user else None) or default_tenant_id(db)
     notification = Notification(
         id=str(uuid.uuid4()),
+        tenant_id=tenant_id,
         user_id=payload.user_id,
         user_role=payload.user_role,
         title=payload.title,

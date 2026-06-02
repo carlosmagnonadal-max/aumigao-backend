@@ -32,6 +32,7 @@ from app.services.operational_matching_service import (
     update_operational_status,
 )
 from app.services.operational_reliability_service import detect_reliability_events, record_late_cancellation_if_applicable
+from app.services.tenant_seed_service import default_tenant_id
 
 router = APIRouter(prefix="/walks", tags=["walks"])
 logger = logging.getLogger(__name__)
@@ -168,6 +169,11 @@ def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db:
 
         selected_walker_id = data.pop("walker_id", None)
         requested_selection_mode = data.pop("walker_selection_mode", None)
+        pet = db.get(Pet, data.get("pet_id")) if data.get("pet_id") else None
+        tenant_id = user.tenant_id or (pet.tenant_id if pet else None) or default_tenant_id(db)
+        user.tenant_id = user.tenant_id or tenant_id
+        if pet and not pet.tenant_id:
+            pet.tenant_id = tenant_id
 
         walker_selection_mode = (
             "only_selected"
@@ -184,6 +190,7 @@ def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db:
         walk = Walk(
             id=str(uuid4()),
             tutor_id=user.id,
+            tenant_id=tenant_id,
             walker_id=selected_walker_id,
             assigned_walker_id=selected_walker_id,
             walker_selection_mode=walker_selection_mode,

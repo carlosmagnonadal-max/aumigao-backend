@@ -10,6 +10,12 @@ class Notification(Base):
     __tablename__ = "notifications"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("tenants.id"),
+        nullable=True,
+        index=True,
+    )
 
     user_id: Mapped[str | None] = mapped_column(
         String,

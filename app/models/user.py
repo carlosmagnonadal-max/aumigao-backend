@@ -1,5 +1,5 @@
 ﻿from datetime import datetime
-from sqlalchemy import Boolean, DateTime, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
@@ -9,6 +9,7 @@ class User(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     email: Mapped[str] = mapped_column(String, unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String)
+    tenant_id: Mapped[str | None] = mapped_column(String, ForeignKey("tenants.id"), nullable=True, index=True)
     full_name: Mapped[str] = mapped_column(String, default="")
     role: Mapped[str] = mapped_column(String, default="tutor")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

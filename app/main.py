@@ -47,7 +47,7 @@ from app.models import (
 )
 from app.routes import admin, auth, complaints, legal, matching, notifications, operational_walks, payments, pets, protected_chat, referrals, reviews, tenants, tutor, walker, walker_quality, walks, weekly_missions
 from app.services.admin_seed_service import ensure_configured_admin_users
-from app.services.tenant_seed_service import ensure_default_tenant
+from app.services.tenant_seed_service import ensure_default_tenant_links
 from app.services.operational_matching_service import ensure_operational_schema
 from app.services.operational_scheduler_service import (
     mark_operational_scheduler_started,
@@ -135,6 +135,7 @@ def ensure_user_schema():
         "users",
         {
             "password_hash": "VARCHAR DEFAULT ''",
+            "tenant_id": "VARCHAR",
             "full_name": "VARCHAR DEFAULT ''",
             "role": "VARCHAR DEFAULT 'tutor'",
             "is_active": _sql_type("boolean_true"),
@@ -172,6 +173,7 @@ def ensure_tutor_profile_schema():
         "tutor_profiles",
         {
             "cpf": "VARCHAR DEFAULT ''",
+            "tenant_id": "VARCHAR",
             "photo_url": "VARCHAR",
             "pickup_notes": "TEXT DEFAULT ''",
             "preferred_method": "VARCHAR DEFAULT 'Buscar em casa'",
@@ -195,6 +197,7 @@ def ensure_pet_schema():
         "pets",
         {
             "tutor_id": "VARCHAR",
+            "tenant_id": "VARCHAR",
             "photo_url": "VARCHAR",
             "species": "VARCHAR DEFAULT 'Cachorro'",
             "sex": "VARCHAR DEFAULT ''",
@@ -227,6 +230,25 @@ def ensure_pet_schema():
                 )
             )
 
+
+def ensure_walk_schema():
+    _add_missing_columns(
+        "walks",
+        {
+            "tenant_id": "VARCHAR",
+        },
+    )
+
+
+def ensure_notification_schema():
+    _add_missing_columns(
+        "notifications",
+        {
+            "tenant_id": "VARCHAR",
+        },
+    )
+
+
 _production_environment = _is_production_environment()
 _run_startup_schema_ensure = get_bool_env("RUN_STARTUP_SCHEMA_ENSURE", default=not _production_environment)
 _run_startup_admin_seed = get_bool_env("RUN_STARTUP_ADMIN_SEED", default=not _production_environment)
@@ -240,6 +262,8 @@ if _run_startup_schema_ensure:
     ensure_walker_profile_schema()
     ensure_tutor_profile_schema()
     ensure_pet_schema()
+    ensure_walk_schema()
+    ensure_notification_schema()
 else:
     print("[startup] schema ensure skipped")
 
@@ -247,7 +271,7 @@ if _run_startup_admin_seed:
     print("[startup] admin seed enabled")
     with SessionLocal() as db:
         ensure_configured_admin_users(db)
-        ensure_default_tenant(db)
+        ensure_default_tenant_links(db)
 else:
     print("[startup] admin seed skipped")
 

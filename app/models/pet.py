@@ -8,6 +8,7 @@ class Pet(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     tutor_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String, ForeignKey("tenants.id"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String)
     photo_url: Mapped[str | None] = mapped_column(String, nullable=True)
     species: Mapped[str] = mapped_column(String, default="Cachorro")

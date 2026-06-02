@@ -10,6 +10,7 @@ from app.models.walker_profile import WalkerProfile
 from app.schemas.auth import LoginRequest, TokenResponse
 from app.schemas.user import UserCreate, UserResponse
 from app.services.identity_uniqueness import ensure_unique_identity
+from app.services.tenant_seed_service import default_tenant_id
 from app.services.walker_referrals import link_referral_to_user, validate_referral_code
 from app.utils.registration_validation import normalize_cpf_or_raise, normalize_email_or_raise, normalize_phone_or_raise
 
@@ -59,13 +60,15 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail={"message": "Cadastro de passeador incompleto.", "errors": missing})
     if payload.referral_code and role in {"walker", "passeador"}:
         validate_referral_code(payload.referral_code, db)
-    user = User(id=str(uuid4()), email=email, full_name=payload.full_name, role=role, password_hash=get_password_hash(payload.password))
+    tenant_id = default_tenant_id(db)
+    user = User(id=str(uuid4()), email=email, full_name=payload.full_name, role=role, password_hash=get_password_hash(payload.password), tenant_id=tenant_id)
     db.add(user)
     if role == "tutor" and (cpf or phone):
         address = profile_payload.get("address", {}) if isinstance(profile_payload, dict) else {}
         db.add(TutorProfile(
             id=str(uuid4()),
             user_id=user.id,
+            tenant_id=tenant_id,
             full_name=payload.full_name or personal.get("nome", ""),
             cpf=cpf,
             phone=phone,

@@ -11,6 +11,7 @@ class Walk(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     tutor_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String, ForeignKey("tenants.id"), nullable=True, index=True)
     walker_id: Mapped[str | None] = mapped_column(String, ForeignKey("users.id"), nullable=True)
     pet_id: Mapped[str] = mapped_column(String, ForeignKey("pets.id"))
     scheduled_date: Mapped[str] = mapped_column(String)

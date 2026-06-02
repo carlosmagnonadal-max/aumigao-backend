@@ -26,6 +26,7 @@ from app.schemas.complaint import ComplaintCreate, ComplaintEvidenceCreate
 from app.services.complaint_service import create_complaint
 from app.services.identity_uniqueness import ensure_unique_identity
 from app.services.reputation_service import reputation_summary
+from app.services.tenant_seed_service import default_tenant_id
 from app.services.walker_referrals import mark_referral_approved, mark_referral_rejected, mark_referral_under_review
 from app.utils.registration_validation import normalize_cpf_or_raise, normalize_email_or_raise, normalize_phone_or_raise
 from app.services.operational_matching_service import (
@@ -824,12 +825,14 @@ def create_partner_application(payload: PartnerApplicationCreate, response: Resp
 
     ensure_unique_identity(db, email=email, cpf=cpf, phone=phone)
 
+    tenant_id = default_tenant_id(db)
     user = User(
         id=str(uuid4()),
         email=email,
         password_hash=get_password_hash(payload.password),
         full_name=payload.full_name.strip(),
         role="walker",
+        tenant_id=tenant_id,
     )
     db.add(user)
     db.flush()

@@ -12,6 +12,7 @@ from app.models.pet import Pet
 from app.models.walk import Walk
 from app.models.user import User
 from app.schemas.pet import PetCreate, PetResponse, PetUpdate
+from app.services.tenant_seed_service import default_tenant_id
 
 router = APIRouter(prefix="/pets", tags=["pets"])
 
@@ -127,7 +128,9 @@ def list_pets(user: User = Depends(get_current_user), db: Session = Depends(get_
 def create_pet(payload: PetCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     data = payload.model_dump()
     data["photo_url"] = _normalize_pet_photo_url(data.get("photo_url"))
-    pet = Pet(id=str(uuid4()), tutor_id=user.id, **data)
+    tenant_id = user.tenant_id or default_tenant_id(db)
+    user.tenant_id = user.tenant_id or tenant_id
+    pet = Pet(id=str(uuid4()), tutor_id=user.id, tenant_id=tenant_id, **data)
     db.add(pet)
     db.commit()
     db.refresh(pet)

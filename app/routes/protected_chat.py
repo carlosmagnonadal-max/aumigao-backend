@@ -12,6 +12,7 @@ from app.models.notification import Notification
 from app.models.protected_chat_message import ProtectedChatMessage
 from app.models.user import User
 from app.models.walk import Walk
+from app.services.tenant_seed_service import default_tenant_id
 
 
 router = APIRouter(prefix="/protected-chat", tags=["protected-chat"])
@@ -134,6 +135,7 @@ def _create_in_app_notification(db: Session, walk: Walk, sender: User, message: 
         return
     notification = Notification(
         id=str(uuid4()),
+        tenant_id=walk.tenant_id or sender.tenant_id or default_tenant_id(db),
         user_id=recipient_id,
         user_role=recipient_role,
         title="Nova mensagem no passeio",

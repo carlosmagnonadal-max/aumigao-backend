@@ -1,6 +1,11 @@
 from sqlalchemy.orm import Session
 
+from app.models.notification import Notification
+from app.models.pet import Pet
 from app.models.tenant import Tenant, TenantBranding, TenantFeature, TenantSettings, TenantUnit
+from app.models.tutor_profile import TutorProfile
+from app.models.user import User
+from app.models.walk import Walk
 
 
 DEFAULT_TENANT_SLUG = "aumigao"
@@ -69,3 +74,27 @@ def ensure_default_tenant(db: Session) -> Tenant:
     db.commit()
     db.refresh(tenant)
     return tenant
+
+
+def ensure_default_tenant_links(db: Session) -> Tenant:
+    tenant = ensure_default_tenant(db)
+    updated = 0
+
+    for model in (User, TutorProfile, Pet, Walk, Notification):
+        updated += (
+            db.query(model)
+            .filter(model.tenant_id.is_(None))
+            .update({model.tenant_id: tenant.id}, synchronize_session=False)
+        )
+
+    if updated:
+        db.commit()
+
+    return tenant
+
+
+def default_tenant_id(db: Session) -> str:
+    tenant = db.query(Tenant).filter(Tenant.slug == DEFAULT_TENANT_SLUG).first()
+    if tenant:
+        return tenant.id
+    return ensure_default_tenant(db).id

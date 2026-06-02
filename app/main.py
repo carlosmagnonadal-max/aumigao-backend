@@ -22,6 +22,11 @@ from app.models import (
     ProtectedChatMessage,
     RiskScore,
     TipIntegrityFlag,
+    Tenant,
+    TenantBranding,
+    TenantFeature,
+    TenantSettings,
+    TenantUnit,
     TutorProfile,
     User,
     Walk,
@@ -40,8 +45,9 @@ from app.models import (
     WalkCompletionReview,
     LegalAcceptance,
 )
-from app.routes import admin, auth, complaints, legal, matching, notifications, operational_walks, payments, pets, protected_chat, referrals, reviews, tutor, walker, walker_quality, walks, weekly_missions
+from app.routes import admin, auth, complaints, legal, matching, notifications, operational_walks, payments, pets, protected_chat, referrals, reviews, tenants, tutor, walker, walker_quality, walks, weekly_missions
 from app.services.admin_seed_service import ensure_configured_admin_users
+from app.services.tenant_seed_service import ensure_default_tenant
 from app.services.operational_matching_service import ensure_operational_schema
 from app.services.operational_scheduler_service import (
     mark_operational_scheduler_started,
@@ -241,6 +247,7 @@ if _run_startup_admin_seed:
     print("[startup] admin seed enabled")
     with SessionLocal() as db:
         ensure_configured_admin_users(db)
+        ensure_default_tenant(db)
 else:
     print("[startup] admin seed skipped")
 
@@ -273,6 +280,8 @@ app.include_router(walker.partner_router)
 app.include_router(payments.router)
 app.include_router(admin.router)
 app.include_router(admin.api_router)
+app.include_router(tenants.router)
+app.include_router(tenants.api_router)
 app.include_router(operational_walks.admin_router)
 app.include_router(operational_walks.api_admin_router)
 app.include_router(referrals.router)

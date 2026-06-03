@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 
-from app.models.tenant import Tenant
+from app.models.tenant import Tenant, TenantBranding
+from app.schemas.tenant_branding_update import TenantBrandingUpdatePayload
 from app.services.tenant_context import get_default_tenant, resolve_current_tenant
 
 
@@ -49,3 +50,27 @@ def get_tenant_branding_runtime(db: Session, tenant_id: str | None = None, tenan
         "secondary_color": _clean_text(branding.secondary_color if branding else None) or DEFAULT_SECONDARY_COLOR,
         "powered_by_enabled": powered_by_enabled,
     }
+
+
+def update_tenant_branding_runtime(
+    db: Session,
+    tenant: Tenant,
+    payload: TenantBrandingUpdatePayload,
+) -> dict[str, str | bool]:
+    branding = tenant.branding
+    if not branding:
+        branding = TenantBranding(tenant_id=tenant.id, display_name=payload.display_name)
+        db.add(branding)
+
+    branding.display_name = payload.display_name
+    branding.app_name = payload.app_name
+    branding.logo_url = payload.logo_url
+    branding.icon_url = payload.icon_url
+    branding.primary_color = payload.primary_color
+    branding.secondary_color = payload.secondary_color
+    branding.powered_by_enabled = payload.powered_by_enabled
+
+    db.commit()
+    db.refresh(branding)
+    db.refresh(tenant)
+    return get_tenant_branding_runtime(db, tenant=tenant)

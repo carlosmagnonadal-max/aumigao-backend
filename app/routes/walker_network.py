@@ -17,6 +17,7 @@ from app.schemas.walker_network import (
     TenantWalkerAccessUpdate,
     WalkerNetworkProfileResponse,
 )
+from app.services.tenant_plan_service import enforce_network_access_allowed
 
 router = APIRouter(prefix="/admin/walker-network", tags=["admin-walker-network"], dependencies=[Depends(require_admin)])
 api_router = APIRouter(prefix="/api/admin/walker-network", tags=["admin-walker-network"], dependencies=[Depends(require_admin)])
@@ -71,7 +72,8 @@ def list_tenant_walkers(tenant_id: str, db: Session = Depends(get_db)):
 @router.post("/tenants/{tenant_id}", response_model=TenantWalkerAccessResponse)
 @api_router.post("/tenants/{tenant_id}", response_model=TenantWalkerAccessResponse)
 def link_walker_to_tenant(tenant_id: str, payload: TenantWalkerAccessCreate, db: Session = Depends(get_db)):
-    _tenant_or_404(tenant_id, db)
+    tenant = _tenant_or_404(tenant_id, db)
+    enforce_network_access_allowed(tenant, db)
     _walker_or_404(payload.walker_user_id, db)
     _ensure_choice(payload.access_type, TENANT_WALKER_ACCESS_TYPES, "access_type")
     _ensure_choice(payload.status, TENANT_WALKER_ACCESS_STATUSES, "status")

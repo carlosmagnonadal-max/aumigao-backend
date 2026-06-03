@@ -1,6 +1,7 @@
 from copy import deepcopy
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models.tenant import Tenant, TenantFeature, TenantUnit
@@ -52,6 +53,13 @@ FEATURE_CAPABILITY_KEYS = {
     "custom_products": "custom_products_allowed",
     "custom_projects": "custom_projects_allowed",
     "powered_by_required": "powered_by_required",
+}
+
+ENFORCED_COMMERCIAL_FEATURES = {
+    "dedicated_app",
+    "network_access",
+    "custom_products",
+    "custom_projects",
 }
 
 
@@ -109,3 +117,24 @@ def can_add_tenant_unit(tenant: Tenant, db: Session) -> bool:
         return True
     current_units = db.query(TenantUnit).filter(TenantUnit.tenant_id == tenant.id).count()
     return current_units < limit
+
+
+def enforce_can_add_tenant_unit(tenant: Tenant, db: Session) -> None:
+    if not can_add_tenant_unit(tenant, db):
+        raise HTTPException(status_code=403, detail="Limite de unidades atingido para o plano atual.")
+
+
+def enforce_tenant_feature_allowed(tenant: Tenant, db: Session, feature_key: str) -> None:
+    normalized_key = (feature_key or "").strip()
+    if normalized_key not in ENFORCED_COMMERCIAL_FEATURES:
+        return
+
+    base_capabilities = get_plan_capabilities(tenant.plan)
+    capability_key = FEATURE_CAPABILITY_KEYS.get(normalized_key, normalized_key)
+    if not base_capabilities.get(capability_key):
+        raise HTTPException(status_code=403, detail=f"Feature {normalized_key} indisponível para o plano atual.")
+
+
+def enforce_network_access_allowed(tenant: Tenant, db: Session) -> None:
+    if not tenant_has_feature(tenant, db, "network_access"):
+        raise HTTPException(status_code=403, detail="Acesso à Rede Aumigão indisponível para o plano atual.")

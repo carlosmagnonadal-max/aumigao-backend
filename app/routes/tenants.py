@@ -30,7 +30,11 @@ from app.schemas.tenant_onboarding import (
     TenantOnboardingUpdate,
 )
 from app.schemas.tenant_plan import TenantCapabilitiesResponse
-from app.services.tenant_plan_service import get_tenant_capabilities
+from app.services.tenant_plan_service import (
+    enforce_can_add_tenant_unit,
+    enforce_tenant_feature_allowed,
+    get_tenant_capabilities,
+)
 
 router = APIRouter(prefix="/admin/tenants", tags=["admin-tenants"], dependencies=[Depends(require_admin)])
 api_router = APIRouter(prefix="/api/admin/tenants", tags=["admin-tenants"], dependencies=[Depends(require_admin)])
@@ -239,7 +243,7 @@ def list_tenant_features(tenant_id: str, db: Session = Depends(get_db)):
 @router.patch("/{tenant_id}/features", response_model=list[TenantFeatureResponse])
 @api_router.patch("/{tenant_id}/features", response_model=list[TenantFeatureResponse])
 def update_tenant_features(tenant_id: str, payload: list[TenantFeatureUpdate], db: Session = Depends(get_db)):
-    _tenant_or_404(tenant_id, db)
+    tenant = _tenant_or_404(tenant_id, db)
     existing = {
         item.feature_key: item
         for item in db.query(TenantFeature).filter(TenantFeature.tenant_id == tenant_id).all()
@@ -248,6 +252,8 @@ def update_tenant_features(tenant_id: str, payload: list[TenantFeatureUpdate], d
         feature_key = item.feature_key.strip()
         if not feature_key:
             raise HTTPException(status_code=400, detail="feature_key obrigatório.")
+        if item.enabled:
+            enforce_tenant_feature_allowed(tenant, db, feature_key)
         feature = existing.get(feature_key) or TenantFeature(tenant_id=tenant_id, feature_key=feature_key)
         feature.enabled = item.enabled
         feature.limit_value = item.limit_value
@@ -268,8 +274,9 @@ def list_tenant_units(tenant_id: str, db: Session = Depends(get_db)):
 @router.post("/{tenant_id}/units", response_model=TenantUnitResponse)
 @api_router.post("/{tenant_id}/units", response_model=TenantUnitResponse)
 def create_tenant_unit(tenant_id: str, payload: TenantUnitCreate, db: Session = Depends(get_db)):
-    _tenant_or_404(tenant_id, db)
+    tenant = _tenant_or_404(tenant_id, db)
     _ensure_status(payload.status, TENANT_UNIT_STATUSES, "status")
+    enforce_can_add_tenant_unit(tenant, db)
     unit = TenantUnit(
         tenant_id=tenant_id,
         name=payload.name.strip(),

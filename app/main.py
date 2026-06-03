@@ -47,7 +47,7 @@ from app.models import (
     WalkCompletionReview,
     LegalAcceptance,
 )
-from app.routes import admin, auth, complaints, legal, matching, notifications, operational_walks, payments, pets, protected_chat, referrals, reviews, tenants, tutor, walker, walker_network, walker_quality, walks, weekly_missions
+from app.routes import admin, auth, complaints, legal, matching, notifications, operational_walks, payments, pets, protected_chat, referrals, reviews, tenant_branding, tenants, tutor, walker, walker_network, walker_quality, walks, weekly_missions
 from app.services.admin_seed_service import ensure_configured_admin_users
 from app.services.tenant_seed_service import ensure_default_tenant_links, ensure_network_profiles
 from app.services.operational_matching_service import ensure_operational_schema
@@ -309,6 +309,8 @@ app.include_router(walker_network.api_router)
 app.include_router(payments.router)
 app.include_router(admin.router)
 app.include_router(admin.api_router)
+app.include_router(tenant_branding.router)
+app.include_router(tenant_branding.api_router)
 app.include_router(tenants.router)
 app.include_router(tenants.api_router)
 app.include_router(operational_walks.admin_router)

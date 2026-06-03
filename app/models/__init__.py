@@ -27,3 +27,5 @@ from app.models.walk_completion_review import WalkCompletionReview
 from app.models.legal_acceptance import LegalAcceptance
 from app.models.tenant import Tenant, TenantBranding, TenantFeature, TenantSettings, TenantUnit
 from app.models.tenant_onboarding import TenantOnboarding
+from app.models.walker_network_profile import WalkerNetworkProfile
+from app.models.tenant_walker_access import TenantWalkerAccess

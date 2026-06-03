@@ -4,6 +4,7 @@ from app.models.notification import Notification
 from app.models.pet import Pet
 from app.models.tenant import Tenant, TenantBranding, TenantFeature, TenantSettings, TenantUnit
 from app.models.tenant_onboarding import TenantOnboarding
+from app.models.walker_network_profile import WalkerNetworkProfile
 from app.models.tutor_profile import TutorProfile
 from app.models.user import User
 from app.models.walk import Walk
@@ -103,3 +104,24 @@ def default_tenant_id(db: Session) -> str:
     if tenant:
         return tenant.id
     return ensure_default_tenant(db).id
+
+
+def ensure_network_profiles(db: Session) -> list[WalkerNetworkProfile]:
+    profiles = []
+    existing_walker_ids = {
+        item.walker_user_id
+        for item in db.query(WalkerNetworkProfile).all()
+    }
+    walkers = db.query(User).filter(User.role == "walker").all()
+
+    for walker in walkers:
+        if walker.id in existing_walker_ids:
+            continue
+        profile = WalkerNetworkProfile(walker_user_id=walker.id)
+        db.add(profile)
+        profiles.append(profile)
+
+    if profiles:
+        db.commit()
+
+    return profiles

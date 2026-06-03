@@ -46,6 +46,7 @@ def get_tenant_branding_runtime(db: Session, tenant_id: str | None = None, tenan
         "app_name": app_name,
         "logo_url": _clean_text(branding.logo_url if branding else None) or "",
         "icon_url": _clean_text(branding.icon_url if branding else None) or "",
+        "splash_image_url": _clean_text(branding.splash_image_url if branding else None) or "",
         "primary_color": _clean_text(branding.primary_color if branding else None) or DEFAULT_PRIMARY_COLOR,
         "secondary_color": _clean_text(branding.secondary_color if branding else None) or DEFAULT_SECONDARY_COLOR,
         "powered_by_enabled": powered_by_enabled,
@@ -66,6 +67,7 @@ def update_tenant_branding_runtime(
     branding.app_name = payload.app_name
     branding.logo_url = payload.logo_url
     branding.icon_url = payload.icon_url
+    branding.splash_image_url = payload.splash_image_url
     branding.primary_color = payload.primary_color
     branding.secondary_color = payload.secondary_color
     branding.powered_by_enabled = payload.powered_by_enabled

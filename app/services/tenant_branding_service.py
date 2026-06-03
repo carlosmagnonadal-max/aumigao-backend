@@ -30,8 +30,8 @@ def _resolve_tenant(db: Session, tenant_id: str | None = None) -> Tenant:
     return get_default_tenant(db)
 
 
-def get_tenant_branding_runtime(db: Session, tenant_id: str | None = None) -> dict[str, str | bool]:
-    tenant = _resolve_tenant(db, tenant_id)
+def get_tenant_branding_runtime(db: Session, tenant_id: str | None = None, tenant: Tenant | None = None) -> dict[str, str | bool]:
+    tenant = tenant or _resolve_tenant(db, tenant_id)
     branding = tenant.branding
 
     display_name = _clean_text(branding.display_name if branding else None) or _clean_text(tenant.name) or "Aumigao"

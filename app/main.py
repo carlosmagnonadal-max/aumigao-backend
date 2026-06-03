@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
 from app.core.database import Base, SessionLocal, engine, get_database_diagnostics, mask_database_url
+from app.middleware.tenant_resolver import TenantResolverMiddleware
 from app.models import (
     AdminOperationalEvent,
     Complaint,
@@ -287,6 +288,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(TenantResolverMiddleware, session_factory=SessionLocal)
 
 Path("uploads").mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")

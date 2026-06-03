@@ -29,6 +29,8 @@ from app.schemas.tenant_onboarding import (
     TenantOnboardingResponse,
     TenantOnboardingUpdate,
 )
+from app.schemas.tenant_plan import TenantCapabilitiesResponse
+from app.services.tenant_plan_service import get_tenant_capabilities
 
 router = APIRouter(prefix="/admin/tenants", tags=["admin-tenants"], dependencies=[Depends(require_admin)])
 api_router = APIRouter(prefix="/api/admin/tenants", tags=["admin-tenants"], dependencies=[Depends(require_admin)])
@@ -37,25 +39,25 @@ api_router = APIRouter(prefix="/api/admin/tenants", tags=["admin-tenants"], depe
 def _normalize_slug(value: str) -> str:
     slug = (value or "").strip().lower()
     if not slug:
-        raise HTTPException(status_code=400, detail="slug obrigatorio.")
+        raise HTTPException(status_code=400, detail="slug obrigatório.")
     return slug
 
 
 def _tenant_or_404(tenant_id: str, db: Session) -> Tenant:
     tenant = db.get(Tenant, tenant_id)
     if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant nao encontrado.")
+        raise HTTPException(status_code=404, detail="Tenant não encontrado.")
     return tenant
 
 
 def _ensure_status(value: str | None, allowed: set[str], field_name: str) -> None:
     if value is not None and value not in allowed:
-        raise HTTPException(status_code=400, detail=f"{field_name} invalido.")
+        raise HTTPException(status_code=400, detail=f"{field_name} inválido.")
 
 
 def _ensure_plan(value: str | None) -> None:
     if value is not None and value not in TENANT_PLANS:
-        raise HTTPException(status_code=400, detail="plan invalido.")
+        raise HTTPException(status_code=400, detail="plan inválido.")
 
 
 def _default_branding(tenant: Tenant) -> TenantBranding:
@@ -100,7 +102,7 @@ def create_tenant(payload: TenantCreate, db: Session = Depends(get_db)):
     _ensure_plan(payload.plan)
     existing = db.query(Tenant).filter(Tenant.slug == slug).first()
     if existing:
-        raise HTTPException(status_code=409, detail="Tenant com este slug ja existe.")
+        raise HTTPException(status_code=409, detail="Tenant com este slug já existe.")
 
     tenant = Tenant(
         name=payload.name.strip(),
@@ -200,6 +202,17 @@ def get_tenant_onboarding(tenant_id: str, db: Session = Depends(get_db)):
     return _ensure_tenant_onboarding(tenant, db)
 
 
+@router.get("/{tenant_id}/capabilities", response_model=TenantCapabilitiesResponse)
+@api_router.get("/{tenant_id}/capabilities", response_model=TenantCapabilitiesResponse)
+def get_tenant_capabilities_endpoint(tenant_id: str, db: Session = Depends(get_db)):
+    tenant = _tenant_or_404(tenant_id, db)
+    return {
+        "tenant_id": tenant.id,
+        "plan": tenant.plan,
+        "capabilities": get_tenant_capabilities(tenant, db),
+    }
+
+
 @router.patch("/{tenant_id}/onboarding", response_model=TenantOnboardingResponse)
 @api_router.patch("/{tenant_id}/onboarding", response_model=TenantOnboardingResponse)
 def update_tenant_onboarding(tenant_id: str, payload: TenantOnboardingUpdate, db: Session = Depends(get_db)):
@@ -234,7 +247,7 @@ def update_tenant_features(tenant_id: str, payload: list[TenantFeatureUpdate], d
     for item in payload:
         feature_key = item.feature_key.strip()
         if not feature_key:
-            raise HTTPException(status_code=400, detail="feature_key obrigatorio.")
+            raise HTTPException(status_code=400, detail="feature_key obrigatório.")
         feature = existing.get(feature_key) or TenantFeature(tenant_id=tenant_id, feature_key=feature_key)
         feature.enabled = item.enabled
         feature.limit_value = item.limit_value

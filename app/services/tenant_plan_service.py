@@ -1,0 +1,111 @@
+from copy import deepcopy
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from app.models.tenant import Tenant, TenantFeature, TenantUnit
+
+
+TENANT_PLAN_STARTER = "starter"
+TENANT_PLAN_BUSINESS = "business"
+TENANT_PLAN_ENTERPRISE = "enterprise"
+
+TENANT_PLAN_CAPABILITIES: dict[str, dict[str, Any]] = {
+    TENANT_PLAN_STARTER: {
+        "max_units": 1,
+        "max_units_with_addon": 1,
+        "dedicated_app_allowed": False,
+        "dedicated_app_required": False,
+        "powered_by_required": True,
+        "network_access_available": False,
+        "custom_products_allowed": False,
+        "custom_projects_allowed": False,
+        "onboarding_mode": "self_service",
+    },
+    TENANT_PLAN_BUSINESS: {
+        "max_units": 2,
+        "max_units_with_addon": 3,
+        "dedicated_app_allowed": True,
+        "dedicated_app_required": False,
+        "powered_by_required": False,
+        "network_access_available": True,
+        "custom_products_allowed": True,
+        "custom_projects_allowed": False,
+        "onboarding_mode": "assisted",
+    },
+    TENANT_PLAN_ENTERPRISE: {
+        "max_units": None,
+        "max_units_with_addon": None,
+        "dedicated_app_allowed": True,
+        "dedicated_app_required": True,
+        "powered_by_required": False,
+        "network_access_available": True,
+        "custom_products_allowed": True,
+        "custom_projects_allowed": True,
+        "onboarding_mode": "consultative",
+    },
+}
+
+FEATURE_CAPABILITY_KEYS = {
+    "dedicated_app": "dedicated_app_allowed",
+    "network_access": "network_access_available",
+    "custom_products": "custom_products_allowed",
+    "custom_projects": "custom_projects_allowed",
+    "powered_by_required": "powered_by_required",
+}
+
+
+def get_plan_capabilities(plan: str) -> dict[str, Any]:
+    return deepcopy(TENANT_PLAN_CAPABILITIES.get(plan or "", TENANT_PLAN_CAPABILITIES[TENANT_PLAN_STARTER]))
+
+
+def _coerce_limit(value: str | None):
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"", "none", "null", "unlimited"}:
+        return None
+    try:
+        return int(normalized)
+    except ValueError:
+        return value
+
+
+def _tenant_features(tenant: Tenant, db: Session) -> list[TenantFeature]:
+    return db.query(TenantFeature).filter(TenantFeature.tenant_id == tenant.id).all()
+
+
+def get_tenant_capabilities(tenant: Tenant, db: Session) -> dict[str, Any]:
+    capabilities = get_plan_capabilities(tenant.plan)
+
+    for feature in _tenant_features(tenant, db):
+        feature_key = (feature.feature_key or "").strip()
+        if feature.limit_value is not None:
+            capabilities[feature_key] = _coerce_limit(feature.limit_value)
+        if feature_key in FEATURE_CAPABILITY_KEYS:
+            capabilities[FEATURE_CAPABILITY_KEYS[feature_key]] = bool(feature.enabled)
+        elif feature.enabled and feature.limit_value is None:
+            capabilities[feature_key] = True
+
+    return capabilities
+
+
+def tenant_has_feature(tenant: Tenant, db: Session, feature_key: str) -> bool:
+    capabilities = get_tenant_capabilities(tenant, db)
+    capability_key = FEATURE_CAPABILITY_KEYS.get(feature_key, feature_key)
+    return bool(capabilities.get(capability_key))
+
+
+def get_tenant_limit(tenant: Tenant, db: Session, limit_key: str):
+    capabilities = get_tenant_capabilities(tenant, db)
+    return capabilities.get(limit_key)
+
+
+def can_add_tenant_unit(tenant: Tenant, db: Session) -> bool:
+    limit = get_tenant_limit(tenant, db, "max_units_with_addon")
+    if limit is None:
+        return True
+    if not isinstance(limit, int):
+        return True
+    current_units = db.query(TenantUnit).filter(TenantUnit.tenant_id == tenant.id).count()
+    return current_units < limit

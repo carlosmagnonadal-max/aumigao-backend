@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -21,7 +22,10 @@ from app.services.matching_service import get_eligible_walkers, matched_walker_p
 from app.services.operational_observability_service import record_operational_exception, record_operational_log
 from app.services.operational_reliability_service import serialize_operational_event
 from app.services.walker_operational_score_service import calculate_walker_operational_score
+from app.services.walker_network_matching_service import get_matching_pool_for_tenant
 from app.routes.notifications import NotificationCreate, _create_notification
+
+logger = logging.getLogger(__name__)
 
 PENDING_WALKER_CONFIRMATION = "pending_walker_confirmation"
 WALKER_ACCEPTED = "walker_accepted"
@@ -408,8 +412,31 @@ def _candidate_request(walk: Walk) -> MatchingWalkerRequest:
     )
 
 
+def _tenant_matching_pool(walk: Walk, db: Session) -> set[str] | None:
+    tenant_id = getattr(walk, "tenant_id", None)
+    if not tenant_id:
+        return None
+    try:
+        walker_ids = get_matching_pool_for_tenant(db, tenant_id)
+    except Exception as exc:
+        logger.warning(
+            "walker_network_matching_pool_unavailable walk_id=%s tenant_id=%s error=%s",
+            walk.id,
+            tenant_id,
+            exc,
+        )
+        return None
+    return set(walker_ids) if walker_ids else None
+
+
 def _rank_candidates(walk: Walk, db: Session, excluded: set[str]) -> list[dict]:
-    profiles = [profile for profile in get_eligible_walkers(_candidate_request(walk), db) if profile.user_id not in excluded]
+    tenant_pool = _tenant_matching_pool(walk, db)
+    profiles = [
+        profile
+        for profile in get_eligible_walkers(_candidate_request(walk), db)
+        if profile.user_id not in excluded
+        and (tenant_pool is None or profile.user_id in tenant_pool)
+    ]
     items = [matched_walker_payload(profile, _candidate_request(walk), db) for profile in profiles]
     items.sort(
         key=lambda item: (

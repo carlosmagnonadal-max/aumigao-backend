@@ -5,7 +5,7 @@ import traceback
 from uuid import uuid4
 from datetime import datetime, timedelta
 import json
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from app.core.database import get_db
@@ -85,6 +85,82 @@ def _serialize_walk(walk: Walk, db: Session) -> dict:
     return serialize_operational_walk(walk, db, include_private=True)
 
 
+def _serialize_walk_list_item(
+    walk: Walk,
+    pets_by_id: dict[str, Pet],
+    users_by_id: dict[str, User],
+    user: User,
+) -> dict:
+    pet = pets_by_id.get(walk.pet_id)
+    tutor = users_by_id.get(walk.tutor_id)
+    walker_id = walk.walker_id or walk.assigned_walker_id
+    walker = users_by_id.get(walker_id) if walker_id else None
+    walk_date, _, walk_time = (walk.scheduled_date or "").partition("T")
+    can_see_full = user.role in {"admin", "super_admin"} or walk.tutor_id == user.id
+    pet_photo_url = (pet.photo_url if pet else "") or ""
+    if pet_photo_url.startswith(("file://", "content://", "blob:")):
+        pet_photo_url = ""
+
+    return {
+        "id": walk.id,
+        "tutor_id": walk.tutor_id,
+        "walker_id": walker_id,
+        "assigned_walker_id": walk.assigned_walker_id,
+        "assignedWalkerId": walk.assigned_walker_id,
+        "pet_id": walk.pet_id,
+        "pet_name": pet.name if pet else None,
+        "pet_photo_url": pet_photo_url,
+        "tutor_name": (tutor.full_name if tutor else None) or (tutor.email if tutor else None),
+        "client_name": (tutor.full_name if tutor else None) or (tutor.email if tutor else None),
+        "walker_name": (walker.full_name if walker else None) or (walker.email if walker else None),
+        "scheduled_date": walk.scheduled_date,
+        "walk_date": walk_date or None,
+        "walk_time": walk_time[:5] if walk_time else None,
+        "duration_minutes": walk.duration_minutes,
+        "price": walk.price,
+        "status": walk.status,
+        "operational_status": walk.operational_status,
+        "operationalStatus": walk.operational_status,
+        "walker_selection_mode": walk.walker_selection_mode or "auto",
+        "walkerSelectionMode": walk.walker_selection_mode or "auto",
+        "pickup_method": walk.pickup_method,
+        "address_snapshot": walk.address_snapshot if can_see_full else "",
+        "notes": walk.notes if can_see_full else "",
+        "pickup_privacy_level": "full" if can_see_full else "coarse",
+        "current_attempt": walk.current_attempt,
+        "current_matching_attempt": walk.current_attempt,
+        "max_attempts": walk.max_attempts,
+        "max_matching_attempts": walk.max_attempts,
+        "confirmation_expires_at": walk.confirmation_expires_at,
+        "walker_confirmation_expires_at": walk.confirmation_expires_at,
+        "matching_started_at": walk.matching_started_at,
+        "matching_finished_at": walk.matching_finished_at,
+        "no_walker_reason": walk.no_walker_reason,
+        "matching_attempts": [],
+        "operational_logs": [],
+        "created_at": walk.created_at,
+    }
+
+
+def _serialize_walk_list(walks: list[Walk], db: Session, user: User) -> list[dict]:
+    pet_ids = {walk.pet_id for walk in walks if walk.pet_id}
+    user_ids = {
+        item
+        for walk in walks
+        for item in (walk.tutor_id, walk.walker_id, walk.assigned_walker_id)
+        if item
+    }
+    pets_by_id = {
+        pet.id: pet
+        for pet in db.query(Pet).filter(Pet.id.in_(pet_ids)).all()
+    } if pet_ids else {}
+    users_by_id = {
+        item.id: item
+        for item in db.query(User).filter(User.id.in_(user_ids)).all()
+    } if user_ids else {}
+    return [_serialize_walk_list_item(walk, pets_by_id, users_by_id, user) for walk in walks]
+
+
 def _serialize_walk_review(review: WalkReview) -> dict:
     try:
         tags = json.loads(review.tags_json or "[]")
@@ -144,16 +220,23 @@ def _refresh_reliability_events(walks: list[Walk], db: Session) -> None:
         db.commit()
 
 @router.get("", response_model=list[WalkResponse])
-def list_walks(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_walks(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    limit: int = Query(100, ge=1, le=200),
+    full: bool = Query(False),
+):
     process_expired_attempts(db)
     query = db.query(Walk)
     if user.role == "walker":
         query = query.filter((Walk.walker_id == user.id) | (Walk.walker_id.is_(None)))
     elif user.role not in {"admin", "super_admin"}:
         query = query.filter(Walk.tutor_id == user.id)
-    walks = query.order_by(Walk.created_at.desc()).all()
+    walks = query.order_by(Walk.created_at.desc()).limit(limit).all()
     _refresh_reliability_events(walks, db)
-    return [serialize_operational_walk(walk, db, user=user) for walk in walks]
+    if full:
+        return [serialize_operational_walk(walk, db, user=user) for walk in walks]
+    return _serialize_walk_list(walks, db, user)
 
 @router.post("", response_model=WalkResponse)
 def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):

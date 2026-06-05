@@ -7,7 +7,8 @@ from datetime import datetime, timedelta
 import json
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.orm import Session, aliased
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.payment import Payment
@@ -87,14 +88,12 @@ def _serialize_walk(walk: Walk, db: Session) -> dict:
 
 def _serialize_walk_list_item(
     walk: Walk,
-    pets_by_id: dict[str, Pet],
-    users_by_id: dict[str, User],
+    pet: Pet | None,
+    tutor: User | None,
+    walker: User | None,
     user: User,
 ) -> dict:
-    pet = pets_by_id.get(walk.pet_id)
-    tutor = users_by_id.get(walk.tutor_id)
     walker_id = walk.walker_id or walk.assigned_walker_id
-    walker = users_by_id.get(walker_id) if walker_id else None
     walk_date, _, walk_time = (walk.scheduled_date or "").partition("T")
     can_see_full = user.role in {"admin", "super_admin"} or walk.tutor_id == user.id
     pet_photo_url = (pet.photo_url if pet else "") or ""
@@ -142,23 +141,23 @@ def _serialize_walk_list_item(
     }
 
 
-def _serialize_walk_list(walks: list[Walk], db: Session, user: User) -> list[dict]:
-    pet_ids = {walk.pet_id for walk in walks if walk.pet_id}
-    user_ids = {
-        item
-        for walk in walks
-        for item in (walk.tutor_id, walk.walker_id, walk.assigned_walker_id)
-        if item
-    }
-    pets_by_id = {
-        pet.id: pet
-        for pet in db.query(Pet).filter(Pet.id.in_(pet_ids)).all()
-    } if pet_ids else {}
-    users_by_id = {
-        item.id: item
-        for item in db.query(User).filter(User.id.in_(user_ids)).all()
-    } if user_ids else {}
-    return [_serialize_walk_list_item(walk, pets_by_id, users_by_id, user) for walk in walks]
+def _walk_list_query(db: Session):
+    tutor_user = aliased(User)
+    walker_user = aliased(User)
+    walker_join_id = func.coalesce(Walk.walker_id, Walk.assigned_walker_id)
+    return (
+        db.query(Walk, Pet, tutor_user, walker_user)
+        .outerjoin(Pet, Pet.id == Walk.pet_id)
+        .outerjoin(tutor_user, tutor_user.id == Walk.tutor_id)
+        .outerjoin(walker_user, walker_user.id == walker_join_id)
+    )
+
+
+def _serialize_walk_list(rows: list[tuple[Walk, Pet | None, User | None, User | None]], user: User) -> list[dict]:
+    return [
+        _serialize_walk_list_item(walk, pet, tutor, walker, user)
+        for walk, pet, tutor, walker in rows
+    ]
 
 
 def _serialize_walk_review(review: WalkReview) -> dict:
@@ -223,20 +222,27 @@ def _refresh_reliability_events(walks: list[Walk], db: Session) -> None:
 def list_walks(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-    limit: int = Query(100, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=200),
     full: bool = Query(False),
 ):
-    process_expired_attempts(db)
-    query = db.query(Walk)
+    if full:
+        process_expired_attempts(db)
+        query = db.query(Walk)
+        if user.role == "walker":
+            query = query.filter((Walk.walker_id == user.id) | (Walk.walker_id.is_(None)))
+        elif user.role not in {"admin", "super_admin"}:
+            query = query.filter(Walk.tutor_id == user.id)
+        walks = query.order_by(Walk.created_at.desc()).limit(limit).all()
+        _refresh_reliability_events(walks, db)
+        return [serialize_operational_walk(walk, db, user=user) for walk in walks]
+
+    query = _walk_list_query(db)
     if user.role == "walker":
         query = query.filter((Walk.walker_id == user.id) | (Walk.walker_id.is_(None)))
     elif user.role not in {"admin", "super_admin"}:
         query = query.filter(Walk.tutor_id == user.id)
-    walks = query.order_by(Walk.created_at.desc()).limit(limit).all()
-    _refresh_reliability_events(walks, db)
-    if full:
-        return [serialize_operational_walk(walk, db, user=user) for walk in walks]
-    return _serialize_walk_list(walks, db, user)
+    rows = query.order_by(Walk.created_at.desc()).limit(limit).all()
+    return _serialize_walk_list(rows, user)
 
 @router.post("", response_model=WalkResponse)
 def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):

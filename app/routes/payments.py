@@ -1,12 +1,13 @@
 ﻿import os
 import asyncio
+import secrets
 import logging
 from datetime import date, timedelta
 from pathlib import Path
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 
@@ -289,7 +290,13 @@ def get_payment(payment_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/webhooks/asaas")
-def asaas_webhook(payload: dict, db: Session = Depends(get_db)):
+def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_db)):
+    expected = os.getenv("ASAAS_WEBHOOK_TOKEN")
+    received = request.headers.get("asaas-access-token")
+
+    if not expected or not secrets.compare_digest(expected, received or ""):
+        raise HTTPException(status_code=401, detail="Webhook não autorizado")
+
     event = payload.get("event")
     provider_payment_id = (payload.get("payment") or {}).get("id")
     if provider_payment_id:

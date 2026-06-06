@@ -11,7 +11,14 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
-SECRET_KEY = os.getenv("JWT_SECRET", "aumigao-dev-secret-key-with-more-than-32-bytes").strip().strip('"').strip("'")
+SECRET_KEY = (os.getenv("JWT_SECRET") or "").strip().strip('"').strip("'")
+
+if not SECRET_KEY or len(SECRET_KEY) < 32:
+    raise RuntimeError(
+        "JWT_SECRET ausente ou curto demais. "
+        "Defina uma variável de ambiente com pelo menos 32 bytes."
+    )
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
 

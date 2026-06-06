@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_password_hash, verify_password
-from app.dependencies.auth import get_current_user
+from app.dependencies.auth import get_current_user, require_admin
 from app.models.payment import Payment
 from app.models.pet import Pet
 from app.models.user import User
@@ -860,12 +860,19 @@ def create_partner_application(payload: PartnerApplicationCreate, response: Resp
 
 
 @partner_router.get("")
-def list_partner_applications(db: Session = Depends(get_db)):
+def list_partner_applications(
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
     return [_serialize_partner_application(profile, db) for profile in db.query(WalkerProfile).order_by(WalkerProfile.created_at.desc()).all()]
 
 
 @partner_router.get("/{candidate_id}")
-def get_partner_application(candidate_id: str, db: Session = Depends(get_db)):
+def get_partner_application(
+    candidate_id: str,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
     profile = db.get(WalkerProfile, candidate_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Candidatura nao encontrada")
@@ -873,7 +880,12 @@ def get_partner_application(candidate_id: str, db: Session = Depends(get_db)):
 
 
 @partner_router.patch("/{candidate_id}/status")
-def update_partner_application_status(candidate_id: str, payload: PartnerApplicationStatusUpdate, db: Session = Depends(get_db)):
+def update_partner_application_status(
+    candidate_id: str,
+    payload: PartnerApplicationStatusUpdate,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
     profile = db.get(WalkerProfile, candidate_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Candidatura nao encontrada")
@@ -890,7 +902,12 @@ def update_partner_application_status(candidate_id: str, payload: PartnerApplica
 
 
 @partner_router.patch("/{candidate_id}/admin-fields")
-def update_partner_application_admin_fields(candidate_id: str, payload: PartnerApplicationAdminFieldsUpdate, db: Session = Depends(get_db)):
+def update_partner_application_admin_fields(
+    candidate_id: str,
+    payload: PartnerApplicationAdminFieldsUpdate,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_admin),
+):
     profile = db.get(WalkerProfile, candidate_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Candidatura nao encontrada")

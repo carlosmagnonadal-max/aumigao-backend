@@ -11,6 +11,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, aliased
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
+from app.dependencies.tenant_scope import apply_tenant_filter, ensure_tenant_access, get_admin_tenant_scope
 from app.models.payment import Payment
 from app.models.walk import Walk, WalkMatchingAttempt
 from app.models.walk_completion_review import WalkCompletionReview
@@ -206,6 +207,10 @@ def _get_walk_for_user(walk_id: str, user: User, db: Session) -> Walk:
     walk = db.get(Walk, walk_id)
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
+    if user.role in {"admin", "super_admin"}:
+        scope = get_admin_tenant_scope(user)
+        ensure_tenant_access(walk.tenant_id, scope)
+        return walk
     if user.role not in {"admin", "super_admin"} and walk.tutor_id != user.id and walk.walker_id != user.id and walk.assigned_walker_id != user.id:
         raise HTTPException(status_code=403, detail="Sem permissao")
     return walk
@@ -230,6 +235,8 @@ def list_walks(
         query = db.query(Walk)
         if user.role == "walker":
             query = query.filter((Walk.walker_id == user.id) | (Walk.walker_id.is_(None)))
+        elif user.role in {"admin", "super_admin"}:
+            query = apply_tenant_filter(query, Walk, get_admin_tenant_scope(user))
         elif user.role not in {"admin", "super_admin"}:
             query = query.filter(Walk.tutor_id == user.id)
         walks = query.order_by(Walk.created_at.desc()).limit(limit).all()
@@ -239,6 +246,8 @@ def list_walks(
     query = _walk_list_query(db)
     if user.role == "walker":
         query = query.filter((Walk.walker_id == user.id) | (Walk.walker_id.is_(None)))
+    elif user.role in {"admin", "super_admin"}:
+        query = apply_tenant_filter(query, Walk, get_admin_tenant_scope(user))
     elif user.role not in {"admin", "super_admin"}:
         query = query.filter(Walk.tutor_id == user.id)
     rows = query.order_by(Walk.created_at.desc()).limit(limit).all()

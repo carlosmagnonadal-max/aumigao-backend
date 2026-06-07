@@ -892,7 +892,6 @@ def dashboard(db: Session = Depends(get_db)):
         if _is_real_pet(pet, db.get(User, pet.tutor_id) if pet.tutor_id else None)
     ]
     real_walks = [walk for walk in db.query(Walk).all() if _is_real_admin_walk(walk, db)]
-    _refresh_reliability_events(real_walks, db)
     critical_walks = [
     walk
     for walk in real_walks

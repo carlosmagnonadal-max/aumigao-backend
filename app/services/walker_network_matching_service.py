@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 
 from app.models.tenant_walker_access import TenantWalkerAccess
 from app.models.user import User
-from app.models.walker_network_profile import WalkerNetworkProfile
+from app.models.walker_profile import WalkerProfile
 
 MATCHING_ACCESS_TYPES = ("shared_network", "tenant_exclusive")
 
@@ -15,19 +15,16 @@ def get_tenant_eligible_walker_ids(db: Session, tenant_id: str) -> list[str]:
     """
     rows = (
         db.query(TenantWalkerAccess.walker_user_id)
-        .join(
-            WalkerNetworkProfile,
-            WalkerNetworkProfile.walker_user_id == TenantWalkerAccess.walker_user_id,
-        )
         .join(User, User.id == TenantWalkerAccess.walker_user_id)
+        .join(WalkerProfile, WalkerProfile.user_id == TenantWalkerAccess.walker_user_id)
         .filter(
             TenantWalkerAccess.tenant_id == tenant_id,
             TenantWalkerAccess.status == "active",
             TenantWalkerAccess.access_type.in_(MATCHING_ACCESS_TYPES),
-            WalkerNetworkProfile.network_enabled.is_(True),
-            WalkerNetworkProfile.network_status == "active",
             User.role == "walker",
             User.is_active.is_(True),
+            WalkerProfile.status == "active",
+            WalkerProfile.active_as_walker.is_(True),
         )
         .distinct()
         .all()
@@ -39,20 +36,17 @@ def is_walker_eligible_for_tenant(db: Session, tenant_id: str, walker_user_id: s
     """Check whether one walker is enabled for a tenant matching pool."""
     return (
         db.query(TenantWalkerAccess.id)
-        .join(
-            WalkerNetworkProfile,
-            WalkerNetworkProfile.walker_user_id == TenantWalkerAccess.walker_user_id,
-        )
         .join(User, User.id == TenantWalkerAccess.walker_user_id)
+        .join(WalkerProfile, WalkerProfile.user_id == TenantWalkerAccess.walker_user_id)
         .filter(
             TenantWalkerAccess.tenant_id == tenant_id,
             TenantWalkerAccess.walker_user_id == walker_user_id,
             TenantWalkerAccess.status == "active",
             TenantWalkerAccess.access_type.in_(MATCHING_ACCESS_TYPES),
-            WalkerNetworkProfile.network_enabled.is_(True),
-            WalkerNetworkProfile.network_status == "active",
             User.role == "walker",
             User.is_active.is_(True),
+            WalkerProfile.status == "active",
+            WalkerProfile.active_as_walker.is_(True),
         )
         .first()
         is not None

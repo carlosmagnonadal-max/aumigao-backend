@@ -22,7 +22,7 @@ from app.services.matching_service import get_eligible_walkers, matched_walker_p
 from app.services.operational_observability_service import record_operational_exception, record_operational_log
 from app.services.operational_reliability_service import serialize_operational_event
 from app.services.walker_operational_score_service import calculate_walker_operational_score
-from app.services.walker_network_matching_service import get_matching_pool_for_tenant
+from app.services.walker_network_matching_service import get_matching_pool_for_tenant, is_walker_eligible_for_tenant
 from app.routes.notifications import NotificationCreate, _create_notification
 
 logger = logging.getLogger(__name__)
@@ -425,8 +425,8 @@ def _tenant_matching_pool(walk: Walk, db: Session) -> set[str] | None:
             tenant_id,
             exc,
         )
-        return None
-    return set(walker_ids) if walker_ids else None
+        return set()
+    return set(walker_ids)
 
 
 def _rank_candidates(walk: Walk, db: Session, excluded: set[str]) -> list[dict]:
@@ -451,6 +451,10 @@ def _rank_candidates(walk: Walk, db: Session, excluded: set[str]) -> list[dict]:
 
 
 def _candidate_for_selected_walker(walk: Walk, walker_id: str, db: Session) -> dict | None:
+    tenant_id = getattr(walk, "tenant_id", None)
+    if tenant_id and not is_walker_eligible_for_tenant(db, tenant_id, walker_id):
+        return None
+
     profile = db.query(WalkerProfile).filter(
         WalkerProfile.user_id == walker_id,
         WalkerProfile.status == "active",
@@ -799,6 +803,10 @@ def accept_walk(walk: Walk, walker: User, db: Session) -> Walk:
         )
         rematch(walk, db, reason="expired")
         raise HTTPException(status_code=409, detail="Tempo de aceite expirado.")
+
+    tenant_id = getattr(walk, "tenant_id", None)
+    if tenant_id and not is_walker_eligible_for_tenant(db, tenant_id, walker.id):
+        raise HTTPException(status_code=403, detail="Passeador nao elegivel para este tenant.")
 
     updated = (
         db.query(Walk)

@@ -10,6 +10,7 @@ from app.models.walker_profile import WalkerProfile
 from app.schemas.auth import LoginRequest, TokenResponse
 from app.schemas.user import UserCreate, UserResponse
 from app.services.identity_uniqueness import ensure_unique_identity
+from app.services.login_rate_limiter import login_rate_limiter
 from app.services.tenant_seed_service import default_tenant_id
 from app.services.walker_referrals import link_referral_to_user, validate_referral_code
 from app.utils.registration_validation import normalize_cpf_or_raise, normalize_email_or_raise, normalize_phone_or_raise
@@ -116,11 +117,16 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(exc))
 
     password = str(payload.password or "").strip()
+    if login_rate_limiter.is_blocked(email):
+        raise HTTPException(status_code=429, detail="Muitas tentativas de login. Tente novamente mais tarde.")
+
     user = db.query(User).filter(User.email == email).first()
     if not user or not verify_password(password, user.password_hash):
+        login_rate_limiter.record_failure(email)
         raise HTTPException(status_code=401, detail="Credenciais invalidas")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Usuario inativo")
+    login_rate_limiter.clear(email)
     return build_session(user)
 
 @router.get("/me", response_model=UserResponse)

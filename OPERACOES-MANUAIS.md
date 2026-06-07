@@ -17,3 +17,10 @@ Walkers reais mantidos ativos: Luiza Nunes, Natália.
 NOTA: produção não tem migrations versionadas. Estas mudanças foram feitas
 manualmente no SQL Editor do Neon. Se adotar Alembic no futuro, documentar
 como baseline.
+
+## 2026-06-06 — Fase 1: smoke test do matching (parcial)
+Deploy ed932a9 ATIVO em produção (Railway), app Online.
+Validação INDIRETA feita: Luiza e Natália satisfazem todas as condições do
+matching fail-closed (status=active, active_as_walker=true, tenant_access=active no aumigao).
+PENDENTE: teste direto ponta-a-ponta (criar passeio -> matching -> aceite -> efetivação),
+não feito por causa da janela de horário dos passeios. Validar quando possível.

@@ -73,6 +73,19 @@ def _split_scheduled_date(value: str) -> tuple[str | None, str | None]:
     return date_part or None, time_part[:5] or None
 
 
+def _walk_create_log_payload(payload: WalkCreate, user: User) -> dict:
+    return {
+        "user_id": user.id,
+        "tenant_id": user.tenant_id,
+        "pet_id": payload.pet_id,
+        "walker_id": payload.walker_id,
+        "walker_selection_mode": payload.walker_selection_mode,
+        "scheduled_date": payload.scheduled_date,
+        "duration_minutes": payload.duration_minutes,
+        "pickup_method": payload.pickup_method,
+    }
+
+
 def _parse_scheduled_at(value: str) -> datetime:
     normalized = value.strip()
     if not normalized:
@@ -259,7 +272,7 @@ def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db:
         "create_walk.start user_id=%s role=%s payload=%s",
         user.id,
         user.role,
-        payload.model_dump(),
+        _walk_create_log_payload(payload, user),
     )
 
     try:

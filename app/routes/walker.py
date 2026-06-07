@@ -168,7 +168,7 @@ def _normalize_public_walker_image_url(value: str | None) -> str | None:
 
 
 def _public_walker_avatar_url(profile: WalkerProfile) -> str:
-    return _normalize_public_walker_image_url(profile.profile_photo_url) or _normalize_public_walker_image_url(profile.selfie_url) or ""
+    return _normalize_public_walker_image_url(profile.profile_photo_url) or ""
 
 
 def _safe_upload_extension(filename: str | None, content_type: str | None) -> str:
@@ -1384,9 +1384,6 @@ def _public_walker_rows(db: Session) -> list[dict]:
                 "partner_id": profile.id,
                 "name": profile.full_name or "Passeador",
                 "full_name": profile.full_name or "Passeador",
-                "cpf": profile.cpf or "",
-                "phone": profile.phone or "",
-                "email": user.email if user else "",
                 "role": user.role if user else "",
                 "photo_url": _public_walker_avatar_url(profile),
                 "profile_photo_url": _public_walker_avatar_url(profile),

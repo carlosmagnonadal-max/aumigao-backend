@@ -488,6 +488,55 @@ def _is_real_admin_walk(walk: Walk, db: Session, require_walker: bool = False) -
     return True
 
 
+def _preload_admin_walk_realness(walks: list[Walk], db: Session) -> tuple[dict[str, User], dict[str, Pet], dict[str, WalkerProfile]]:
+    user_ids = {
+        user_id
+        for walk in walks
+        for user_id in (walk.tutor_id, walk.walker_id or walk.assigned_walker_id)
+        if user_id
+    }
+    pet_ids = {walk.pet_id for walk in walks if walk.pet_id}
+
+    users_by_id = {user.id: user for user in db.query(User).filter(User.id.in_(user_ids)).all()} if user_ids else {}
+    pets_by_id = {pet.id: pet for pet in db.query(Pet).filter(Pet.id.in_(pet_ids)).all()} if pet_ids else {}
+    profiles_by_user_id = (
+        {profile.user_id: profile for profile in db.query(WalkerProfile).filter(WalkerProfile.user_id.in_(user_ids)).all()}
+        if user_ids
+        else {}
+    )
+    return users_by_id, pets_by_id, profiles_by_user_id
+
+
+def _is_real_walker_user_preloaded(user: User | None, profile: WalkerProfile | None) -> bool:
+    if not user or user.role not in {"walker", "passeador"}:
+        return False
+    if _is_fake_user(user):
+        return False
+    return not profile or not _is_fake_walker_profile(profile, user)
+
+
+def _is_real_admin_walk_preloaded(
+    walk: Walk,
+    users_by_id: dict[str, User],
+    pets_by_id: dict[str, Pet],
+    profiles_by_user_id: dict[str, WalkerProfile],
+    require_walker: bool = False,
+) -> bool:
+    tutor = users_by_id.get(walk.tutor_id) if walk.tutor_id else None
+    pet = pets_by_id.get(walk.pet_id) if walk.pet_id else None
+    walker_id = walk.walker_id or walk.assigned_walker_id
+    walker = users_by_id.get(walker_id) if walker_id else None
+    if _has_fake_token(walk.id, walk.tutor_id, walk.walker_id, walk.assigned_walker_id, walk.pet_id, walk.address_snapshot, walk.notes):
+        return False
+    if not _is_real_tutor(tutor):
+        return False
+    if not _is_real_pet(pet, tutor):
+        return False
+    if require_walker and not _is_real_walker_user_preloaded(walker, profiles_by_user_id.get(walker.id) if walker else None):
+        return False
+    return True
+
+
 def _is_completed_admin_walk(walk: Walk) -> bool:
     return (walk.status or "").strip().lower() in {"finalizado", "completed", "finished"} or (walk.operational_status or "").strip().lower() == "ride_completed"
 
@@ -891,7 +940,13 @@ def dashboard(db: Session = Depends(get_db)):
         for pet in db.query(Pet).all()
         if _is_real_pet(pet, db.get(User, pet.tutor_id) if pet.tutor_id else None)
     ]
-    real_walks = [walk for walk in db.query(Walk).all() if _is_real_admin_walk(walk, db)]
+    walk_rows = db.query(Walk).all()
+    walk_users_by_id, walk_pets_by_id, walk_profiles_by_user_id = _preload_admin_walk_realness(walk_rows, db)
+    real_walks = [
+        walk
+        for walk in walk_rows
+        if _is_real_admin_walk_preloaded(walk, walk_users_by_id, walk_pets_by_id, walk_profiles_by_user_id)
+    ]
     critical_walks = [
     walk
     for walk in real_walks
@@ -899,7 +954,12 @@ def dashboard(db: Session = Depends(get_db)):
         walk.operational_status or walk.status or ""
     ).lower() in RECOVERY_WALK_STATUSES
 ]
-    completed_real_walks = [walk for walk in real_walks if _is_completed_admin_walk(walk) and _is_real_admin_walk(walk, db, require_walker=True)]
+    completed_real_walks = [
+        walk
+        for walk in real_walks
+        if _is_completed_admin_walk(walk)
+        and _is_real_admin_walk_preloaded(walk, walk_users_by_id, walk_pets_by_id, walk_profiles_by_user_id, require_walker=True)
+    ]
     real_revenue_walk_ids = {walk.id for walk in completed_real_walks}
     payments = [
         payment

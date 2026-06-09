@@ -11,6 +11,7 @@ from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies.auth import require_admin
+from app.dependencies.rbac import require_permission
 from app.dependencies.tenant_scope import apply_tenant_filter, get_admin_tenant_scope
 from app.models.payment import Payment
 from app.models.pet import Pet
@@ -1550,7 +1551,8 @@ def recover_walk(walk_id: str, admin: User = Depends(require_admin), db: Session
 
 @router.get("/payments")
 @api_router.get("/payments")
-def payments(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def payments(admin: User = Depends(require_permission("finance.read")), db: Session = Depends(get_db)):
+    # require_permission convive com o require_admin do router durante a migração.
     query = apply_tenant_filter(db.query(Payment), Payment, get_admin_tenant_scope(admin))
     return [_serialize_admin_payment(payment, db) for payment in query.order_by(Payment.created_at.desc()).all()]
 

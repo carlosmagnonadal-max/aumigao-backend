@@ -39,6 +39,39 @@ def main() -> None:
 
     tables = sys.argv[1:] or DEFAULT_TABLES
     with engine.connect() as conn:
+        if "rbac" in sys.argv[1:]:
+            print("Permissoes por papel:")
+            for r in conn.execute(
+                text(
+                    "SELECT ro.name, COUNT(rp.permission_id) AS perms "
+                    "FROM roles ro LEFT JOIN role_permissions rp ON rp.role_id = ro.id "
+                    "GROUP BY ro.name ORDER BY perms DESC"
+                )
+            ):
+                print(f"  {r[0]}: {r[1]} permissoes")
+            print("Atribuicoes ativas por papel:")
+            for r in conn.execute(
+                text(
+                    "SELECT ro.name, COUNT(*) AS c "
+                    "FROM user_role_assignments ura JOIN roles ro ON ro.id = ura.role_id "
+                    "WHERE ura.revoked_at IS NULL GROUP BY ro.name ORDER BY c DESC"
+                )
+            ):
+                print(f"  {r[0]}: {r[1]} usuarios")
+            # Sanity: quantos usuarios tem uma permissao via RBAC (mesma query do
+            # user_has_permission). Confirma que ninguem perde acesso ao migrar.
+            for key in ("finance.read", "walks.update_status"):
+                n = conn.execute(
+                    text(
+                        "SELECT COUNT(DISTINCT ura.user_id) FROM user_role_assignments ura "
+                        "JOIN role_permissions rp ON rp.role_id = ura.role_id "
+                        "JOIN permissions p ON p.id = rp.permission_id "
+                        "WHERE ura.revoked_at IS NULL AND p.key = :k"
+                    ),
+                    {"k": key},
+                ).scalar()
+                print(f"usuarios com {key} (via RBAC, sem contar bypass super_admin): {n}")
+            return
         if "user-roles" in sys.argv[1:]:
             print("Distribuicao de users.role:")
             for r in conn.execute(

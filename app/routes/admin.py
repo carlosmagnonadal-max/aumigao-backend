@@ -10,7 +10,6 @@ from uuid import uuid4
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.dependencies.auth import require_admin
 from app.dependencies.rbac import require_permission
 from app.dependencies.tenant_scope import apply_tenant_filter, get_admin_tenant_scope
 from app.models.payment import Payment
@@ -51,8 +50,8 @@ from app.services.walker_operational_score_service import calculate_walker_opera
 from app.routes.notifications import NotificationCreate, _create_notification
 from app.services.signed_uploads import create_signed_upload_url
 
-router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
-api_router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_permission("admin.access"))])
+api_router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_permission("admin.access"))])
 
 APPROVED_WALKER_STATUSES = {"active"}
 PAID_PAYMENT_STATUSES = {"paid", "Pago", "pagamento_confirmado_sandbox", "payment_confirmed", "confirmed"}

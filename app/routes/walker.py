@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_password_hash, verify_password
-from app.dependencies.auth import get_current_user, require_admin
+from app.dependencies.auth import get_current_user
+from app.dependencies.rbac import require_permission
 from app.models.payment import Payment
 from app.models.pet import Pet
 from app.models.user import User
@@ -863,7 +864,7 @@ def create_partner_application(payload: PartnerApplicationCreate, response: Resp
 @partner_router.get("")
 def list_partner_applications(
     db: Session = Depends(get_db),
-    _admin: User = Depends(require_admin),
+    _admin: User = Depends(require_permission("walkers.read")),
 ):
     return [_serialize_partner_application(profile, db) for profile in db.query(WalkerProfile).order_by(WalkerProfile.created_at.desc()).all()]
 
@@ -872,7 +873,7 @@ def list_partner_applications(
 def get_partner_application(
     candidate_id: str,
     db: Session = Depends(get_db),
-    _admin: User = Depends(require_admin),
+    _admin: User = Depends(require_permission("walkers.read")),
 ):
     profile = db.get(WalkerProfile, candidate_id)
     if not profile:
@@ -885,7 +886,7 @@ def update_partner_application_status(
     candidate_id: str,
     payload: PartnerApplicationStatusUpdate,
     db: Session = Depends(get_db),
-    _admin: User = Depends(require_admin),
+    _admin: User = Depends(require_permission("walkers.validate")),
 ):
     profile = db.get(WalkerProfile, candidate_id)
     if not profile:
@@ -907,7 +908,7 @@ def update_partner_application_admin_fields(
     candidate_id: str,
     payload: PartnerApplicationAdminFieldsUpdate,
     db: Session = Depends(get_db),
-    _admin: User = Depends(require_admin),
+    _admin: User = Depends(require_permission("walkers.validate")),
 ):
     profile = db.get(WalkerProfile, candidate_id)
     if not profile:

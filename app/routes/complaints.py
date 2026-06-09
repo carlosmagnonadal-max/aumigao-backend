@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.dependencies.auth import get_current_user, require_admin
+from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_permission
 from app.dependencies.tenant_scope import apply_tenant_filter, get_admin_tenant_scope
 from app.models.complaint import Complaint, RiskScore
@@ -27,10 +27,10 @@ from app.services.admin_operational_event_service import record_admin_operationa
 
 router = APIRouter(prefix="/complaints", tags=["complaints"])
 api_router = APIRouter(prefix="/api/complaints", tags=["complaints"])
-admin_router = APIRouter(prefix="/admin/complaints", tags=["admin-complaints"], dependencies=[Depends(require_admin)])
-api_admin_router = APIRouter(prefix="/api/admin/complaints", tags=["admin-complaints"], dependencies=[Depends(require_admin)])
-legacy_admin_occurrences_router = APIRouter(prefix="/admin/occurrences", tags=["admin-complaints"], dependencies=[Depends(require_admin)])
-api_legacy_admin_occurrences_router = APIRouter(prefix="/api/admin/occurrences", tags=["admin-complaints"], dependencies=[Depends(require_admin)])
+admin_router = APIRouter(prefix="/admin/complaints", tags=["admin-complaints"], dependencies=[Depends(require_permission("occurrences.read"))])
+api_admin_router = APIRouter(prefix="/api/admin/complaints", tags=["admin-complaints"], dependencies=[Depends(require_permission("occurrences.read"))])
+legacy_admin_occurrences_router = APIRouter(prefix="/admin/occurrences", tags=["admin-complaints"], dependencies=[Depends(require_permission("occurrences.read"))])
+api_legacy_admin_occurrences_router = APIRouter(prefix="/api/admin/occurrences", tags=["admin-complaints"], dependencies=[Depends(require_permission("occurrences.read"))])
 
 
 def _list_my(user: User, db: Session):

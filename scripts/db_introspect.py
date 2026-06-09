@@ -39,6 +39,13 @@ def main() -> None:
 
     tables = sys.argv[1:] or DEFAULT_TABLES
     with engine.connect() as conn:
+        if "user-roles" in sys.argv[1:]:
+            print("Distribuicao de users.role:")
+            for r in conn.execute(
+                text("SELECT role, COUNT(*) AS c FROM users GROUP BY role ORDER BY c DESC")
+            ):
+                print(f"  {r[0]!r}: {r[1]}")
+            return
         for t in tables:
             if t not in all_tables:
                 print(f"  {t}: TABELA AUSENTE")

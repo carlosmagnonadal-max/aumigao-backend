@@ -10,6 +10,7 @@ class Complaint(Base):
     __tablename__ = "complaints"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     source: Mapped[str] = mapped_column(String, index=True)
     author_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), index=True)
     author_role: Mapped[str] = mapped_column(String, index=True)

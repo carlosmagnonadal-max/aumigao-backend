@@ -11,6 +11,7 @@ class WalkCompletionReview(Base):
     __tablename__ = "walk_completion_reviews"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    tenant_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     walk_id: Mapped[str] = mapped_column(String, ForeignKey("walks.id"), index=True)
     walker_user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), index=True)
     tutor_user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), index=True)

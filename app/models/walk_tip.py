@@ -10,6 +10,7 @@ class WalkTip(Base):
     __tablename__ = "walk_tips"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     walk_id: Mapped[str] = mapped_column(String, ForeignKey("walks.id"), index=True)
     tutor_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), index=True)
     walker_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), index=True)

@@ -7,6 +7,7 @@ class Payment(Base):
     __tablename__ = "payments"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     tutor_id: Mapped[str] = mapped_column(String, index=True)
     walk_id: Mapped[str | None] = mapped_column(String, nullable=True)
     amount: Mapped[float] = mapped_column(Float)

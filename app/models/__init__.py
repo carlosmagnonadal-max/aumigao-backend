@@ -29,3 +29,4 @@ from app.models.tenant import Tenant, TenantBranding, TenantFeature, TenantSetti
 from app.models.tenant_onboarding import TenantOnboarding
 from app.models.walker_network_profile import WalkerNetworkProfile
 from app.models.tenant_walker_access import TenantWalkerAccess
+from app.models.rbac import Role, Permission, RolePermission, UserRoleAssignment

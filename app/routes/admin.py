@@ -135,7 +135,7 @@ def list_operational_events(
 
 @router.post("/operational-events")
 @api_router.post("/operational-events")
-def create_operational_event(payload: dict, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def create_operational_event(payload: dict, admin: User = Depends(require_permission("alerts.resolve")), db: Session = Depends(get_db)):
     data = _validate_operational_event_payload(payload or {})
     event = record_admin_operational_event(
         db,
@@ -1158,7 +1158,7 @@ def partner_application_detail(candidate_id: str, db: Session = Depends(get_db))
 
 @router.patch("/partner-applications/{candidate_id}/admin-fields")
 @api_router.patch("/partner-applications/{candidate_id}/admin-fields")
-def update_partner_application_admin_fields(candidate_id: str, payload: dict | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def update_partner_application_admin_fields(candidate_id: str, payload: dict | None = None, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
     profile = db.get(WalkerProfile, candidate_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Candidatura nao encontrada")
@@ -1204,7 +1204,7 @@ def update_partner_application_admin_fields(candidate_id: str, payload: dict | N
 
 @router.post("/walkers/{walker_id}/approve")
 @api_router.post("/walkers/{walker_id}/approve")
-def approve_walker(walker_id: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def approve_walker(walker_id: str, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
     profile = db.get(WalkerProfile, walker_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Passeador nao encontrado")
@@ -1227,7 +1227,7 @@ def approve_walker(walker_id: str, admin: User = Depends(require_admin), db: Ses
 
 @router.post("/walkers/{walker_id}/reject")
 @api_router.post("/walkers/{walker_id}/reject")
-def reject_walker(walker_id: str, payload: dict | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def reject_walker(walker_id: str, payload: dict | None = None, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
     profile = db.get(WalkerProfile, walker_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Passeador nao encontrado")
@@ -1251,7 +1251,7 @@ def reject_walker(walker_id: str, payload: dict | None = None, admin: User = Dep
 
 @router.get("/walks")
 @api_router.get("/walks")
-def walks(db: Session = Depends(get_db)):
+def walks(admin: User = Depends(require_permission("walks.read")), db: Session = Depends(get_db)):
     process_expired_attempts(db)
     real_walks = [
         walk
@@ -1267,7 +1267,7 @@ def walks(db: Session = Depends(get_db)):
 
 @router.patch("/walks/{walk_id}/status")
 @api_router.patch("/walks/{walk_id}/status")
-def update_admin_walk_status(walk_id: str, payload: dict, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def update_admin_walk_status(walk_id: str, payload: dict, admin: User = Depends(require_permission("walks.update_status")), db: Session = Depends(get_db)):
     walk = db.get(Walk, walk_id)
 
     if not walk:
@@ -1443,7 +1443,7 @@ def update_admin_walk_status(walk_id: str, payload: dict, admin: User = Depends(
 
 @router.post("/walks/{walk_id}/recovery")
 @api_router.post("/walks/{walk_id}/recovery")
-def recover_walk(walk_id: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def recover_walk(walk_id: str, admin: User = Depends(require_permission("walks.recover")), db: Session = Depends(get_db)):
     walk = db.get(Walk, walk_id)
 
     if not walk:
@@ -1559,7 +1559,7 @@ def payments(admin: User = Depends(require_permission("finance.read")), db: Sess
 
 @router.get("/walk-completions/pending")
 @api_router.get("/walk-completions/pending")
-def pending_walk_completions(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def pending_walk_completions(admin: User = Depends(require_permission("walks.read")), db: Session = Depends(get_db)):
     rows = apply_tenant_filter(
         db.query(WalkCompletionReview), WalkCompletionReview, get_admin_tenant_scope(admin)
     ).filter(
@@ -1573,7 +1573,7 @@ def pending_walk_completions(admin: User = Depends(require_admin), db: Session =
 
 @router.post("/walk-completions/{review_id}/approve")
 @api_router.post("/walk-completions/{review_id}/approve")
-def approve_walk_completion(review_id: str, payload: dict | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def approve_walk_completion(review_id: str, payload: dict | None = None, admin: User = Depends(require_permission("walks.update_status")), db: Session = Depends(get_db)):
     review = db.get(WalkCompletionReview, review_id)
     if not review:
         record_operational_log(
@@ -1685,7 +1685,7 @@ def approve_walk_completion(review_id: str, payload: dict | None = None, admin: 
 
 @router.post("/walk-completions/{review_id}/reject")
 @api_router.post("/walk-completions/{review_id}/reject")
-def reject_walk_completion(review_id: str, payload: dict | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def reject_walk_completion(review_id: str, payload: dict | None = None, admin: User = Depends(require_permission("walks.update_status")), db: Session = Depends(get_db)):
     review = db.get(WalkCompletionReview, review_id)
     if not review:
         record_operational_log(
@@ -1789,7 +1789,7 @@ def pending_walker_kits(db: Session = Depends(get_db)):
 
 @router.post("/walker-kits/{submission_id}/approve")
 @api_router.post("/walker-kits/{submission_id}/approve")
-def approve_walker_kit(submission_id: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def approve_walker_kit(submission_id: str, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
     submission = db.query(WalkerKitSubmission).filter(WalkerKitSubmission.id == submission_id).first()
     if not submission:
         raise HTTPException(status_code=404, detail="Envio de kit nao encontrado.")
@@ -1819,7 +1819,7 @@ def approve_walker_kit(submission_id: str, admin: User = Depends(require_admin),
 
 @router.post("/walker-kits/{submission_id}/reject")
 @api_router.post("/walker-kits/{submission_id}/reject")
-def reject_walker_kit(submission_id: str, payload: dict | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def reject_walker_kit(submission_id: str, payload: dict | None = None, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
     submission = db.query(WalkerKitSubmission).filter(WalkerKitSubmission.id == submission_id).first()
     if not submission:
         raise HTTPException(status_code=404, detail="Envio de kit nao encontrado.")
@@ -1973,7 +1973,7 @@ def review_tip(tip_id: str, payload: dict):
     return {"ok": True, "action": action}
 
 @router.post("/withdrawals/{payment_id}/approve")
-def approve_withdrawal(payment_id: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def approve_withdrawal(payment_id: str, admin: User = Depends(require_permission("finance.manage")), db: Session = Depends(get_db)):
     payment = db.get(Payment, payment_id)
     if payment:
         payment.status = "paid"
@@ -1993,7 +1993,7 @@ def approve_withdrawal(payment_id: str, admin: User = Depends(require_admin), db
     return {"ok": True}
 
 @router.post("/withdrawals/{payment_id}/reject")
-def reject_withdrawal(payment_id: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def reject_withdrawal(payment_id: str, admin: User = Depends(require_permission("finance.manage")), db: Session = Depends(get_db)):
     payment = db.get(Payment, payment_id)
     if payment:
         payment.status = "rejected"

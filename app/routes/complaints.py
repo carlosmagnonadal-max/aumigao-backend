@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_admin
+from app.dependencies.rbac import require_permission
 from app.dependencies.tenant_scope import apply_tenant_filter, get_admin_tenant_scope
 from app.models.complaint import Complaint, RiskScore
 from app.models.user import User
@@ -65,7 +66,7 @@ def admin_list_cases(
     pet_id: str | None = Query(None),
     walker_id: str | None = Query(None),
     walk_id: str | None = Query(None),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_permission("occurrences.read")),
     db: Session = Depends(get_db),
 ):
     query = apply_tenant_filter(db.query(Complaint), Complaint, get_admin_tenant_scope(admin))
@@ -89,13 +90,13 @@ def admin_list_cases(
 
 @admin_router.get("/{complaint_id}", response_model=ComplaintResponse)
 @api_admin_router.get("/{complaint_id}", response_model=ComplaintResponse)
-def admin_get_case(complaint_id: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_get_case(complaint_id: str, admin: User = Depends(require_permission("occurrences.read")), db: Session = Depends(get_db)):
     return get_complaint_or_403(complaint_id, admin, db)
 
 
 @admin_router.patch("/{complaint_id}", response_model=ComplaintResponse)
 @api_admin_router.patch("/{complaint_id}", response_model=ComplaintResponse)
-def admin_update_case(complaint_id: str, payload: ComplaintAdminUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_update_case(complaint_id: str, payload: ComplaintAdminUpdate, admin: User = Depends(require_permission("occurrences.manage")), db: Session = Depends(get_db)):
     complaint = get_complaint_or_403(complaint_id, admin, db)
     updated = admin_update_complaint(complaint, payload.status, payload.severity, payload.internal_note, admin, db)
     record_admin_operational_event(
@@ -116,7 +117,7 @@ def admin_update_case(complaint_id: str, payload: ComplaintAdminUpdate, admin: U
 
 @admin_router.post("/{complaint_id}/decision", response_model=ComplaintResponse)
 @api_admin_router.post("/{complaint_id}/decision", response_model=ComplaintResponse)
-def admin_decide_case(complaint_id: str, payload: ComplaintDecisionReview, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_decide_case(complaint_id: str, payload: ComplaintDecisionReview, admin: User = Depends(require_permission("occurrences.manage")), db: Session = Depends(get_db)):
     complaint = get_complaint_or_403(complaint_id, admin, db)
     updated = admin_review_decision(complaint, payload.decision_type, payload.decision_status, payload.reason, admin, db)
     record_admin_operational_event(
@@ -165,7 +166,7 @@ def admin_legacy_occurrences(
 
 @legacy_admin_occurrences_router.post("/{complaint_id}/action")
 @api_legacy_admin_occurrences_router.post("/{complaint_id}/action")
-def admin_legacy_occurrence_action(complaint_id: str, payload: dict, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_legacy_occurrence_action(complaint_id: str, payload: dict, admin: User = Depends(require_permission("occurrences.manage")), db: Session = Depends(get_db)):
     complaint = get_complaint_or_403(complaint_id, admin, db)
     action = (payload or {}).get("action", "add_internal_note")
     note = (payload or {}).get("note") or f"Acao administrativa: {action}"

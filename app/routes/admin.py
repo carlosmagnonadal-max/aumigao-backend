@@ -937,14 +937,15 @@ def operational_alerts(db: Session = Depends(get_db)):
 
 @router.get("/dashboard")
 @api_router.get("/dashboard")
-def dashboard(db: Session = Depends(get_db)):
-    real_clients = [user for user in db.query(User).all() if _is_real_tutor(user)]
+def dashboard(admin: User = Depends(require_permission("admin.access")), db: Session = Depends(get_db)):
+    scope = get_admin_tenant_scope(admin)
+    real_clients = [user for user in apply_tenant_filter(db.query(User), User, scope).all() if _is_real_tutor(user)]
     real_pets = [
         pet
-        for pet in db.query(Pet).all()
+        for pet in apply_tenant_filter(db.query(Pet), Pet, scope).all()
         if _is_real_pet(pet, db.get(User, pet.tutor_id) if pet.tutor_id else None)
     ]
-    walk_rows = db.query(Walk).all()
+    walk_rows = apply_tenant_filter(db.query(Walk), Walk, scope).all()
     walk_users_by_id, walk_pets_by_id, walk_profiles_by_user_id = _preload_admin_walk_realness(walk_rows, db)
     real_walks = [
         walk
@@ -967,7 +968,7 @@ def dashboard(db: Session = Depends(get_db)):
     real_revenue_walk_ids = {walk.id for walk in completed_real_walks}
     payments = [
         payment
-        for payment in db.query(Payment).filter(Payment.status.in_(PAID_PAYMENT_STATUSES)).all()
+        for payment in apply_tenant_filter(db.query(Payment), Payment, scope).filter(Payment.status.in_(PAID_PAYMENT_STATUSES)).all()
         if _is_real_paid_payment(payment, real_revenue_walk_ids)
     ]
     no_show_total = len([walk for walk in real_walks if walk.status in {"Não comparecimento do cliente", "Não comparecimento do passeador"}])
@@ -1118,10 +1119,10 @@ def _serialize_admin_tutor(user: User, db: Session) -> dict:
 
 @router.get("/tutors")
 @api_router.get("/tutors")
-def tutors(db: Session = Depends(get_db)):
+def tutors(admin: User = Depends(require_permission("users.read")), db: Session = Depends(get_db)):
     users = [
         user
-        for user in db.query(User).order_by(User.created_at.desc()).all()
+        for user in apply_tenant_filter(db.query(User), User, get_admin_tenant_scope(admin)).order_by(User.created_at.desc()).all()
         if _is_real_tutor(user)
     ]
     return [_serialize_admin_tutor(user, db) for user in users]
@@ -1156,10 +1157,10 @@ def _serialize_admin_pet(pet: Pet, db: Session) -> dict:
 
 @router.get("/pets")
 @api_router.get("/pets")
-def admin_pets(db: Session = Depends(get_db)):
+def admin_pets(admin: User = Depends(require_permission("tutors.read")), db: Session = Depends(get_db)):
     pets = [
         pet
-        for pet in db.query(Pet).order_by(Pet.created_at.desc()).all()
+        for pet in apply_tenant_filter(db.query(Pet), Pet, get_admin_tenant_scope(admin)).order_by(Pet.created_at.desc()).all()
         if _is_real_pet(pet, db.get(User, pet.tutor_id) if pet.tutor_id else None)
     ]
     return [_serialize_admin_pet(pet, db) for pet in pets]
@@ -1285,7 +1286,7 @@ def walks(admin: User = Depends(require_permission("walks.read")), db: Session =
     process_expired_attempts(db)
     real_walks = [
         walk
-        for walk in db.query(Walk).order_by(Walk.created_at.desc()).all()
+        for walk in apply_tenant_filter(db.query(Walk), Walk, get_admin_tenant_scope(admin)).order_by(Walk.created_at.desc()).all()
         if _is_real_admin_walk(walk, db)
     ]
     _refresh_reliability_events(real_walks, db)

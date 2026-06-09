@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.services.upload_validation import read_image_upload_safely
+from app.services.upload_registry import record_upload
 from app.models.pet import Pet
 from app.models.walk import Walk
 from app.models.user import User
@@ -105,6 +106,7 @@ async def upload_pet_photo(
     request: Request,
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Envie uma imagem valida.")
@@ -118,6 +120,13 @@ async def upload_pet_photo(
     content = await read_image_upload_safely(file)
 
     destination.write_bytes(content)
+
+    record_upload(
+        db, context="pet", owner_id=user.id,
+        document_type="pet_photo", storage_path=str(destination),
+        mime_type=file.content_type, size_bytes=len(content),
+    )
+    db.commit()
 
     return {
         "photo_url": _public_upload_url(request, destination),

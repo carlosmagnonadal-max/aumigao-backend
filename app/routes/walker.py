@@ -14,6 +14,7 @@ from app.core.security import get_password_hash, verify_password
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_permission
 from app.services.upload_validation import enforce_upload_rate_limit, read_image_upload_safely
+from app.services.upload_registry import record_upload
 from app.models.payment import Payment
 from app.models.pet import Pet
 from app.models.user import User
@@ -744,6 +745,7 @@ async def upload_partner_application_document(
     document_type: str = Form(...),
     owner_id: str = Form("anonymous"),
     file: UploadFile = File(...),
+    db: Session = Depends(get_db),
 ):
     enforce_upload_rate_limit(request)
     normalized_type = document_type.strip().lower()
@@ -762,6 +764,13 @@ async def upload_partner_application_document(
 
     destination.write_bytes(validated_bytes)
     await file.close()
+
+    record_upload(
+        db, context="partner_application", owner_id=safe_owner,
+        document_type=normalized_type, storage_path=str(destination),
+        mime_type=file.content_type, size_bytes=len(validated_bytes),
+    )
+    db.commit()
 
     file_url = _public_upload_url(request, destination)
     LOGGER.info("upload de documento walker concluido", extra={"document_type": normalized_type, "owner_id": safe_owner})
@@ -1752,6 +1761,13 @@ async def upload_walk_completion_photo(
 
     destination.write_bytes(validated_bytes)
     await file.close()
+
+    record_upload(
+        db, context="walk_completion", owner_id=user.id,
+        document_type="completion", storage_path=str(destination),
+        mime_type=file.content_type, size_bytes=len(validated_bytes),
+    )
+    db.commit()
 
     photo_url = _public_upload_url(request, destination)
     return {

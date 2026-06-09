@@ -32,3 +32,4 @@ from app.models.tenant_walker_access import TenantWalkerAccess
 from app.models.rbac import Role, Permission, RolePermission, UserRoleAssignment
 from app.models.audit_log import AuditLog
 from app.models.tenant_payment_config import TenantPaymentConfig
+from app.models.upload_file import UploadFile

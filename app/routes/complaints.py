@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_admin
+from app.dependencies.tenant_scope import apply_tenant_filter, get_admin_tenant_scope
 from app.models.complaint import Complaint, RiskScore
 from app.models.user import User
 from app.schemas.complaint import (
@@ -64,9 +65,10 @@ def admin_list_cases(
     pet_id: str | None = Query(None),
     walker_id: str | None = Query(None),
     walk_id: str | None = Query(None),
+    admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    query = db.query(Complaint)
+    query = apply_tenant_filter(db.query(Complaint), Complaint, get_admin_tenant_scope(admin))
     if status and status != "all":
         query = query.filter(Complaint.status == status)
     if severity and severity != "all":

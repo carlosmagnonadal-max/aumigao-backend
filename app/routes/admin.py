@@ -1550,14 +1550,17 @@ def recover_walk(walk_id: str, admin: User = Depends(require_admin), db: Session
 
 @router.get("/payments")
 @api_router.get("/payments")
-def payments(db: Session = Depends(get_db)):
-    return [_serialize_admin_payment(payment, db) for payment in db.query(Payment).order_by(Payment.created_at.desc()).all()]
+def payments(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    query = apply_tenant_filter(db.query(Payment), Payment, get_admin_tenant_scope(admin))
+    return [_serialize_admin_payment(payment, db) for payment in query.order_by(Payment.created_at.desc()).all()]
 
 
 @router.get("/walk-completions/pending")
 @api_router.get("/walk-completions/pending")
-def pending_walk_completions(db: Session = Depends(get_db)):
-    rows = db.query(WalkCompletionReview).filter(
+def pending_walk_completions(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    rows = apply_tenant_filter(
+        db.query(WalkCompletionReview), WalkCompletionReview, get_admin_tenant_scope(admin)
+    ).filter(
         WalkCompletionReview.status == "pending_review"
     ).order_by(WalkCompletionReview.created_at.desc()).all()
     return {

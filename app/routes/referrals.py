@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_admin
+from app.dependencies.rbac import require_permission
 from app.models.user import User
 from app.models.walker_referral import WalkerReferral
 from app.schemas.walker_referral import (
@@ -20,8 +21,8 @@ from app.services.walker_referrals import create_walker_referral, link_referral_
 
 router = APIRouter(prefix="/referrals", tags=["referrals"])
 api_router = APIRouter(prefix="/api/referrals", tags=["referrals"])
-admin_router = APIRouter(prefix="/admin/referrals", tags=["admin-referrals"], dependencies=[Depends(require_admin)])
-api_admin_router = APIRouter(prefix="/api/admin/referrals", tags=["admin-referrals"], dependencies=[Depends(require_admin)])
+admin_router = APIRouter(prefix="/admin/referrals", tags=["admin-referrals"], dependencies=[Depends(require_permission("referrals.read"))])
+api_admin_router = APIRouter(prefix="/api/admin/referrals", tags=["admin-referrals"], dependencies=[Depends(require_permission("referrals.read"))])
 
 
 def _admin_payload(referral: WalkerReferral, db: Session) -> AdminWalkerReferralResponse:

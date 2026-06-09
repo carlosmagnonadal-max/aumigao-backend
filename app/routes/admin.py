@@ -1032,7 +1032,7 @@ def dashboard(db: Session = Depends(get_db)):
 
 @router.get("/users")
 @api_router.get("/users")
-def users(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def users(admin: User = Depends(require_permission("users.read")), db: Session = Depends(get_db)):
     # super_admin enxerga todos os tenants; admin regular fica restrito ao seu.
     query = apply_tenant_filter(db.query(User), User, get_admin_tenant_scope(admin))
     return query.all()

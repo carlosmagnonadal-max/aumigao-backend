@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import require_admin
+from app.dependencies.rbac import require_permission
 from app.models.tenant import Tenant
 from app.models.tenant_walker_access import TenantWalkerAccess
 from app.models.user import User
@@ -19,8 +20,8 @@ from app.schemas.walker_network import (
 )
 from app.services.tenant_plan_service import enforce_network_access_allowed
 
-router = APIRouter(prefix="/admin/walker-network", tags=["admin-walker-network"], dependencies=[Depends(require_admin)])
-api_router = APIRouter(prefix="/api/admin/walker-network", tags=["admin-walker-network"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/admin/walker-network", tags=["admin-walker-network"], dependencies=[Depends(require_permission("walkers.read"))])
+api_router = APIRouter(prefix="/api/admin/walker-network", tags=["admin-walker-network"], dependencies=[Depends(require_permission("walkers.read"))])
 
 
 def _ensure_choice(value: str | None, allowed: set[str], field_name: str) -> None:

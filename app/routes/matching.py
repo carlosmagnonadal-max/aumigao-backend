@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_admin
+from app.dependencies.rbac import require_permission
 from app.models.user import User
 from app.models.walker_profile import WalkerProfile
 from app.schemas.matching import (
@@ -21,8 +22,8 @@ from app.services.reputation_service import get_walker_identity, reputation_summ
 
 router = APIRouter(prefix="/matching", tags=["matching"])
 api_router = APIRouter(prefix="/api/matching", tags=["matching"])
-admin_router = APIRouter(prefix="/admin/matching", tags=["admin-matching"], dependencies=[Depends(require_admin)])
-api_admin_router = APIRouter(prefix="/api/admin/matching", tags=["admin-matching"], dependencies=[Depends(require_admin)])
+admin_router = APIRouter(prefix="/admin/matching", tags=["admin-matching"], dependencies=[Depends(require_permission("matching.read"))])
+api_admin_router = APIRouter(prefix="/api/admin/matching", tags=["admin-matching"], dependencies=[Depends(require_permission("matching.read"))])
 
 
 @router.post("/walkers", response_model=MatchingResponse)

@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_admin
+from app.dependencies.rbac import require_permission
 from app.models.user import User
 from app.models.walker_profile import WalkerProfile
 from app.routes.walks import create_walk_review as create_post_walk_review
@@ -32,8 +33,8 @@ walkers_router = APIRouter(prefix="/walkers", tags=["walkers"])
 api_walkers_router = APIRouter(prefix="/api/walkers", tags=["walkers"])
 walker_router = APIRouter(prefix="/walker", tags=["walker"])
 api_walker_router = APIRouter(prefix="/api/walker", tags=["walker"])
-admin_router = APIRouter(prefix="/admin", tags=["admin-reputation"], dependencies=[Depends(require_admin)])
-api_admin_router = APIRouter(prefix="/api/admin", tags=["admin-reputation"], dependencies=[Depends(require_admin)])
+admin_router = APIRouter(prefix="/admin", tags=["admin-reputation"], dependencies=[Depends(require_permission("reviews.read"))])
+api_admin_router = APIRouter(prefix="/api/admin", tags=["admin-reputation"], dependencies=[Depends(require_permission("reviews.read"))])
 
 
 @walks_router.post("/{walk_id}/review")

@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_admin
+from app.dependencies.rbac import require_permission
 from app.models.user import User
 from app.models.walker_incentive import WalkerIncentive
 from app.models.walker_monitoring_alert import WalkerMonitoringAlert
@@ -32,8 +33,8 @@ from app.services.walker_quality_service import get_quality_dashboard, get_walke
 
 walker_router = APIRouter(prefix="/walker/me", tags=["walker-quality"])
 api_walker_router = APIRouter(prefix="/api/walker/me", tags=["walker-quality"])
-admin_router = APIRouter(prefix="/admin", tags=["admin-walker-quality"], dependencies=[Depends(require_admin)])
-api_admin_router = APIRouter(prefix="/api/admin", tags=["admin-walker-quality"], dependencies=[Depends(require_admin)])
+admin_router = APIRouter(prefix="/admin", tags=["admin-walker-quality"], dependencies=[Depends(require_permission("quality.read"))])
+api_admin_router = APIRouter(prefix="/api/admin", tags=["admin-walker-quality"], dependencies=[Depends(require_permission("quality.read"))])
 
 
 @walker_router.get("/reputation-health", response_model=WalkerReputationHealthResponse)
@@ -112,7 +113,7 @@ def admin_monitoring_alerts(status: str | None = Query(None), db: Session = Depe
 
 @admin_router.patch("/monitoring-alerts/{alert_id}", response_model=MonitoringAlertResponse)
 @api_admin_router.patch("/monitoring-alerts/{alert_id}", response_model=MonitoringAlertResponse)
-def admin_update_monitoring_alert(alert_id: str, payload: MonitoringAlertUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_update_monitoring_alert(alert_id: str, payload: MonitoringAlertUpdate, admin: User = Depends(require_permission("alerts.resolve")), db: Session = Depends(get_db)):
     return alert_payload(update_alert(alert_id, payload.status, payload.admin_notes, admin.id, db))
 
 

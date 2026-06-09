@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import require_admin
+from app.dependencies.rbac import require_permission
 from app.models.tenant import Tenant, TenantBranding, TenantFeature, TenantSettings, TenantUnit
 from app.models.tenant_onboarding import TenantOnboarding
 from app.schemas.tenant import (
@@ -36,8 +37,8 @@ from app.services.tenant_plan_service import (
     get_tenant_capabilities,
 )
 
-router = APIRouter(prefix="/admin/tenants", tags=["admin-tenants"], dependencies=[Depends(require_admin)])
-api_router = APIRouter(prefix="/api/admin/tenants", tags=["admin-tenants"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/admin/tenants", tags=["admin-tenants"], dependencies=[Depends(require_permission("tenants.read"))])
+api_router = APIRouter(prefix="/api/admin/tenants", tags=["admin-tenants"], dependencies=[Depends(require_permission("tenants.read"))])
 
 
 def _normalize_slug(value: str) -> str:

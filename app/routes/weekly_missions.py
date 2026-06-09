@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_admin
+from app.dependencies.rbac import require_permission
 from app.models.user import User
 from app.schemas.weekly_mission import (
     AdminWalkerWeeklyMissionsResponse,
@@ -19,8 +20,8 @@ from app.services.weekly_mission_service import (
 
 walker_router = APIRouter(prefix="/walker/me/weekly-missions", tags=["walker-weekly-missions"])
 api_walker_router = APIRouter(prefix="/api/walker/me/weekly-missions", tags=["walker-weekly-missions"])
-admin_router = APIRouter(prefix="/admin/walkers", tags=["admin-weekly-missions"], dependencies=[Depends(require_admin)])
-api_admin_router = APIRouter(prefix="/api/admin/walkers", tags=["admin-weekly-missions"], dependencies=[Depends(require_admin)])
+admin_router = APIRouter(prefix="/admin/walkers", tags=["admin-weekly-missions"], dependencies=[Depends(require_permission("missions.read"))])
+api_admin_router = APIRouter(prefix="/api/admin/walkers", tags=["admin-weekly-missions"], dependencies=[Depends(require_permission("missions.read"))])
 
 
 @walker_router.get("", response_model=WeeklyMissionListResponse)

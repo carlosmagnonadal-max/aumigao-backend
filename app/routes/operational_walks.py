@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_admin
+from app.dependencies.rbac import require_permission
 from app.models.user import User
 from app.models.walk import Walk, WalkOperationalLog
 from app.services.operational_matching_service import (
@@ -19,8 +20,8 @@ from app.services.admin_operational_event_service import record_admin_operationa
 
 router = APIRouter(prefix="/walks", tags=["walk-operational"])
 api_router = APIRouter(prefix="/api/walks", tags=["walk-operational"])
-admin_router = APIRouter(prefix="/admin/walks", tags=["admin-walk-operational"], dependencies=[Depends(require_admin)])
-api_admin_router = APIRouter(prefix="/api/admin/walks", tags=["admin-walk-operational"], dependencies=[Depends(require_admin)])
+admin_router = APIRouter(prefix="/admin/walks", tags=["admin-walk-operational"], dependencies=[Depends(require_permission("walks.read"))])
+api_admin_router = APIRouter(prefix="/api/admin/walks", tags=["admin-walk-operational"], dependencies=[Depends(require_permission("walks.read"))])
 
 
 def _get_walk(walk_id: str, db: Session) -> Walk:

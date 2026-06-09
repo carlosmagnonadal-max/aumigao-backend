@@ -23,4 +23,7 @@ class PaymentResponse(PaymentCreate, ORMModel):
     pix_copy_paste: str | None = None
     pix_expiration_date: str | None = None
     sandbox_message: str | None = None
+    commission_percent: float | None = None
+    platform_amount: float | None = None
+    walker_amount: float | None = None
     created_at: datetime

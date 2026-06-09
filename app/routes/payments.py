@@ -16,6 +16,7 @@ from app.dependencies.auth import get_current_user
 from app.models.payment import Payment
 from app.models.user import User
 from app.schemas.payment import PaymentCreate, PaymentResponse
+from app.services.payment_split_service import build_payment_split
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 logger = logging.getLogger("app.routes.payments")
@@ -162,6 +163,9 @@ def payment_response(payment: Payment, **extra):
         "pix_copy_paste": extra.get("pix_copy_paste"),
         "pix_expiration_date": extra.get("pix_expiration_date"),
         "sandbox_message": extra.get("sandbox_message") or "Ambiente Sandbox: nenhuma cobranca real sera realizada.",
+        "commission_percent": payment.commission_percent,
+        "platform_amount": payment.platform_amount,
+        "walker_amount": payment.walker_amount,
         "created_at": payment.created_at,
     }
 
@@ -257,14 +261,19 @@ async def create_payment(payload: PaymentCreate, user: User = Depends(get_curren
     }
     pix_data = {}
     provider_status = provider_data.get("status")
+    split = build_payment_split(db, user.tenant_id, payload.amount)
     payment = Payment(
         id=str(uuid4()),
+        tenant_id=user.tenant_id,
         tutor_id=user.id,
         walk_id=payload.walk_id,
         amount=payload.amount,
         status=normalize_payment_status(provider_status),
         provider="asaas_sandbox",
         provider_payment_id=provider_data.get("id"),
+        commission_percent=split["commission_percent"],
+        platform_amount=split["platform_amount"],
+        walker_amount=split["walker_amount"],
     )
     db.add(payment)
     db.commit()

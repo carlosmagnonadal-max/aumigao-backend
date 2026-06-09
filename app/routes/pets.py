@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
+from app.services.upload_validation import read_image_upload_safely
 from app.models.pet import Pet
 from app.models.walk import Walk
 from app.models.user import User
@@ -114,9 +115,7 @@ async def upload_pet_photo(
     extension = _safe_upload_extension(file.filename, file.content_type)
     destination = destination_dir / f"pet-{uuid4().hex}{extension}"
 
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Arquivo vazio.")
+    content = await read_image_upload_safely(file)
 
     destination.write_bytes(content)
 

@@ -1,6 +1,5 @@
 import os
 import logging
-import shutil
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -1742,6 +1741,8 @@ async def upload_walk_completion_photo(
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Envie uma imagem valida.")
 
+    validated_bytes = await read_image_upload_safely(file)
+
     safe_walker_id = "".join(char for char in user.id if char.isalnum() or char in {"-", "_"})[:80] or "walker"
     safe_walk_id = "".join(char for char in walk.id if char.isalnum() or char in {"-", "_"})[:80] or "walk"
     destination_dir = WALK_COMPLETION_UPLOAD_ROOT / safe_walker_id / safe_walk_id
@@ -1749,11 +1750,8 @@ async def upload_walk_completion_photo(
     extension = _safe_upload_extension(file.filename, file.content_type)
     destination = destination_dir / f"completion-{uuid4().hex}{extension}"
 
-    try:
-        with destination.open("wb") as output:
-            shutil.copyfileobj(file.file, output)
-    finally:
-        await file.close()
+    destination.write_bytes(validated_bytes)
+    await file.close()
 
     photo_url = _public_upload_url(request, destination)
     return {

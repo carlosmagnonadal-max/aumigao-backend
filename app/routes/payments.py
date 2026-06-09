@@ -282,9 +282,12 @@ async def create_payment(payload: PaymentCreate, user: User = Depends(get_curren
 
 
 @router.get("/{payment_id}", response_model=PaymentResponse)
-def get_payment(payment_id: str, db: Session = Depends(get_db)):
+def get_payment(payment_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     payment = db.get(Payment, payment_id)
-    if not payment:
+    # Retorna 404 (e nao 403) quando o pagamento nao e do solicitante para nao
+    # revelar a existencia de pagamentos de outros usuarios via enumeracao de ID.
+    is_admin = user.role in {"admin", "super_admin"}
+    if not payment or (payment.tutor_id != user.id and not is_admin):
         raise HTTPException(status_code=404, detail="Pagamento nao encontrado.")
     return payment_response(payment)
 

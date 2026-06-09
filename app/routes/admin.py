@@ -11,6 +11,7 @@ from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies.auth import require_admin
+from app.dependencies.tenant_scope import apply_tenant_filter, get_admin_tenant_scope
 from app.models.payment import Payment
 from app.models.pet import Pet
 from app.models.user import User
@@ -47,6 +48,7 @@ from app.services.beta_readiness_service import build_beta_readiness_checklist
 from app.services.operational_scheduler_service import get_operational_scheduler_status
 from app.services.walker_operational_score_service import calculate_walker_operational_score
 from app.routes.notifications import NotificationCreate, _create_notification
+from app.services.signed_uploads import create_signed_upload_url
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 api_router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -605,11 +607,11 @@ def _serialize_walker_profile(profile: WalkerProfile, db: Session, include_inter
         "bio": profile.bio or "",
         "experience_options": [part.strip() for part in (profile.experience or "").split("|")[1:] if part.strip()],
         "rg": profile.rg or "",
-        "document_url": profile.document_url,
-        "identity_document_front_url": profile.document_url,
-        "identity_document_back_url": profile.identity_document_back_url,
-        "selfie_url": profile.selfie_url,
-        "proof_of_address_url": profile.proof_of_address_url,
+        "document_url": create_signed_upload_url(profile.document_url),
+        "identity_document_front_url": create_signed_upload_url(profile.document_url),
+        "identity_document_back_url": create_signed_upload_url(profile.identity_document_back_url),
+        "selfie_url": create_signed_upload_url(profile.selfie_url),
+        "proof_of_address_url": create_signed_upload_url(profile.proof_of_address_url),
         "documents_count": document_count,
         "profile_photo_url": profile.profile_photo_url or "",
         "photo_url": profile.profile_photo_url or "",
@@ -1029,8 +1031,10 @@ def dashboard(db: Session = Depends(get_db)):
 
 @router.get("/users")
 @api_router.get("/users")
-def users(db: Session = Depends(get_db)):
-    return db.query(User).all()
+def users(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    # super_admin enxerga todos os tenants; admin regular fica restrito ao seu.
+    query = apply_tenant_filter(db.query(User), User, get_admin_tenant_scope(admin))
+    return query.all()
 
 def _serialize_admin_tutor(user: User, db: Session) -> dict:
     profile = (

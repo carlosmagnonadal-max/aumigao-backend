@@ -1248,11 +1248,7 @@ def approve_walker(walker_id: str, request: Request, admin: User = Depends(requi
         actor=admin,
         source="admin.walker.approve",
         metadata={"candidate_id": profile.id},
-    )
-    record_audit_log(
-        db, request=request, actor=admin,
-        action="walker.approved", entity_type="walker", entity_id=profile.user_id,
-        after={"status": "approved", "candidate_id": profile.id},
+        request=request,
     )
     db.commit()
     db.refresh(profile)
@@ -1276,11 +1272,7 @@ def reject_walker(walker_id: str, request: Request, payload: dict | None = None,
         actor=admin,
         source="admin.walker.reject",
         metadata={"candidate_id": profile.id},
-    )
-    record_audit_log(
-        db, request=request, actor=admin,
-        action="walker.rejected", entity_type="walker", entity_id=profile.user_id,
-        after={"status": "rejected", "reason": (payload or {}).get("reason")},
+        request=request,
     )
     db.commit()
     mark_referral_rejected(profile.user_id, profile.rejection_reason, db)

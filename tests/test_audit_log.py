@@ -45,3 +45,24 @@ def test_record_audit_log_does_not_commit():
     record_audit_log(db, action="x", entity_type="y")
     db.rollback()  # sem commit do caller, o registro é descartado (atomicidade)
     assert db.query(AuditLog).count() == 0
+
+
+def test_operational_event_mirrors_audit_log():
+    """Toda ação operacional registrada deve gerar um audit_log espelhado."""
+    from app.models.admin_operational_event import AdminOperationalEvent
+    from app.services.admin_operational_event_service import record_admin_operational_event
+
+    engine = create_engine("sqlite:///:memory:")
+    AuditLog.__table__.create(engine)
+    AdminOperationalEvent.__table__.create(engine)
+    db = sessionmaker(bind=engine)()
+
+    record_admin_operational_event(
+        db, event_type="approved", entity_type="walker", entity_id="w1",
+        title="Candidatura aprovada", metadata={"candidate_id": "c1"},
+    )
+    db.commit()
+    log = db.query(AuditLog).first()
+    assert log is not None
+    assert log.action == "walker.approved"
+    assert log.entity_id == "w1"

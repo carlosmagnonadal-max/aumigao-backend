@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+from fastapi import Request
 from sqlalchemy.orm import Session
 
 from app.models.admin_operational_event import AdminOperationalEvent
@@ -38,6 +39,7 @@ def record_admin_operational_event(
     actor: User | None = None,
     source: str = "admin-web",
     metadata: dict | None = None,
+    request: Request | None = None,
 ) -> AdminOperationalEvent:
     event = AdminOperationalEvent(
         id=str(uuid4()),
@@ -54,6 +56,23 @@ def record_admin_operational_event(
         created_at=datetime.utcnow(),
     )
     db.add(event)
+    # Trilha de auditoria espelhada (spec §14): toda ação operacional registrada
+    # gera também um audit_log. Import local evita ciclo entre os services; o
+    # try/except garante que a auditoria nunca quebre a ação operacional.
+    try:
+        from app.services.audit_service import record_audit_log
+
+        record_audit_log(
+            db,
+            action=f"{entity_type}.{event_type}",
+            entity_type=entity_type,
+            entity_id=entity_id,
+            actor=actor,
+            after=metadata,
+            request=request,
+        )
+    except Exception:
+        pass
     return event
 
 

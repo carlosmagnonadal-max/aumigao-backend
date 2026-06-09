@@ -2,7 +2,7 @@
 
 import json
 from app.models.tutor_profile import TutorProfile
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi import HTTPException
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -11,10 +11,12 @@ from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies.rbac import require_permission
+from app.services.audit_service import record_audit_log
 from app.dependencies.tenant_scope import apply_tenant_filter, get_admin_tenant_scope
 from app.models.payment import Payment
 from app.models.pet import Pet
 from app.models.user import User
+from app.models.audit_log import AuditLog
 from app.models.admin_operational_event import AdminOperationalEvent
 from app.models.walk import Walk
 from app.models.walk_completion_review import WalkCompletionReview
@@ -1036,6 +1038,33 @@ def users(admin: User = Depends(require_permission("users.read")), db: Session =
     query = apply_tenant_filter(db.query(User), User, get_admin_tenant_scope(admin))
     return query.all()
 
+
+@router.get("/audit-logs")
+@api_router.get("/audit-logs")
+def list_audit_logs(
+    admin: User = Depends(require_permission("audit_logs.read")),
+    db: Session = Depends(get_db),
+    limit: int = Query(100, ge=1, le=500),
+):
+    query = apply_tenant_filter(db.query(AuditLog), AuditLog, get_admin_tenant_scope(admin))
+    rows = query.order_by(AuditLog.created_at.desc()).limit(limit).all()
+    return [
+        {
+            "id": r.id,
+            "actor_user_id": r.actor_user_id,
+            "actor_type": r.actor_type,
+            "tenant_id": r.tenant_id,
+            "action": r.action,
+            "entity_type": r.entity_type,
+            "entity_id": r.entity_id,
+            "before_data": r.before_data,
+            "after_data": r.after_data,
+            "ip_address": r.ip_address,
+            "created_at": r.created_at,
+        }
+        for r in rows
+    ]
+
 def _serialize_admin_tutor(user: User, db: Session) -> dict:
     profile = (
         db.query(TutorProfile)
@@ -1203,7 +1232,7 @@ def update_partner_application_admin_fields(candidate_id: str, payload: dict | N
 
 @router.post("/walkers/{walker_id}/approve")
 @api_router.post("/walkers/{walker_id}/approve")
-def approve_walker(walker_id: str, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
+def approve_walker(walker_id: str, request: Request, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
     profile = db.get(WalkerProfile, walker_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Passeador nao encontrado")
@@ -1220,13 +1249,18 @@ def approve_walker(walker_id: str, admin: User = Depends(require_permission("wal
         source="admin.walker.approve",
         metadata={"candidate_id": profile.id},
     )
+    record_audit_log(
+        db, request=request, actor=admin,
+        action="walker.approved", entity_type="walker", entity_id=profile.user_id,
+        after={"status": "approved", "candidate_id": profile.id},
+    )
     db.commit()
     db.refresh(profile)
     return _serialize_walker_profile(profile, db)
 
 @router.post("/walkers/{walker_id}/reject")
 @api_router.post("/walkers/{walker_id}/reject")
-def reject_walker(walker_id: str, payload: dict | None = None, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
+def reject_walker(walker_id: str, request: Request, payload: dict | None = None, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
     profile = db.get(WalkerProfile, walker_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Passeador nao encontrado")
@@ -1242,6 +1276,11 @@ def reject_walker(walker_id: str, payload: dict | None = None, admin: User = Dep
         actor=admin,
         source="admin.walker.reject",
         metadata={"candidate_id": profile.id},
+    )
+    record_audit_log(
+        db, request=request, actor=admin,
+        action="walker.rejected", entity_type="walker", entity_id=profile.user_id,
+        after={"status": "rejected", "reason": (payload or {}).get("reason")},
     )
     db.commit()
     mark_referral_rejected(profile.user_id, profile.rejection_reason, db)

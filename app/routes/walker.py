@@ -40,6 +40,7 @@ from app.services.operational_matching_service import (
 )
 from app.services.walker_operational_score_service import calculate_walker_operational_score
 from app.routes.notifications import NotificationCreate, _create_notification
+from app.services.signed_uploads import create_signed_upload_url
 
 router = APIRouter(prefix="/walker", tags=["walker"])
 api_public_router = APIRouter(prefix="/api", tags=["walkers"])
@@ -280,11 +281,11 @@ def _serialize_partner_application(profile: WalkerProfile, db: Session, include_
         "experience_options": _extract_experience_options(profile.experience or ""),
         "availability": "",
         "profile_photo_url": profile_photo_url,
-        "document_url": identity_front_url,
-        "identity_document_front_url": identity_front_url,
-        "identity_document_back_url": identity_back_url,
-        "proof_of_address_url": profile.proof_of_address_url or "",
-        "selfie_url": profile.selfie_url or "",
+        "document_url": create_signed_upload_url(identity_front_url) or "",
+        "identity_document_front_url": create_signed_upload_url(identity_front_url) or "",
+        "identity_document_back_url": create_signed_upload_url(identity_back_url) or "",
+        "proof_of_address_url": create_signed_upload_url(profile.proof_of_address_url) or "",
+        "selfie_url": create_signed_upload_url(profile.selfie_url) or "",
         "accepted_declaration": True,
         "status": _public_status_label(profile.status),
         "raw_status": _canonical_application_status(profile.status),

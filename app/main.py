@@ -4,9 +4,9 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from sqlalchemy import inspect, text
 
 from app.core.database import Base, SessionLocal, engine, get_database_diagnostics, mask_database_url
@@ -58,6 +58,7 @@ from app.services.operational_scheduler_service import (
     run_operational_scheduler_cycle,
     scheduler_interval_seconds,
 )
+from app.services.signed_uploads import has_valid_upload_signature, is_sensitive_upload_path, upload_file_path
 
 logger = logging.getLogger(__name__)
 
@@ -291,7 +292,21 @@ app.add_middleware(
 app.add_middleware(TenantResolverMiddleware, session_factory=SessionLocal)
 
 Path("uploads").mkdir(parents=True, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
+
+@app.api_route("/uploads/{upload_path:path}", methods=["GET", "HEAD"])
+def serve_upload(upload_path: str, request: Request):
+    file_path = upload_file_path(upload_path)
+    if not file_path or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Arquivo nao encontrado")
+    if is_sensitive_upload_path(upload_path) and not has_valid_upload_signature(upload_path, request.url.query):
+        raise HTTPException(status_code=403, detail="Assinatura invalida ou expirada")
+    return FileResponse(file_path)
+
+
+# O serving de /uploads e feito exclusivamente pela rota serve_upload acima, que
+# exige assinatura valida para arquivos sensiveis. Um StaticFiles montado aqui
+# contornaria essa protecao, entao nao deve ser usado.
 
 app.include_router(auth.router)
 app.include_router(tutor.router)

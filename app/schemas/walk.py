@@ -10,6 +10,8 @@ class WalkCreate(BaseModel):
     duration_minutes: int
     price: float
     pickup_method: str = "Buscar em casa"
+    modality: str = "standard"
+    destination: str = ""
     address_snapshot: str = ""
     notes: str = ""
 
@@ -53,6 +55,8 @@ class WalkResponse(ORMModel):
     matching_attempts: list[dict] = Field(default_factory=list)
     operational_logs: list[dict] = Field(default_factory=list)
     pickup_method: str
+    modality: str | None = None
+    destination: str | None = None
     address_snapshot: str
     notes: str
     created_at: datetime

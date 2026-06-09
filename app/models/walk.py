@@ -19,6 +19,11 @@ class Walk(Base):
     price: Mapped[float] = mapped_column(Float)
     status: Mapped[str] = mapped_column(String, default="Agendado")
     pickup_method: Mapped[str] = mapped_column(String, default="Buscar em casa")
+    # Modalidade do passeio: "standard" (rotina) ou "pet_tour" (especial: busca de
+    # carro + destino escolhido pelo tutor + duração estendida). Ver pet_tour_service.
+    modality: Mapped[str] = mapped_column(String, default="standard")
+    # Destino do Pet Tour, escolhido pelo tutor (vazio em passeios standard).
+    destination: Mapped[str] = mapped_column(Text, default="")
     address_snapshot: Mapped[str] = mapped_column(Text, default="")
     notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

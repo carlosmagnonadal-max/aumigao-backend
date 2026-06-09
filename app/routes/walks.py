@@ -19,6 +19,9 @@ from app.models.walk_review import WalkReview
 from app.models.walk_tip import WalkTip
 from app.models.user import User
 from app.models.pet import Pet
+from app.models.tenant import Tenant
+from app.models.pet_tour import PET_TOUR_MODALITY
+from app.services.pet_tour_service import validate_booking as validate_pet_tour_booking
 from app.schemas.walk import WalkCreate, WalkResponse, WalkUpdateStatus
 from app.schemas.walk_review import ALLOWED_WALK_REVIEW_TAGS, WalkReviewCreate
 from app.schemas.walk_tip import WalkTipCheckoutCreate
@@ -285,6 +288,17 @@ def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db:
         user.tenant_id = user.tenant_id or tenant_id
         if pet and not pet.tenant_id:
             pet.tenant_id = tenant_id
+
+        # Pet Tour: valida flag/destino/duração e aplica o preço do tenant (server-authoritative).
+        if data.get("modality") == PET_TOUR_MODALITY:
+            tenant = db.get(Tenant, tenant_id)
+            config = validate_pet_tour_booking(
+                db,
+                tenant,
+                destination=data.get("destination", ""),
+                duration_minutes=data.get("duration_minutes", 0),
+            )
+            data["price"] = config.base_price
 
         walker_selection_mode = (
             "only_selected"

@@ -4,8 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.dependencies.auth import require_admin
+from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_permission
+from app.models.user import User
+from app.services.audit_service import record_audit_log
 from app.models.tenant import Tenant, TenantBranding, TenantFeature, TenantSettings, TenantUnit
 from app.models.tenant_onboarding import TenantOnboarding
 from app.schemas.tenant import (
@@ -101,7 +103,7 @@ def list_tenants(db: Session = Depends(get_db)):
 
 @router.post("", response_model=TenantDetailResponse)
 @api_router.post("", response_model=TenantDetailResponse)
-def create_tenant(payload: TenantCreate, db: Session = Depends(get_db)):
+def create_tenant(payload: TenantCreate, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
     slug = _normalize_slug(payload.slug)
     _ensure_status(payload.status, TENANT_STATUSES, "status")
     _ensure_plan(payload.plan)
@@ -124,6 +126,10 @@ def create_tenant(payload: TenantCreate, db: Session = Depends(get_db)):
     db.add(_default_branding(tenant))
     db.add(_default_settings(tenant))
     db.add(_default_onboarding(tenant))
+    record_audit_log(
+        db, action="tenant.created", entity_type="tenant", entity_id=tenant.id, actor=admin,
+        after={"name": tenant.name, "slug": tenant.slug, "plan": tenant.plan}, tenant_id=tenant.id,
+    )
     db.commit()
     db.refresh(tenant)
     return tenant
@@ -137,7 +143,7 @@ def get_tenant(tenant_id: str, db: Session = Depends(get_db)):
 
 @router.patch("/{tenant_id}", response_model=TenantResponse)
 @api_router.patch("/{tenant_id}", response_model=TenantResponse)
-def update_tenant(tenant_id: str, payload: TenantUpdate, db: Session = Depends(get_db)):
+def update_tenant(tenant_id: str, payload: TenantUpdate, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
     tenant = _tenant_or_404(tenant_id, db)
     values = payload.model_dump(exclude_unset=True)
     _ensure_status(values.get("status"), TENANT_STATUSES, "status")
@@ -145,6 +151,10 @@ def update_tenant(tenant_id: str, payload: TenantUpdate, db: Session = Depends(g
     for field, value in values.items():
         setattr(tenant, field, value.strip() if isinstance(value, str) else value)
     tenant.updated_at = datetime.utcnow()
+    record_audit_log(
+        db, action="tenant.updated", entity_type="tenant", entity_id=tenant.id, actor=admin,
+        after=values, tenant_id=tenant.id,
+    )
     db.commit()
     db.refresh(tenant)
     return tenant
@@ -188,13 +198,17 @@ def get_tenant_settings(tenant_id: str, db: Session = Depends(get_db)):
 
 @router.patch("/{tenant_id}/settings", response_model=TenantSettingsResponse)
 @api_router.patch("/{tenant_id}/settings", response_model=TenantSettingsResponse)
-def update_tenant_settings(tenant_id: str, payload: TenantSettingsUpdate, db: Session = Depends(get_db)):
+def update_tenant_settings(tenant_id: str, payload: TenantSettingsUpdate, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
     tenant = _tenant_or_404(tenant_id, db)
     settings = tenant.settings or _default_settings(tenant)
     db.add(settings)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(settings, field, value.strip() if isinstance(value, str) else value)
     settings.updated_at = datetime.utcnow()
+    record_audit_log(
+        db, action="settings.updated", entity_type="tenant_settings", entity_id=tenant_id, actor=admin,
+        after=payload.model_dump(exclude_unset=True), tenant_id=tenant_id,
+    )
     db.commit()
     db.refresh(settings)
     return settings
@@ -243,7 +257,7 @@ def list_tenant_features(tenant_id: str, db: Session = Depends(get_db)):
 
 @router.patch("/{tenant_id}/features", response_model=list[TenantFeatureResponse])
 @api_router.patch("/{tenant_id}/features", response_model=list[TenantFeatureResponse])
-def update_tenant_features(tenant_id: str, payload: list[TenantFeatureUpdate], db: Session = Depends(get_db)):
+def update_tenant_features(tenant_id: str, payload: list[TenantFeatureUpdate], admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
     tenant = _tenant_or_404(tenant_id, db)
     existing = {
         item.feature_key: item
@@ -261,6 +275,10 @@ def update_tenant_features(tenant_id: str, payload: list[TenantFeatureUpdate], d
         feature.metadata_json = item.metadata_json
         feature.updated_at = datetime.utcnow()
         db.add(feature)
+    record_audit_log(
+        db, action="features.updated", entity_type="tenant_features", entity_id=tenant_id, actor=admin,
+        after={"features": [{"key": i.feature_key, "enabled": i.enabled} for i in payload]}, tenant_id=tenant_id,
+    )
     db.commit()
     return list_tenant_features(tenant_id, db)
 

@@ -14,6 +14,7 @@ from app.core.database import get_db
 from app.core.security import get_password_hash, verify_password
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_permission
+from app.services.upload_validation import enforce_upload_rate_limit, read_image_upload_safely
 from app.models.payment import Payment
 from app.models.pet import Pet
 from app.models.user import User
@@ -745,11 +746,14 @@ async def upload_partner_application_document(
     owner_id: str = Form("anonymous"),
     file: UploadFile = File(...),
 ):
+    enforce_upload_rate_limit(request)
     normalized_type = document_type.strip().lower()
     if normalized_type not in ALLOWED_UPLOAD_TYPES:
         raise HTTPException(status_code=400, detail="Tipo de documento invalido.")
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Envie uma imagem valida.")
+
+    validated_bytes = await read_image_upload_safely(file)
 
     safe_owner = "".join(char for char in owner_id.strip().lower() if char.isalnum() or char in {"-", "_", "@"})[:80] or "anonymous"
     destination_dir = UPLOAD_ROOT / safe_owner
@@ -757,11 +761,8 @@ async def upload_partner_application_document(
     extension = _safe_upload_extension(file.filename, file.content_type)
     destination = destination_dir / f"{normalized_type}-{uuid4().hex}{extension}"
 
-    try:
-        with destination.open("wb") as output:
-            shutil.copyfileobj(file.file, output)
-    finally:
-        await file.close()
+    destination.write_bytes(validated_bytes)
+    await file.close()
 
     file_url = _public_upload_url(request, destination)
     LOGGER.info("upload de documento walker concluido", extra={"document_type": normalized_type, "owner_id": safe_owner})

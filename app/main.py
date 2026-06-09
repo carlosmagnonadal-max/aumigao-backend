@@ -48,7 +48,7 @@ from app.models import (
     WalkCompletionReview,
     LegalAcceptance,
 )
-from app.routes import admin, auth, complaints, legal, matching, notifications, operational_walks, payments, pets, protected_chat, referrals, reviews, tenant_app_config, tenant_branding, tenant_commercial, tenant_dedicated_app_readiness, tenant_features_runtime, tenant_launch_readiness, tenant_units_runtime, tenants, tutor, walker, walker_network, walker_quality, walks, weekly_missions
+from app.routes import admin, auth, complaints, legal, matching, notifications, operational_walks, payments, pets, protected_chat, recurring_plans, referrals, reviews, tenant_app_config, tenant_branding, tenant_commercial, tenant_dedicated_app_readiness, tenant_features_runtime, tenant_launch_readiness, tenant_units_runtime, tenants, tutor, walker, walker_network, walker_quality, walks, weekly_missions
 from app.services.admin_seed_service import ensure_configured_admin_users
 from app.services.tenant_seed_service import ensure_default_tenant_links, ensure_network_profiles
 from app.services.operational_matching_service import ensure_operational_schema
@@ -343,6 +343,10 @@ app.include_router(tenant_launch_readiness.router)
 app.include_router(tenant_launch_readiness.api_router)
 app.include_router(tenants.router)
 app.include_router(tenants.api_router)
+app.include_router(recurring_plans.router)
+app.include_router(recurring_plans.api_router)
+app.include_router(recurring_plans.admin_router)
+app.include_router(recurring_plans.api_admin_router)
 app.include_router(operational_walks.admin_router)
 app.include_router(operational_walks.api_admin_router)
 app.include_router(referrals.router)

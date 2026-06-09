@@ -138,3 +138,13 @@ def enforce_tenant_feature_allowed(tenant: Tenant, db: Session, feature_key: str
 def enforce_network_access_allowed(tenant: Tenant, db: Session) -> None:
     if not tenant_has_feature(tenant, db, "network_access"):
         raise HTTPException(status_code=403, detail="Acesso à Rede Aumigão indisponível para o plano atual.")
+
+
+def enforce_tenant_product_feature(tenant: Tenant, db: Session, feature_key: str, label: str) -> None:
+    """Gate genérico de feature de produto (não-comercial) habilitada por tenant.
+
+    Diferente das features comerciais (gated por plano), features de produto da
+    Onda 1+ (ex.: recurring_plans) são liberadas ligando a TenantFeature do tenant.
+    """
+    if not tenant_has_feature(tenant, db, feature_key):
+        raise HTTPException(status_code=403, detail=f"{label} não está habilitado para este tenant.")

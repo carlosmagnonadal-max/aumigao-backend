@@ -52,3 +52,32 @@ def test_inactive_config_uses_default():
     db.add(TenantPaymentConfig(tenant_id="t2", commission_percent=5.0, active=False))
     db.commit()
     assert get_commission_percent(db, "t2") == 20.0  # config inativa é ignorada
+
+
+def _db_with_audit():
+    from app.models.audit_log import AuditLog
+
+    engine = create_engine("sqlite:///:memory:")
+    TenantPaymentConfig.__table__.create(engine)
+    AuditLog.__table__.create(engine)
+    return sessionmaker(bind=engine)()
+
+
+def test_update_payment_config_creates_then_updates():
+    from app.services.payment_split_service import update_payment_config
+
+    db = _db_with_audit()
+    cfg = update_payment_config(db, "t1", commission_percent=15.0)
+    assert cfg.tenant_id == "t1"
+    assert cfg.commission_percent == 15.0
+    # segunda chamada atualiza a mesma config
+    update_payment_config(db, "t1", commission_percent=25.0)
+    assert get_commission_percent(db, "t1") == 25.0
+
+
+def test_update_payment_config_clamps():
+    from app.services.payment_split_service import update_payment_config
+
+    db = _db_with_audit()
+    cfg = update_payment_config(db, "t1", commission_percent=150.0)
+    assert cfg.commission_percent == 100.0

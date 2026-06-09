@@ -12,6 +12,9 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies.rbac import require_permission
 from app.services.audit_service import record_audit_log
+from app.services.payment_split_service import get_or_create_payment_config, update_payment_config
+from app.services.tenant_context import resolve_current_tenant_id
+from app.schemas.tenant_payment_config import TenantPaymentConfigResponse, TenantPaymentConfigUpdate
 from app.dependencies.tenant_scope import apply_tenant_filter, get_admin_tenant_scope
 from app.models.payment import Payment
 from app.models.pet import Pet
@@ -1065,6 +1068,50 @@ def list_audit_logs(
         }
         for r in rows
     ]
+
+
+def _serialize_payment_config(config) -> TenantPaymentConfigResponse:
+    return TenantPaymentConfigResponse(
+        tenant_id=config.tenant_id,
+        provider=config.provider,
+        commission_percent=config.commission_percent,
+        split_enabled=config.split_enabled,
+        active=config.active,
+    )
+
+
+@router.get("/payment-config", response_model=TenantPaymentConfigResponse)
+@api_router.get("/payment-config", response_model=TenantPaymentConfigResponse)
+def get_payment_config(
+    admin: User = Depends(require_permission("finance.read")),
+    db: Session = Depends(get_db),
+):
+    scope = get_admin_tenant_scope(admin)
+    tenant_id = scope.tenant_id or resolve_current_tenant_id(db)
+    config = get_or_create_payment_config(db, tenant_id)
+    db.commit()
+    return _serialize_payment_config(config)
+
+
+@router.put("/payment-config", response_model=TenantPaymentConfigResponse)
+@api_router.put("/payment-config", response_model=TenantPaymentConfigResponse)
+def update_payment_config_endpoint(
+    payload: TenantPaymentConfigUpdate,
+    admin: User = Depends(require_permission("finance.manage")),
+    db: Session = Depends(get_db),
+):
+    scope = get_admin_tenant_scope(admin)
+    tenant_id = scope.tenant_id or resolve_current_tenant_id(db)
+    config = update_payment_config(
+        db,
+        tenant_id,
+        commission_percent=payload.commission_percent,
+        provider=payload.provider,
+        split_enabled=payload.split_enabled,
+        actor=admin,
+    )
+    return _serialize_payment_config(config)
+
 
 def _serialize_admin_tutor(user: User, db: Session) -> dict:
     profile = (

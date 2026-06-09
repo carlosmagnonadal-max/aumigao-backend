@@ -41,3 +41,66 @@ def compute_split(amount: float, commission_percent: float) -> dict[str, float]:
 
 def build_payment_split(db: Session, tenant_id: str | None, amount: float) -> dict[str, float]:
     return compute_split(amount, get_commission_percent(db, tenant_id))
+
+
+def get_or_create_payment_config(db: Session, tenant_id: str) -> TenantPaymentConfig:
+    config = (
+        db.query(TenantPaymentConfig)
+        .filter(TenantPaymentConfig.tenant_id == tenant_id)
+        .first()
+    )
+    if not config:
+        config = TenantPaymentConfig(tenant_id=tenant_id)
+        db.add(config)
+        db.flush()
+    return config
+
+
+def update_payment_config(
+    db: Session,
+    tenant_id: str,
+    *,
+    commission_percent: float | None = None,
+    provider: str | None = None,
+    split_enabled: bool | None = None,
+    actor=None,
+) -> TenantPaymentConfig:
+    config = get_or_create_payment_config(db, tenant_id)
+    before = {
+        "commission_percent": config.commission_percent,
+        "provider": config.provider,
+        "split_enabled": config.split_enabled,
+    }
+
+    if commission_percent is not None:
+        config.commission_percent = max(0.0, min(100.0, float(commission_percent)))
+    if provider is not None and provider.strip():
+        config.provider = provider.strip()
+    if split_enabled is not None:
+        config.split_enabled = bool(split_enabled)
+
+    after = {
+        "commission_percent": config.commission_percent,
+        "provider": config.provider,
+        "split_enabled": config.split_enabled,
+    }
+    # Mudança de regra financeira é sensível — auditar (spec §14.3).
+    try:
+        from app.services.audit_service import record_audit_log
+
+        record_audit_log(
+            db,
+            action="payment_config.updated",
+            entity_type="tenant_payment_config",
+            entity_id=tenant_id,
+            actor=actor,
+            before=before,
+            after=after,
+            tenant_id=tenant_id,
+        )
+    except Exception:
+        pass
+
+    db.commit()
+    db.refresh(config)
+    return config

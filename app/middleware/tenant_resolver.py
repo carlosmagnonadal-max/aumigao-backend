@@ -20,10 +20,10 @@ class TenantResolverMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         try:
             with self.session_factory() as db:
-                tenant: Tenant = resolve_tenant_from_request(request, db)
+                tenant: Tenant | None = resolve_tenant_from_request(request, db)
                 request.state.tenant = tenant
-                request.state.tenant_id = tenant.id
-                request.state.tenant_slug = tenant.slug
+                request.state.tenant_id = tenant.id if tenant else None
+                request.state.tenant_slug = tenant.slug if tenant else None
         except Exception as exc:
             logger.warning("tenant_resolver_middleware_fallback_failed error=%s", exc)
             request.state.tenant = None

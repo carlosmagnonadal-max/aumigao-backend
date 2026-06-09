@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from app.models.user import User
 
@@ -97,3 +97,16 @@ def apply_tenant_filter(
         )
 
     return query.filter(column == scope.tenant_id)
+
+
+def require_tenant(request: Request) -> str:
+    """Dependency: exige um tenant resolvido na requisição (spec §6.4).
+
+    No modo estrito (STRICT_TENANT_RESOLUTION) o resolver não faz fallback para o
+    tenant padrão; rotas sensíveis usam esta dependency para receber 400
+    TENANT_REQUIRED em vez de operar silenciosamente sobre o tenant errado.
+    """
+    tenant_id = getattr(request.state, "tenant_id", None)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="TENANT_REQUIRED")
+    return tenant_id

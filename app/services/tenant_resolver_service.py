@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import Request
 from sqlalchemy.orm import Session
 
@@ -54,9 +56,19 @@ def resolve_tenant_from_host(request: Request, db: Session) -> Tenant | None:
     return db.query(Tenant).filter(Tenant.slug == subdomain).first()
 
 
-def resolve_tenant_from_request(request: Request, db: Session) -> Tenant:
-    return (
-        resolve_tenant_from_headers(request, db)
-        or resolve_tenant_from_host(request, db)
-        or get_default_tenant(db)
-    )
+def _strict_tenant_resolution() -> bool:
+    return os.getenv("STRICT_TENANT_RESOLUTION", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def resolve_tenant_from_request(request: Request, db: Session) -> Tenant | None:
+    resolved = resolve_tenant_from_headers(request, db) or resolve_tenant_from_host(request, db)
+    if resolved is not None:
+        return resolved
+    # Modo estrito (spec §6.4): sem fallback silencioso. A rota sensível deve exigir
+    # tenant via require_tenant e receber 400 TENANT_REQUIRED. O default (beta) mantém
+    # o tenant padrão para não quebrar requisições sem contexto de tenant.
+    if _strict_tenant_resolution():
+        return None
+    return get_default_tenant(db)

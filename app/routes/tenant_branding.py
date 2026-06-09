@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies.auth import require_admin
 from app.dependencies.rbac import require_permission
+from app.models.user import User
 from app.schemas.tenant_branding import TenantBrandingRuntimeResponse
 from app.schemas.tenant_branding_update import TenantBrandingUpdatePayload
 from app.services.tenant_branding_service import get_tenant_branding_runtime, update_tenant_branding_runtime
@@ -31,7 +32,8 @@ def get_branding_runtime(tenant_id: str, db: Session = Depends(get_db)):
 def update_current_branding(
     payload: TenantBrandingUpdatePayload,
     request: Request,
+    admin: User = Depends(require_permission("branding.update")),
     db: Session = Depends(get_db),
 ):
     tenant = resolve_current_tenant(db, request)
-    return update_tenant_branding_runtime(db, tenant, payload)
+    return update_tenant_branding_runtime(db, tenant, payload, actor=admin)

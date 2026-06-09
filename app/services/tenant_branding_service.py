@@ -49,7 +49,9 @@ def get_tenant_branding_runtime(db: Session, tenant_id: str | None = None, tenan
         "splash_image_url": _clean_text(branding.splash_image_url if branding else None) or "",
         "primary_color": _clean_text(branding.primary_color if branding else None) or DEFAULT_PRIMARY_COLOR,
         "secondary_color": _clean_text(branding.secondary_color if branding else None) or DEFAULT_SECONDARY_COLOR,
+        "accent_color": _clean_text(branding.accent_color if branding else None) or "",
         "powered_by_enabled": powered_by_enabled,
+        "version": (branding.published_version if branding and branding.published_version else 1),
     }
 
 
@@ -57,6 +59,7 @@ def update_tenant_branding_runtime(
     db: Session,
     tenant: Tenant,
     payload: TenantBrandingUpdatePayload,
+    actor=None,
 ) -> dict[str, str | bool]:
     branding = tenant.branding
     if not branding:
@@ -70,7 +73,22 @@ def update_tenant_branding_runtime(
     branding.splash_image_url = payload.splash_image_url
     branding.primary_color = payload.primary_color
     branding.secondary_color = payload.secondary_color
+    branding.accent_color = payload.accent_color
     branding.powered_by_enabled = payload.powered_by_enabled
+    # Incrementa a versao publicada para o cliente invalidar cache (spec §9.4).
+    branding.published_version = (branding.published_version or 0) + 1
+
+    # Auditoria (spec §14.3): registra a publicacao do branding (espelha audit_log).
+    try:
+        from app.services.admin_operational_event_service import record_admin_operational_event
+
+        record_admin_operational_event(
+            db, event_type="published", entity_type="branding", entity_id=tenant.id,
+            title="Branding publicado", actor=actor,
+            metadata={"version": branding.published_version},
+        )
+    except Exception:
+        pass
 
     db.commit()
     db.refresh(branding)

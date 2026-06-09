@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -47,6 +47,8 @@ class TenantBranding(Base):
     secondary_color: Mapped[str | None] = mapped_column(String, nullable=True)
     accent_color: Mapped[str | None] = mapped_column(String, nullable=True)
     powered_by_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Incrementa a cada publicação; o cliente (mobile/admin) usa para invalidar cache (spec §9.4).
+    published_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

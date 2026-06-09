@@ -123,10 +123,14 @@ def risk_visibility_adjustment(risk_level: str) -> float:
 
 
 def get_eligible_walkers(request: MatchingWalkerRequest, db: Session) -> list[WalkerProfile]:
-    profiles = db.query(WalkerProfile).filter(
+    query = db.query(WalkerProfile).filter(
         WalkerProfile.status == "active",
         WalkerProfile.active_as_walker.is_(True),
-    ).order_by(WalkerProfile.created_at.desc()).all()
+    )
+    # Pet Tour exige passeador com carro.
+    if getattr(request, "modality", "standard") == "pet_tour":
+        query = query.filter(WalkerProfile.has_vehicle.is_(True))
+    profiles = query.order_by(WalkerProfile.created_at.desc()).all()
     eligible = []
     seen_keys = set()
     for profile in profiles:

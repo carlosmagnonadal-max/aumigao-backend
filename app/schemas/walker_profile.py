@@ -18,6 +18,7 @@ class WalkerProfileBase(BaseModel):
     selfie_url: str | None = None
     proof_of_address_url: str | None = None
     profile_photo_url: str | None = None
+    has_vehicle: bool = False
 
 class WalkerProfileCreate(WalkerProfileBase):
     pass

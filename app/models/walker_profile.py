@@ -25,6 +25,8 @@ class WalkerProfile(Base):
     status: Mapped[str] = mapped_column(String, default="pending")
     internal_notes: Mapped[str] = mapped_column(Text, default="")
     active_as_walker: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Passeador possui carro — requisito para receber Pet Tour (ver pet_tour_service).
+    has_vehicle: Mapped[bool] = mapped_column(Boolean, default=False)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

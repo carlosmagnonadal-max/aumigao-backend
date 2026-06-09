@@ -8,6 +8,7 @@ class MatchingWalkerRequest(BaseModel):
     scheduled_at: str | None = None
     duration_minutes: int = 45
     pickup_method: str = "home_pickup"
+    modality: str = "standard"
     address_id: str | None = None
     neighborhood: str | None = None
     city: str | None = None

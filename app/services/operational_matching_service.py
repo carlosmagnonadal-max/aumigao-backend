@@ -408,6 +408,7 @@ def _candidate_request(walk: Walk) -> MatchingWalkerRequest:
         scheduled_at=walk.scheduled_date,
         duration_minutes=walk.duration_minutes,
         pickup_method=walk.pickup_method,
+        modality=getattr(walk, "modality", "standard") or "standard",
         neighborhood=_walk_neighborhood(walk),
     )
 

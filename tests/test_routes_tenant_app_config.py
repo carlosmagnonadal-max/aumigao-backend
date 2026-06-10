@@ -134,7 +134,7 @@ def test_current_app_config_branding_defaults():
     assert branding["display_name"] == "Aumigao"  # tenant.name
     assert branding["app_name"] == "Aumigao"
     assert branding["logo_url"] == ""
-    assert branding["primary_color"] == "#315f29"  # DEFAULT_PRIMARY_COLOR
+    assert branding["primary_color"] == "#6429E8"  # DEFAULT_PRIMARY_COLOR (roxo da marca)
     assert branding["secondary_color"] == "#101811"  # DEFAULT_SECONDARY_COLOR
 
 

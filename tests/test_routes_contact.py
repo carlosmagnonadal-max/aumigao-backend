@@ -79,3 +79,21 @@ def test_contact_rate_limit_blocks_flood():
     for i in range(12):
         last = client.post("/api/contact", json={"name": f"u{i}", "email": f"u{i}@test.com"})
     assert last.status_code == 429, last.text
+
+
+def test_build_contact_email_has_lead_fields():
+    from types import SimpleNamespace
+    from app.services.contact_notification_service import build_contact_email, DEFAULT_CONTACT_TO
+
+    contact = SimpleNamespace(
+        id="c-1", name="Maria", company="Pet Feliz", email="maria@test.com",
+        phone="11999", city="SP", business_type="Pet shop",
+        interest="Quero contratar White Label", message="Tenho 3 lojas.",
+    )
+    msg = build_contact_email(contact)
+    assert msg["To"] == DEFAULT_CONTACT_TO  # default sem env CONTACT_NOTIFICATION_TO
+    assert msg["Reply-To"] == "maria@test.com"
+    body = msg.get_content()
+    assert "Maria" in body and "Pet Feliz" in body and "maria@test.com" in body
+    assert "Tenho 3 lojas." in body
+    assert "White Label" in msg["Subject"]

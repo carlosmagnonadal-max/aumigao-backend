@@ -48,7 +48,7 @@ from app.models import (
     WalkCompletionReview,
     LegalAcceptance,
 )
-from app.routes import admin, auth, complaints, coupons, incentives, legal, matching, notifications, operational_walks, payments, pet_routine, pet_tour, pets, protected_chat, recurring_plans, referrals, reviews, shared_walks, tenant_app_config, tenant_branding, tenant_commercial, tenant_dedicated_app_readiness, tenant_features_runtime, tenant_launch_readiness, tenant_units_runtime, tenants, tutor, tutor_gamification, walker, walker_network, walker_quality, walker_trust, walks, weekly_missions
+from app.routes import admin, auth, complaints, contact, coupons, incentives, legal, matching, notifications, operational_walks, payments, pet_routine, pet_tour, pets, protected_chat, recurring_plans, referrals, reviews, shared_walks, tenant_app_config, tenant_branding, tenant_commercial, tenant_dedicated_app_readiness, tenant_features_runtime, tenant_launch_readiness, tenant_units_runtime, tenants, tutor, tutor_gamification, walker, walker_network, walker_quality, walker_trust, walks, weekly_missions
 from app.services.admin_seed_service import ensure_configured_admin_users
 from app.services.tenant_seed_service import ensure_default_tenant_links, ensure_network_profiles
 from app.services.operational_matching_service import ensure_operational_schema
@@ -359,6 +359,7 @@ app.include_router(coupons.router)
 app.include_router(coupons.api_router)
 app.include_router(coupons.admin_router)
 app.include_router(coupons.api_admin_router)
+app.include_router(contact.router)
 # Incentivos: registrado ANTES de walker_quality para vencer a colisao de rota
 # (/walker/me/incentives e /admin/walkers/{id}/incentives) com a versao gated + regras do tenant.
 app.include_router(incentives.walker_router)

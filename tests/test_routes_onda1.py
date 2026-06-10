@@ -120,3 +120,42 @@ def test_shared_walks_create_then_get_and_checkout():
     assert client.get(f"/shared-walks/{walk_id}").status_code == 200
     paid = client.post(f"/shared-walks/{walk_id}/checkout").json()
     assert all(p["status"] == "paid" for p in paid["participants"])
+
+
+# ----- fluxo POPULADO ponta a ponta (flag ligada) -----
+def test_recurring_plans_subscribe_happy_path():
+    from app.models.recurring_plan import RecurringPlan
+    client, db = build(features={"recurring_plans"})
+    db.add(RecurringPlan(id="plan1", tenant_id=TENANT_ID, name="Mensal 8", price=99.0, walks_per_cycle=8, active=True))
+    db.commit()
+    view = client.get("/recurring-plans").json()
+    assert view["available"] is True and len(view["plans"]) == 1
+    sub = client.post("/recurring-plans/plan1/subscribe").json()
+    assert sub["status"] == "active" and sub["credits_remaining"] == 8 and sub["plan_name"] == "Mensal 8"
+    # GET agora reflete a assinatura ativa
+    assert client.get("/recurring-plans").json()["subscription"]["plan_id"] == "plan1"
+
+
+def test_shared_walk_full_lifecycle_two_tutors():
+    client, db = build(features={"shared_walks"}, pets=["rex"])
+    # convidado: 2o tutor + pet apto a compartilhar
+    db.add(User(id="guest", email="guest@test.com", password_hash="x", role="cliente", tenant_id=TENANT_ID))
+    db.add(Pet(id="mel", tutor_id="guest", name="mel", can_walk_with_other_pets=True))
+    db.commit()
+
+    created = client.post("/shared-walks", json={
+        "scheduled_date": "2026-07-01T10:00:00", "duration_minutes": 45, "host_pet_ids": ["rex"],
+    }).json()
+    wid = created["id"]
+
+    # convidado entra (troca o usuário autenticado)
+    client.app.dependency_overrides[get_current_user] = lambda: db.get(User, "guest")
+    joined = client.post(f"/shared-walks/{wid}/join", json={"pet_id": "mel"}).json()
+    assert joined["tutor_count"] == 2
+    client.post(f"/shared-walks/{wid}/checkout")  # convidado paga
+
+    # host volta, paga e confirma
+    client.app.dependency_overrides[get_current_user] = lambda: db.get(User, TUTOR_ID)
+    client.post(f"/shared-walks/{wid}/checkout")
+    confirmed = client.post(f"/shared-walks/{wid}/confirm").json()
+    assert confirmed["status"] == "confirmed"

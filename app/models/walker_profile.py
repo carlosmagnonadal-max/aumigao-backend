@@ -27,6 +27,10 @@ class WalkerProfile(Base):
     active_as_walker: Mapped[bool] = mapped_column(Boolean, default=False)
     # Passeador possui carro — requisito para receber Pet Tour (ver pet_tour_service).
     has_vehicle: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Selo "Verificado" (Onda 2) — concedido pelo tenant; gated por `verified_walkers`.
+    verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verified_by_admin_id: Mapped[str | None] = mapped_column(String, nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

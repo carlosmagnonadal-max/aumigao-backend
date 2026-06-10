@@ -28,6 +28,7 @@ class WalkerProfileResponse(WalkerProfileBase, ORMModel):
     id: str
     user_id: str
     status: str
+    verified: bool = False
     internal_notes: str = ""
     active_as_walker: bool = False
     approved_at: datetime | None = None

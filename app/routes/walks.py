@@ -1,6 +1,4 @@
-﻿from email.iterators import walk
-from os import walk
-import logging
+﻿import logging
 import traceback
 from uuid import uuid4
 from datetime import datetime, timedelta

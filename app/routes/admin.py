@@ -1,6 +1,4 @@
-﻿from email.iterators import walk
-
-import json
+﻿import json
 from app.models.tutor_profile import TutorProfile
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi import HTTPException

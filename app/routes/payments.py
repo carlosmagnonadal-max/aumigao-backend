@@ -258,9 +258,9 @@ async def create_payment(payload: PaymentCreate, user: User = Depends(get_curren
         "status": "PAYMENT_CREATED",
         "invoiceUrl": None,
         "bankSlipUrl": None,
-    }
-    pix_data = {}
-    provider_status = provider_data.get("status")
+      }
+      pix_data = {}
+      provider_status = provider_data.get("status")
     split = build_payment_split(db, user.tenant_id, payload.amount)
     payment = Payment(
         id=str(uuid4()),

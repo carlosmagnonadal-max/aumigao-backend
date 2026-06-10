@@ -294,15 +294,8 @@ def test_webhook_unknown_payment_does_not_break(monkeypatch):
     assert r.json()["received"] == "PAYMENT_RECEIVED"
 
 
-# ------------------------------------------------------------------- BUG REAL
-@pytest.mark.xfail(
-    reason="BUG: em create_payment, as linhas 'pix_data = {}' e 'provider_status = "
-    "provider_data.get(\"status\")' ficam no nivel da funcao (indentacao 4 espacos), "
-    "NAO dentro do except. Logo, ate quando o Asaas responde com sucesso, pix_data e "
-    "zerado e os dados de PIX (qr code / copia-e-cola) retornados pelo Asaas sao "
-    "descartados na resposta.",
-    strict=True,
-)
+# Regressao do bug de indentacao em create_payment: no sucesso do Asaas os dados
+# de PIX (qr code / copia-e-cola) devem vir preenchidos na resposta (nao zerados).
 def test_create_keeps_pix_data_on_asaas_success(monkeypatch):
     pix = {"encodedImage": "QR==", "payload": "00020126...", "expirationDate": "2026-07-01"}
     monkeypatch.setattr(payments, "create_asaas_payment", fake_asaas_ok(pix=pix))

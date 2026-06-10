@@ -48,7 +48,7 @@ from app.models import (
     WalkCompletionReview,
     LegalAcceptance,
 )
-from app.routes import admin, auth, complaints, legal, matching, notifications, operational_walks, payments, pet_tour, pets, protected_chat, recurring_plans, referrals, reviews, shared_walks, tenant_app_config, tenant_branding, tenant_commercial, tenant_dedicated_app_readiness, tenant_features_runtime, tenant_launch_readiness, tenant_units_runtime, tenants, tutor, walker, walker_network, walker_quality, walks, weekly_missions
+from app.routes import admin, auth, complaints, coupons, legal, matching, notifications, operational_walks, payments, pet_tour, pets, protected_chat, recurring_plans, referrals, reviews, shared_walks, tenant_app_config, tenant_branding, tenant_commercial, tenant_dedicated_app_readiness, tenant_features_runtime, tenant_launch_readiness, tenant_units_runtime, tenants, tutor, walker, walker_network, walker_quality, walks, weekly_missions
 from app.services.admin_seed_service import ensure_configured_admin_users
 from app.services.tenant_seed_service import ensure_default_tenant_links, ensure_network_profiles
 from app.services.operational_matching_service import ensure_operational_schema
@@ -355,6 +355,10 @@ app.include_router(shared_walks.router)
 app.include_router(shared_walks.api_router)
 app.include_router(shared_walks.admin_router)
 app.include_router(shared_walks.api_admin_router)
+app.include_router(coupons.router)
+app.include_router(coupons.api_router)
+app.include_router(coupons.admin_router)
+app.include_router(coupons.api_admin_router)
 app.include_router(operational_walks.admin_router)
 app.include_router(operational_walks.api_admin_router)
 app.include_router(referrals.router)

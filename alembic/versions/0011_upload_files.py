@@ -18,7 +18,15 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _has_table(name: str) -> bool:
+    return sa.inspect(op.get_bind()).has_table(name)
+
+
 def upgrade() -> None:
+    # Idempotente: este projeto usa schema-ensure (create_all), que pode já ter
+    # criado a tabela. Se existir, não recria (evita DuplicateTable no upgrade).
+    if _has_table("upload_files"):
+        return
     op.create_table(
         "upload_files",
         sa.Column("id", sa.String(), nullable=False),

@@ -19,11 +19,29 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _has_table(name: str) -> bool:
+    return sa.inspect(op.get_bind()).has_table(name)
+
+
+def _create_table(name: str, *args, **kw) -> None:
+    # Idempotente: projeto usa schema-ensure (create_all) -> so cria se faltar.
+    if not _has_table(name):
+        op.create_table(name, *args, **kw)
+
+
+def _create_index(index_name: str, table_name: str, columns, **kw) -> None:
+    if not _has_table(table_name):
+        return
+    existing = {ix["name"] for ix in sa.inspect(op.get_bind()).get_indexes(table_name)}
+    if index_name not in existing:
+        op.create_index(index_name, table_name, columns, **kw)
+
+
 def upgrade() -> None:
     op.execute("ALTER TABLE walks ADD COLUMN IF NOT EXISTS modality VARCHAR DEFAULT 'standard'")
     op.execute("ALTER TABLE walks ADD COLUMN IF NOT EXISTS destination TEXT DEFAULT ''")
 
-    op.create_table(
+    _create_table(
         "tenant_pet_tour_configs",
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("tenant_id", sa.String(), nullable=False),
@@ -36,7 +54,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("tenant_id"),
     )
-    op.create_index("ix_tenant_pet_tour_configs_tenant_id", "tenant_pet_tour_configs", ["tenant_id"])
+    _create_index("ix_tenant_pet_tour_configs_tenant_id", "tenant_pet_tour_configs", ["tenant_id"])
 
 
 def downgrade() -> None:

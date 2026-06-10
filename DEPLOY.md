@@ -26,6 +26,10 @@ funcionando. Se subir código novo contra um DB sem as colunas/tabelas → **500
    .venv/Scripts/python -m alembic upgrade head
    .venv/Scripts/python -m alembic current       # deve mostrar a head esperada
    ```
+   As migrations da Onda 1 são **idempotentes/tolerantes a drift**: cada `create_table`
+   só cria se a tabela faltar e as colunas usam `ADD COLUMN IF NOT EXISTS`. Logo, mesmo
+   que o `schema ensure` (create_all) já tenha criado tabelas, o `upgrade head` roda
+   limpo (pula o que existe, adiciona o que falta). Seguro até re-rodar.
 3. **Deployar o código**: merge da branch de feature na `main` (fast-forward) e
    push. O Railway detecta o push e sobe.
    ```bash

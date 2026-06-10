@@ -18,8 +18,26 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _has_table(name: str) -> bool:
+    return sa.inspect(op.get_bind()).has_table(name)
+
+
+def _create_table(name: str, *args, **kw) -> None:
+    # Idempotente: projeto usa schema-ensure (create_all) -> so cria se faltar.
+    if not _has_table(name):
+        op.create_table(name, *args, **kw)
+
+
+def _create_index(index_name: str, table_name: str, columns, **kw) -> None:
+    if not _has_table(table_name):
+        return
+    existing = {ix["name"] for ix in sa.inspect(op.get_bind()).get_indexes(table_name)}
+    if index_name not in existing:
+        op.create_index(index_name, table_name, columns, **kw)
+
+
 def upgrade() -> None:
-    op.create_table(
+    _create_table(
         "tenant_shared_walk_configs",
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("tenant_id", sa.String(), nullable=False),
@@ -36,9 +54,9 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("tenant_id"),
     )
-    op.create_index("ix_tenant_shared_walk_configs_tenant_id", "tenant_shared_walk_configs", ["tenant_id"])
+    _create_index("ix_tenant_shared_walk_configs_tenant_id", "tenant_shared_walk_configs", ["tenant_id"])
 
-    op.create_table(
+    _create_table(
         "shared_walks",
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("tenant_id", sa.String(), nullable=False),
@@ -57,11 +75,11 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["tenant_id"], ["tenants.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_shared_walks_tenant_id", "shared_walks", ["tenant_id"])
-    op.create_index("ix_shared_walks_created_by_tutor_id", "shared_walks", ["created_by_tutor_id"])
-    op.create_index("ix_shared_walks_status", "shared_walks", ["status"])
+    _create_index("ix_shared_walks_tenant_id", "shared_walks", ["tenant_id"])
+    _create_index("ix_shared_walks_created_by_tutor_id", "shared_walks", ["created_by_tutor_id"])
+    _create_index("ix_shared_walks_status", "shared_walks", ["status"])
 
-    op.create_table(
+    _create_table(
         "shared_walk_participants",
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("shared_walk_id", sa.String(), nullable=False),
@@ -76,9 +94,9 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["shared_walk_id"], ["shared_walks.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_shared_walk_participants_shared_walk_id", "shared_walk_participants", ["shared_walk_id"])
-    op.create_index("ix_shared_walk_participants_tutor_id", "shared_walk_participants", ["tutor_id"])
-    op.create_index("ix_shared_walk_participants_status", "shared_walk_participants", ["status"])
+    _create_index("ix_shared_walk_participants_shared_walk_id", "shared_walk_participants", ["shared_walk_id"])
+    _create_index("ix_shared_walk_participants_tutor_id", "shared_walk_participants", ["tutor_id"])
+    _create_index("ix_shared_walk_participants_status", "shared_walk_participants", ["status"])
 
 
 def downgrade() -> None:

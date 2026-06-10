@@ -293,6 +293,46 @@ app.add_middleware(TenantResolverMiddleware, session_factory=SessionLocal)
 
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 
+# Guard de uploads: avisa se o volume persistente não estiver configurado ou
+# não for gravável. NÃO aborta o startup em hipótese alguma — apenas loga.
+def _check_upload_volume() -> None:
+    uploads_dir_env = os.getenv("UPLOADS_DIR")
+    try:
+        # Testa se o diretório é gravável com um arquivo temporário.
+        _probe = UPLOAD_ROOT / ".upload_write_probe"
+        _probe.write_text("ok")
+        _probe.unlink()
+        writable = True
+    except Exception:
+        writable = False
+
+    if not uploads_dir_env or not writable:
+        reasons = []
+        if not uploads_dir_env:
+            reasons.append("env UPLOADS_DIR não está definida")
+        if not writable:
+            reasons.append(f"diretório '{UPLOAD_ROOT}' não é gravável")
+        logger.warning(
+            "UPLOADS: %s. Arquivos de upload podem ser PERDIDOS em redeploy "
+            "(disco efêmero). Para persistência, monte um volume e defina "
+            "UPLOADS_DIR=/caminho/do/volume.",
+            " e ".join(reasons),
+        )
+    else:
+        logger.info("UPLOADS: volume configurado e gravável em '%s'.", UPLOAD_ROOT)
+
+
+try:
+    _check_upload_volume()
+except Exception:
+    # A própria checagem não pode crashar o boot.
+    logger.warning(
+        "UPLOADS: falha ao verificar o diretório de uploads ('%s'). "
+        "Arquivos podem ser perdidos em redeploy se UPLOADS_DIR não estiver "
+        "apontando para um volume persistente.",
+        UPLOAD_ROOT,
+    )
+
 
 @app.api_route("/uploads/{upload_path:path}", methods=["GET", "HEAD"])
 def serve_upload(upload_path: str, request: Request):

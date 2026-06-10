@@ -4,6 +4,7 @@ FastAPI minimo + SQLite StaticPool + walks de exemplo. NAO importa app.main.
 Valida que o backend espelha a logica do front (XP, nivel, streak, badges).
 """
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -64,6 +65,30 @@ def _get(client) -> dict:
     return r.json()
 
 
+def _get_at(client, now: datetime) -> dict:
+    """Chama a rota com o relógio fixo em `now`.
+
+    Determinístico: independe da data real do sistema. Faz patch do
+    `datetime.now` no módulo do serviço para que `get_tutor_gamification`
+    receba o timestamp correto sem alterar o comportamento de produção
+    (onde a rota não passa `now` e o serviço usa `datetime.now` real).
+    """
+    import datetime as _stdlib_dt
+
+    class _FakeDatetime(_stdlib_dt.datetime):
+        """Subclasse que substitui `now()` pelo instante fixo `now`."""
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            if tz is not None:
+                return now.replace(tzinfo=_stdlib_dt.timezone.utc)
+            return now
+
+    with patch("app.services.tutor_gamification_service.datetime", _FakeDatetime):
+        r = client.get("/tutors/me/gamification")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 # ----- estado vazio: tutor sem passeios -----
 def test_empty_tutor_starts_at_level_one():
     client, _ = build()
@@ -91,7 +116,9 @@ def test_xp_formula_completed_and_scheduled():
         {"id": "s1", "scheduled_date": _iso(NOW + timedelta(days=1)), "status": "Agendado", "operational_status": "ride_scheduled"},
     ]
     client, _ = build(walks=walks)
-    body = _get(client)
+    # Injeta NOW fixo: s1 (NOW+1d) deve ser futuro em relação a NOW,
+    # independente da data real do sistema (evita flakiness).
+    body = _get_at(client, NOW)
     # 2 concluidos * 45 + 1 agendado * 10 = 100
     assert body["total_walks_completed"] == 2
     assert body["tutor_xp"] == 100
@@ -121,7 +148,9 @@ def test_care_streak_consecutive_days():
         {"id": "d4", "scheduled_date": _iso(NOW - timedelta(days=4)), "status": "Finalizado"},
     ]
     client, _ = build(walks=walks)
-    body = _get(client)
+    # Injeta NOW fixo: o streak é calculado a partir de "hoje" (NOW),
+    # portanto deve ser determinístico independente da data real.
+    body = _get_at(client, NOW)
     assert body["care_streak_days"] == 3
 
 
@@ -130,7 +159,11 @@ def test_care_streak_breaks_if_no_recent_walk():
         {"id": "old", "scheduled_date": _iso(NOW - timedelta(days=5)), "status": "Finalizado"},
     ]
     client, _ = build(walks=walks)
-    body = _get(client)
+    # Injeta NOW fixo: NOW-5d é mais antigo que "ontem" relativo a NOW,
+    # portanto streak=0. Sem o fix, quando real_now > NOW+5d, o walk seria
+    # ainda mais antigo e o resultado casual seria 0 de qualquer forma —
+    # mas com NOW fixo garantimos a intenção do teste independente do tempo.
+    body = _get_at(client, NOW)
     assert body["care_streak_days"] == 0
 
 
@@ -140,7 +173,8 @@ def test_first_care_badge_unlocks_with_scheduled_walk():
         {"id": "s1", "scheduled_date": _iso(NOW + timedelta(days=1)), "status": "Agendado", "operational_status": "ride_scheduled"},
     ]
     client, _ = build(walks=walks)
-    body = _get(client)
+    # Injeta NOW fixo: s1 (NOW+1d) deve ser futuro → scheduled=1 → badge desbloqueado.
+    body = _get_at(client, NOW)
     badge = next(b for b in body["badges"] if b["type"] == "first_care")
     assert badge["status"] == "unlocked"
     assert badge["unlockedAt"] is not None

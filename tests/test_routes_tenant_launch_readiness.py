@@ -22,7 +22,9 @@ from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401 - registra todas as tabelas no Base.metadata
 from app.core.database import Base, get_db
+from app.dependencies.auth import get_current_user
 from app.models.tenant import Tenant, TenantBranding, TenantUnit
+from app.models.user import User
 from app.routes import tenant_launch_readiness
 from app.services.tenant_seed_service import DEFAULT_TENANT_SLUG
 
@@ -46,7 +48,7 @@ EXPECTED_CHECK_KEYS = {
 }
 
 
-def build(*, plan: str = "starter", branding: dict | None = None, units: list[dict] | None = None):
+def build(*, plan: str = "starter", branding: dict | None = None, units: list[dict] | None = None, authed: bool = True):
     """Monta app minimo com os routers de launch-readiness e um SQLite isolado.
 
     slug = DEFAULT para get_default_tenant resolver este tenant sem criar outro.
@@ -69,6 +71,9 @@ def build(*, plan: str = "starter", branding: dict | None = None, units: list[di
     test_app.include_router(tenant_launch_readiness.router)
     test_app.include_router(tenant_launch_readiness.api_router)
     test_app.dependency_overrides[get_db] = lambda: db
+    if authed:
+        admin = User(id="admin-test", email="admin@aumigao.test", full_name="Admin", role="super_admin", is_active=True, password_hash="x")
+        test_app.dependency_overrides[get_current_user] = lambda: admin
     return TestClient(test_app), db
 
 
@@ -211,10 +216,9 @@ def test_api_router_mirror_by_tenant_id():
     assert r.json()["ready"] is True
 
 
-# ------------------------------------------------------ no-auth (publico) ----
-def test_endpoint_is_public_no_auth_required():
-    # Rotas nao declaram dependencia de auth: acessivel sem Authorization header.
-    # Documenta o comportamento atual (ver bug_or_gap).
-    client, _ = build()
-    r = client.get("/tenants/current/launch-readiness")
-    assert r.status_code == 200
+# ------------------------------------------------------ auth obrigatoria -----
+def test_endpoint_requires_auth():
+    # Agora exige acesso admin: sem Authorization header -> 401.
+    client, _ = build(authed=False)
+    assert client.get("/tenants/current/launch-readiness").status_code == 401
+    assert client.get(f"/tenants/{TENANT_ID}/launch-readiness").status_code == 401

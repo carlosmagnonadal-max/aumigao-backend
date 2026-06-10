@@ -105,7 +105,9 @@ def update_tenant_walker_access(
     payload: TenantWalkerAccessUpdate,
     db: Session = Depends(get_db),
 ):
-    _tenant_or_404(tenant_id, db)
+    tenant = _tenant_or_404(tenant_id, db)
+    # Consistente com o POST: gerir vinculos da Rede exige que o plano libere network_access.
+    enforce_network_access_allowed(tenant, db)
     _walker_or_404(walker_user_id, db)
     access = (
         db.query(TenantWalkerAccess)

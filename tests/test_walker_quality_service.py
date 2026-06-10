@@ -393,7 +393,7 @@ def test_walker_quality_item_no_history_defaults():
     assert item["walker_id"] == "w1"
     assert item["reviews_count"] == 0
     assert item["total_walks"] == 0
-    assert item["level"] == "Iniciante"
+    assert item["level"] == "Bronze"
     # sem reviews/walks, risco normal e cancelamento 0
     assert item["risk_level"] == "normal"
     assert item["cancellation_rate"] == 0.0

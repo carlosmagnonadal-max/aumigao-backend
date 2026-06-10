@@ -73,33 +73,33 @@ def _profile(db, walker_id, status):
     return profile
 
 
-# ----------------------------- walker_level -----------------------------
+# -------------------- walker_level (Bronze/Prata/Ouro/Diamante) ----------
 
-def test_walker_level_zero_reviews_is_iniciante():
-    # Sem avaliacoes => Iniciante independentemente de passeios/rating.
-    assert svc.walker_level(total_walks=100, rating_average=5.0, reviews_count=0) == "Iniciante"
-
-
-def test_walker_level_elite():
-    assert svc.walker_level(80, 4.85, 5) == "Elite Aumigao"
+def test_walker_level_zero_reviews_is_bronze():
+    # Sem avaliacoes => Bronze independentemente de passeios/rating.
+    assert svc.walker_level(total_walks=100, rating_average=5.0, reviews_count=0) == "Bronze"
 
 
-def test_walker_level_elite_boundary_below_rating_drops_to_destaque():
-    # 80 passeios mas rating 4.84 (< 4.85) nao alcanca Elite; cai para Destaque.
-    assert svc.walker_level(80, 4.84, 5) == "Destaque"
+def test_walker_level_diamante():
+    assert svc.walker_level(150, 4.9, 5) == "Diamante"
 
 
-def test_walker_level_destaque():
-    assert svc.walker_level(30, 4.7, 5) == "Destaque"
+def test_walker_level_diamante_boundary_below_rating_drops_to_ouro():
+    # 150 passeios mas rating 4.89 (< 4.9) nao alcanca Diamante; cai para Ouro.
+    assert svc.walker_level(150, 4.89, 5) == "Ouro"
 
 
-def test_walker_level_confiavel():
-    assert svc.walker_level(10, 4.5, 5) == "Confiavel"
+def test_walker_level_ouro():
+    assert svc.walker_level(50, 4.7, 5) == "Ouro"
 
 
-def test_walker_level_below_all_cuts_is_iniciante():
-    assert svc.walker_level(9, 4.9, 5) == "Iniciante"
-    assert svc.walker_level(30, 4.69, 5) == "Confiavel"
+def test_walker_level_prata():
+    assert svc.walker_level(10, 4.5, 5) == "Prata"
+
+
+def test_walker_level_below_all_cuts_is_bronze():
+    assert svc.walker_level(9, 4.9, 5) == "Bronze"
+    assert svc.walker_level(50, 4.69, 5) == "Prata"
 
 
 # ------------------------- completed_walks_count -------------------------

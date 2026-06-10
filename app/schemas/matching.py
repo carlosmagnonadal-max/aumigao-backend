@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.schemas.walker_trust import WalkerTrustResponse
+
 
 class MatchingWalkerRequest(BaseModel):
     pet_id: str | None = None
@@ -36,6 +38,7 @@ class PublicMatchedWalker(BaseModel):
     badges: list[str]
     display_reason: str
     can_select: bool = True
+    trust: WalkerTrustResponse | None = None
 
 
 class MatchingResponse(BaseModel):

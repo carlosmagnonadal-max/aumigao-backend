@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.schemas.common import ORMModel
+from app.schemas.walker_trust import WalkerTrustResponse
 
 
 class WalkerReviewCreate(BaseModel):
@@ -67,6 +68,7 @@ class PublicWalkerProfileResponse(WalkerReputationSummary):
     neighborhood: str | None = None
     walker_kit: dict | None = None
     empty_message: str | None = None
+    trust: WalkerTrustResponse | None = None
 
 
 class WalkerPerformanceResponse(WalkerReputationSummary):

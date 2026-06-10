@@ -11,6 +11,7 @@ from app.services.badge_service import generate_badges, generate_display_reason
 from app.services.behavior_score_service import get_behavior_score
 from app.services.boost_service import boost_score_for_walker
 from app.services.reputation_service import DEFAULT_WALKER_PHOTO, calculate_hybrid_reputation_score, get_walker_identity, reputation_summary
+from app.services.walker_trust_service import compute_walker_trust
 
 NEARBY_NEIGHBORHOODS = {
     "pituba": {"itaigara", "caminho das arvores", "costa azul", "amaralina"},
@@ -162,6 +163,9 @@ def matched_walker_payload(profile: WalkerProfile, request: MatchingWalkerReques
     boost_score = boost_score_for_walker(profile, profile.user_id, db)
     final_score = clamp(calculate_final_matching_score(base_score, combined_behavior_score, boost_score) + risk_visibility_adjustment(hybrid_details["risk_level"]))
     identity = get_walker_identity(profile.user_id, db)
+    # Confianca (selos/certificacoes/nivel) do passeador, exposta ao tutor.
+    # Gating de EXIBICAO e responsabilidade do front (decisao da spec), nao aqui.
+    trust = compute_walker_trust(db, profile.user_id)
 
     return {
         "walker_id": profile.user_id,
@@ -171,6 +175,7 @@ def matched_walker_payload(profile: WalkerProfile, request: MatchingWalkerReques
         "reviews_count": summary["reviews_count"],
         "total_walks": summary["total_walks"],
         "level": summary["level"],
+        "trust": trust,
         "distance_km": distance_km,
         "estimated_arrival_minutes": int((distance_km or 4) * 5) + 4,
         "can_select": True,
@@ -328,6 +333,7 @@ def rank_walkers(request: MatchingWalkerRequest, db: Session, debug: bool = Fals
             "badges": item["badges"],
             "display_reason": item["display_reason"],
             "can_select": item["can_select"],
+            "trust": item["trust"],
         }
         for item in items
     ]

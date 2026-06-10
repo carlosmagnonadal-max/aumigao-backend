@@ -11,7 +11,9 @@ from app.models.tenant import (
 )
 from app.models.tenant_onboarding import TenantOnboarding
 from app.services import tenant_feature_runtime_service as svc
-from app.services.tenant_feature_runtime_service import RUNTIME_FEATURE_KEYS
+from app.services.tenant_feature_runtime_service import PRODUCT_RUNTIME_FEATURE_KEYS, RUNTIME_FEATURE_KEYS
+
+ALL_RUNTIME_KEYS = (*RUNTIME_FEATURE_KEYS, *PRODUCT_RUNTIME_FEATURE_KEYS)
 
 
 def _db():
@@ -58,8 +60,8 @@ def _feature(db, tenant_id: str, feature_key: str, *, enabled: bool, limit_value
 
 def test_get_default_feature_runtime_all_false():
     runtime = svc.get_default_feature_runtime()
-    assert runtime == {key: False for key in RUNTIME_FEATURE_KEYS}
-    assert set(runtime.keys()) == set(RUNTIME_FEATURE_KEYS)
+    assert runtime == {key: False for key in ALL_RUNTIME_KEYS}
+    assert set(runtime.keys()) == set(ALL_RUNTIME_KEYS)
 
 
 def test_get_default_feature_runtime_returns_fresh_dict():
@@ -80,7 +82,7 @@ def test_runtime_starter_plan_all_disabled():
     tenant = _tenant(db, plan="starter")
     runtime = svc.get_tenant_feature_runtime(db, tenant=tenant)
     assert runtime["tenant_id"] == tenant.id
-    assert runtime["features"] == {key: False for key in RUNTIME_FEATURE_KEYS}
+    assert runtime["features"] == {key: False for key in ALL_RUNTIME_KEYS}
 
 
 def test_runtime_enterprise_plan_all_enabled_without_overrides():
@@ -93,6 +95,7 @@ def test_runtime_enterprise_plan_all_enabled_without_overrides():
         "dedicated_app": True,
         "custom_products": True,
         "custom_projects": True,
+        "verified_walkers": False,
     }
 
 
@@ -106,6 +109,7 @@ def test_runtime_business_plan_partial():
         "dedicated_app": True,
         "custom_products": True,
         "custom_projects": False,
+        "verified_walkers": False,
     }
 
 
@@ -113,7 +117,7 @@ def test_runtime_unknown_plan_falls_back_to_starter():
     db = _db()
     tenant = _tenant(db, plan="totally_unknown_plan")
     runtime = svc.get_tenant_feature_runtime(db, tenant=tenant)
-    assert runtime["features"] == {key: False for key in RUNTIME_FEATURE_KEYS}
+    assert runtime["features"] == {key: False for key in ALL_RUNTIME_KEYS}
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +197,7 @@ def test_runtime_resolves_default_tenant_when_not_found():
     assert runtime["tenant_id"] == seeded.id
     # Default seed creates enterprise plan but TenantFeature rows enabled=False,
     # so runtime (base AND tenant) is False for all keys.
-    assert runtime["features"] == {key: False for key in RUNTIME_FEATURE_KEYS}
+    assert runtime["features"] == {key: False for key in ALL_RUNTIME_KEYS}
 
 
 def test_runtime_tenant_id_current_falls_back_to_default():

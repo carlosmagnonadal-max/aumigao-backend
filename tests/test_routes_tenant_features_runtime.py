@@ -26,8 +26,10 @@ import app.models  # noqa: F401 - registra todas as tabelas no Base.metadata
 from app.core.database import Base, get_db
 from app.models.tenant import Tenant, TenantFeature
 from app.routes import tenant_features_runtime
-from app.services.tenant_feature_runtime_service import RUNTIME_FEATURE_KEYS
+from app.services.tenant_feature_runtime_service import PRODUCT_RUNTIME_FEATURE_KEYS, RUNTIME_FEATURE_KEYS
 from app.services.tenant_seed_service import DEFAULT_TENANT_SLUG
+
+ALL_RUNTIME_KEYS = (*RUNTIME_FEATURE_KEYS, *PRODUCT_RUNTIME_FEATURE_KEYS)
 
 DEFAULT_TENANT_ID = "t-default"
 
@@ -77,7 +79,7 @@ def test_response_has_all_runtime_keys():
     body = r.json()
     assert body["tenant_id"] == DEFAULT_TENANT_ID
     # response_model garante exatamente as 4 chaves de runtime, todas booleanas.
-    assert set(body["features"].keys()) == set(RUNTIME_FEATURE_KEYS)
+    assert set(body["features"].keys()) == set(ALL_RUNTIME_KEYS)
     assert all(isinstance(v, bool) for v in body["features"].values())
 
 
@@ -88,7 +90,7 @@ def test_starter_plan_all_features_off_by_default():
              status="active", plan="starter")
     ])
     body = client.get("/tenants/t-starter/features-runtime").json()
-    assert body["features"] == {key: False for key in RUNTIME_FEATURE_KEYS}
+    assert body["features"] == {key: False for key in ALL_RUNTIME_KEYS}
 
 
 def test_business_plan_enables_base_allowed_features():
@@ -109,7 +111,8 @@ def test_enterprise_plan_enables_all_features():
              status="active", plan="enterprise")
     ])
     body = client.get("/tenants/t-ent/features-runtime").json()
-    assert body["features"] == {key: True for key in RUNTIME_FEATURE_KEYS}
+    # comerciais True (enterprise libera tudo); verified_walkers e flag de produto -> False sem TenantFeature.
+    assert body["features"] == {**{key: True for key in RUNTIME_FEATURE_KEYS}, "verified_walkers": False}
 
 
 # ---------------------------------------------------- AND base + tenant -------

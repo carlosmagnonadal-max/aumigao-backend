@@ -239,6 +239,8 @@ def public_walker_profile(walker_id: str, db: Session, walker_kit: dict | None =
         raise HTTPException(status_code=404, detail="Passeador nao encontrado")
     summary = reputation_summary(walker_id, db)
     recent_reviews = [public_review_payload(review, db) for review in walker_reviews_query(walker_id, db).limit(5).all()]
+    # Import local para evitar ciclo (walker_trust_service importa reputation_service).
+    from app.services.walker_trust_service import compute_walker_trust
     return {
         **summary,
         "id": walker_id,
@@ -251,6 +253,8 @@ def public_walker_profile(walker_id: str, db: Session, walker_kit: dict | None =
         "city": identity["city"],
         "neighborhood": identity["neighborhood"],
         "walker_kit": walker_kit,
+        # Confianca do passeador (gating de EXIBICAO no front, conforme a spec).
+        "trust": compute_walker_trust(db, walker_id),
         "empty_message": "Este passeador ainda esta comecando no Aumigao." if not recent_reviews else None,
     }
 

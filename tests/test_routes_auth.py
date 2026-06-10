@@ -18,6 +18,7 @@ import app.models  # noqa: F401 - registra todas as tabelas no Base.metadata
 from app.core.database import Base, get_db
 from app.core.security import get_password_hash
 from app.dependencies.auth import get_current_user
+from app.middleware.tenant_resolver import TenantResolverMiddleware
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.routes import auth
@@ -50,6 +51,34 @@ def build(*, users: list[dict] | None = None):
     test_app.include_router(auth.router)
     test_app.dependency_overrides[get_db] = lambda: db
     # get_current_user real continua valendo, exceto quando o teste sobrescreve.
+    return TestClient(test_app), db
+
+
+PREMIUM_TENANT_ID = "t-premium"
+PREMIUM_TENANT_SLUG = "premium"
+
+
+def build_multitenant():
+    """App de auth COM o TenantResolverMiddleware montado + 2 tenants (default + premium).
+
+    Exercita a resolucao de tenant por X-Tenant-Slug no /auth/register (split Fase 3).
+    O `build()` padrao NAO monta o middleware, por isso la o register sempre cai no default.
+    """
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    db.add(Tenant(id=TENANT_ID, name="Aumigao", slug=DEFAULT_TENANT_SLUG, status="active", plan="business"))
+    db.add(Tenant(id=PREMIUM_TENANT_ID, name="Premium", slug=PREMIUM_TENANT_SLUG, status="active", plan="business"))
+    db.commit()
+
+    test_app = FastAPI()
+    test_app.include_router(auth.router)
+    # session_factory = sessionmaker: o middleware abre `with Session() as db` por request.
+    test_app.add_middleware(TenantResolverMiddleware, session_factory=Session)
+    test_app.dependency_overrides[get_db] = lambda: db
     return TestClient(test_app), db
 
 
@@ -92,6 +121,31 @@ def test_register_happy_path_tutor():
     assert body["user"]["is_active"] is True
     # usuario realmente persistido
     assert db.query(User).filter(User.email == "novo@test.com").count() == 1
+
+
+def test_register_uses_tenant_from_header_slug():
+    """Split Fase 3: com X-Tenant-Slug (build dedicado), o tutor entra no tenant do build."""
+    client, db = build_multitenant()
+    r = client.post(
+        "/auth/register",
+        json={"email": "premium@test.com", "password": "senha1234", "full_name": "Tutor Premium", "role": "cliente"},
+        headers={"X-Tenant-Slug": PREMIUM_TENANT_SLUG},
+    )
+    assert r.status_code == 200, r.text
+    user = db.query(User).filter(User.email == "premium@test.com").one()
+    assert user.tenant_id == PREMIUM_TENANT_ID
+
+
+def test_register_without_header_falls_back_to_default_tenant():
+    """Sem header (combined/walker), preserva o comportamento atual: tenant default."""
+    client, db = build_multitenant()
+    r = client.post(
+        "/auth/register",
+        json={"email": "semheader@test.com", "password": "senha1234", "full_name": "Tutor Default", "role": "cliente"},
+    )
+    assert r.status_code == 200, r.text
+    user = db.query(User).filter(User.email == "semheader@test.com").one()
+    assert user.tenant_id == TENANT_ID  # default (slug=aumigao)
 
 
 def test_register_rejects_weak_password_short():

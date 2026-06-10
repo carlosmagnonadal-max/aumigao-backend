@@ -6,7 +6,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 
-UPLOAD_ROOT = Path(__file__).resolve().parents[2] / "uploads"
+# Raiz dos uploads. Configurável por env UPLOADS_DIR para apontar a um volume
+# persistente (ex.: Railway), evitando perda de arquivos no filesystem efêmero.
+# Default = ./uploads na raiz do backend (comportamento anterior; dev/local).
+UPLOAD_ROOT = Path(os.getenv("UPLOADS_DIR") or (Path(__file__).resolve().parents[2] / "uploads"))
 SIGNED_UPLOAD_TTL_SECONDS = int(os.getenv("SIGNED_UPLOAD_TTL_SECONDS", "600"))
 SENSITIVE_WALKER_DOCUMENT_PREFIXES = (
     "identity_front-",

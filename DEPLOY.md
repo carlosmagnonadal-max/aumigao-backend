@@ -53,3 +53,24 @@ funcionando. Se subir código novo contra um DB sem as colunas/tabelas → **500
 Toda feature nova (planos recorrentes, Pet Tour, passeios compartilhados) é
 **gated por feature flag por tenant** (default **off**). Subir o código **não muda
 comportamento** de nenhum tenant até alguém ligar a flag no admin-web.
+
+## Armazenamento de uploads (volume persistente) — IMPORTANTE
+O backend grava uploads (fotos de pet, documentos KYC do passeador, fotos de
+finalização) em **disco** sob a raiz `UPLOAD_ROOT`. O filesystem do Railway é
+**efêmero**: sem um volume, **todo arquivo é perdido a cada deploy/restart** (o
+banco mantém o `storage_path`, mas o arquivo some → imagem quebrada).
+
+**Correção (volume persistente):**
+1. No Railway, no serviço do backend, crie um **Volume** e monte num caminho, ex. `/data`.
+2. Defina a env **`UPLOADS_DIR=/data/uploads`**.
+3. Redeploy. O backend cria o diretório e passa a gravar lá
+   (`pet-photos/`, `walker-documents/`, `walk-completions/`).
+
+Sem `UPLOADS_DIR`, o default é `./uploads` na raiz do backend (efêmero — só dev/local).
+O caminho é centralizado em `app/services/signed_uploads.py` (`UPLOAD_ROOT`); pets.py,
+walker.py e o `serve_upload` derivam dele. Arquivos gravados ANTES do volume (no FS
+efêmero) não são migrados — provavelmente já se perderam.
+
+> Evolução futura (opcional): migrar para object storage com CDN (Cloudinary/S3/R2)
+> se precisar de múltiplas instâncias do backend, CDN ou transformação de imagem.
+> O front já tem scaffolding de Cloudinary (`lib/walkerDocumentStorage.ts`, hoje só demo).

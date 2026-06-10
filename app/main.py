@@ -58,7 +58,7 @@ from app.services.operational_scheduler_service import (
     run_operational_scheduler_cycle,
     scheduler_interval_seconds,
 )
-from app.services.signed_uploads import has_valid_upload_signature, is_sensitive_upload_path, upload_file_path
+from app.services.signed_uploads import UPLOAD_ROOT, has_valid_upload_signature, is_sensitive_upload_path, upload_file_path
 
 logger = logging.getLogger(__name__)
 
@@ -291,7 +291,7 @@ app.add_middleware(
 )
 app.add_middleware(TenantResolverMiddleware, session_factory=SessionLocal)
 
-Path("uploads").mkdir(parents=True, exist_ok=True)
+UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 @app.api_route("/uploads/{upload_path:path}", methods=["GET", "HEAD"])

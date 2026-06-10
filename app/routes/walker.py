@@ -14,6 +14,7 @@ from app.core.security import get_password_hash, verify_password
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_permission
 from app.services.upload_validation import enforce_upload_rate_limit, read_image_upload_safely
+from app.services.signed_uploads import UPLOAD_ROOT as UPLOADS_BASE
 from app.services.upload_registry import record_upload
 from app.models.payment import Payment
 from app.models.pet import Pet
@@ -81,8 +82,8 @@ KIT_ITEM_DEFINITIONS = [
 ]
 
 LOGGER = logging.getLogger("aumigao.walker_applications")
-UPLOAD_ROOT = Path(__file__).resolve().parents[2] / "uploads" / "walker-documents"
-WALK_COMPLETION_UPLOAD_ROOT = Path(__file__).resolve().parents[2] / "uploads" / "walk-completions"
+UPLOAD_ROOT = UPLOADS_BASE / "walker-documents"
+WALK_COMPLETION_UPLOAD_ROOT = UPLOADS_BASE / "walk-completions"
 ALLOWED_UPLOAD_TYPES = {
     "profile_photo",
     "identity_front",
@@ -147,7 +148,7 @@ class PartnerApplicationAdminFieldsUpdate(BaseModel):
 
 
 def _public_upload_url(request: Request, path: Path) -> str:
-    relative = path.relative_to(Path(__file__).resolve().parents[2] / "uploads").as_posix()
+    relative = path.relative_to(UPLOADS_BASE).as_posix()
     configured_base_url = os.getenv("PUBLIC_BACKEND_URL", "").strip().rstrip("/")
     base_url = configured_base_url or str(request.base_url).rstrip("/")
     if "railway.app" in base_url and base_url.startswith("http://"):

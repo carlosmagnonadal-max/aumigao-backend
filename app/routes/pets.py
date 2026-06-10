@@ -16,10 +16,11 @@ from app.models.walk import Walk
 from app.models.user import User
 from app.schemas.pet import PetCreate, PetResponse, PetUpdate
 from app.services.tenant_context import resolve_current_tenant_id
+from app.services.signed_uploads import UPLOAD_ROOT as UPLOADS_BASE
 
 router = APIRouter(prefix="/pets", tags=["pets"])
 
-UPLOAD_ROOT = Path(__file__).resolve().parents[2] / "uploads" / "pet-photos"
+UPLOAD_ROOT = UPLOADS_BASE / "pet-photos"
 ALLOWED_UPLOAD_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
 
 
@@ -37,7 +38,7 @@ def _safe_upload_extension(filename: str | None, content_type: str | None) -> st
 
 
 def _public_upload_url(request: Request, path: Path) -> str:
-    relative = path.relative_to(Path(__file__).resolve().parents[2] / "uploads").as_posix()
+    relative = path.relative_to(UPLOADS_BASE).as_posix()
     public_base_url = (os.getenv("PUBLIC_BACKEND_URL") or str(request.base_url)).strip().rstrip("/")
     if "railway.app" in public_base_url and public_base_url.startswith("http://"):
         public_base_url = public_base_url.replace("http://", "https://", 1)

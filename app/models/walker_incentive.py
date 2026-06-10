@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -15,6 +15,10 @@ class WalkerIncentive(Base):
     title: Mapped[str] = mapped_column(String)
     description: Mapped[str] = mapped_column(Text, default="")
     source: Mapped[str] = mapped_column(String, default="system")
+    # Tipo de recompensa (recognition | visibility | monetary). Incentivos —
+    # spec 2026-06-10. Monetario REGISTRA amount; payout/split e follow-up.
+    reward_type: Mapped[str] = mapped_column(String, default="recognition")
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
     status: Mapped[str] = mapped_column(String, default="pending", index=True)
     visibility_effect: Mapped[str] = mapped_column(String, default="none")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -15,6 +15,7 @@ from app.models.walker_weekly_mission import WalkerWeeklyMission
 from app.models.walker_boost import WalkerBoost
 from app.models.walker_reputation_snapshot import WalkerReputationSnapshot
 from app.models.walker_incentive import WalkerIncentive
+from app.models.incentive_rule import IncentiveRule
 from app.models.walker_monitoring_alert import WalkerMonitoringAlert
 from app.models.walker_recovery_plan import WalkerRecoveryPlan
 from app.models.tip_integrity_flag import TipIntegrityFlag

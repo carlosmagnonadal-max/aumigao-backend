@@ -7,9 +7,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
+from app.models.incentive_rule import IncentiveRule
+from app.models.tenant import Tenant, TenantFeature
+from app.models.user import User
 from app.models.walker_incentive import WalkerIncentive
 from app.models.walker_profile import WalkerProfile
 from app.services import incentive_engine_service as svc
+
+TENANT_ID = "t1"
 
 
 def _db():
@@ -19,6 +24,10 @@ def _db():
         tables=[
             WalkerIncentive.__table__,
             WalkerProfile.__table__,
+            IncentiveRule.__table__,
+            Tenant.__table__,
+            TenantFeature.__table__,
+            User.__table__,
         ],
     )
     return sessionmaker(bind=engine)()
@@ -53,6 +62,35 @@ def _profile(db, *, user_id="w1", status="approved"):
     return p
 
 
+def _tenant(db, *, tenant_id=TENANT_ID, slug="default"):
+    t = Tenant(id=tenant_id, name="Tenant", slug=slug, status="active", plan="starter")
+    db.add(t)
+    db.commit()
+    return t
+
+
+def _walker_user(db, *, user_id="w1", tenant_id=TENANT_ID):
+    u = User(id=user_id, email=f"{user_id}@x.com", password_hash="x", tenant_id=tenant_id, role="walker")
+    db.add(u)
+    db.commit()
+    return u
+
+
+def _enable_incentives(db, *, tenant_id=TENANT_ID, enabled=True):
+    feat = TenantFeature(id=uuid4().hex, tenant_id=tenant_id, feature_key="incentives", enabled=enabled)
+    db.add(feat)
+    db.commit()
+    return feat
+
+
+def _setup_tenant_walker(db, *, walker_id="w1", flag_on=True, profile_status="approved"):
+    _tenant(db)
+    _walker_user(db, user_id=walker_id)
+    _profile(db, user_id=walker_id, status=profile_status)
+    if flag_on:
+        _enable_incentives(db)
+
+
 # ---------------------------------------------------------------------------
 # incentive_payload
 # ---------------------------------------------------------------------------
@@ -68,6 +106,9 @@ def test_incentive_payload_contains_all_fields():
     assert payload["source"] == "reputation"
     assert payload["status"] == "active"
     assert payload["visibility_effect"] == "low"
+    # novos campos (spec 2026-06-10)
+    assert payload["reward_type"] == "recognition"
+    assert payload["amount"] == 0.0
     # nullable fields present even when None
     assert "revoked_at" in payload
     assert "admin_notes" in payload
@@ -142,7 +183,6 @@ def test_get_active_incentives_returns_only_active_and_expires_first():
     assert active_one.id in ids
     assert expired_one.id not in ids  # got expired by side effect
     assert revoked.id not in ids
-    # side effect persisted
     db.refresh(expired_one)
     assert expired_one.status == "expired"
 
@@ -166,7 +206,6 @@ def test_grant_incentive_creates_active_with_default_expiry():
     assert inc.status == "active"
     assert inc.id is not None
     assert inc.granted_at is not None
-    # default expiry ~7 days out
     assert inc.expires_at is not None
     delta = inc.expires_at - before
     assert timedelta(days=6, hours=23) < delta < timedelta(days=7, hours=1)
@@ -182,6 +221,16 @@ def test_grant_incentive_respects_explicit_expiry_and_notes():
     assert inc.expires_at == exp
     assert inc.visibility_effect == "medium"
     assert inc.admin_notes == "manual"
+
+
+def test_grant_incentive_records_reward_type_and_amount():
+    db = _db()
+    inc = svc.grant_incentive(
+        "w1", "monetary", "Bonus", "desc", "incentive_rule", db,
+        reward_type="monetary", amount=50.0,
+    )
+    assert inc.reward_type == "monetary"
+    assert inc.amount == 50.0
 
 
 def test_grant_incentive_is_idempotent_for_active_duplicate():
@@ -256,11 +305,39 @@ def test_list_incentives_returns_all_statuses_and_expires():
     revoked = _incentive(db, title="b", status="revoked", created_at=datetime(2023, 1, 1))
     result = svc.list_incentives("w1", db)
     assert {r.id for r in result} == {active_exp.id, revoked.id}
-    # ordered by created desc
     assert [r.id for r in result] == [active_exp.id, revoked.id]
-    # active+past got expired as side effect
     db.refresh(active_exp)
     assert active_exp.status == "expired"
+
+
+# ---------------------------------------------------------------------------
+# seed_default_incentive_rules
+# ---------------------------------------------------------------------------
+
+def test_seed_default_incentive_rules_creates_three():
+    db = _db()
+    _tenant(db)
+    created = svc.seed_default_incentive_rules(TENANT_ID, db)
+    assert len(created) == 3
+    keys = {r.key for r in db.query(IncentiveRule).filter_by(tenant_id=TENANT_ID).all()}
+    assert keys == {"well_rated", "consistent", "weekly_highlight"}
+
+
+def test_seed_default_incentive_rules_is_idempotent():
+    db = _db()
+    _tenant(db)
+    svc.seed_default_incentive_rules(TENANT_ID, db)
+    second = svc.seed_default_incentive_rules(TENANT_ID, db)
+    assert second == []
+    assert db.query(IncentiveRule).filter_by(tenant_id=TENANT_ID).count() == 3
+
+
+def test_seed_default_has_no_monetary_rule():
+    db = _db()
+    _tenant(db)
+    svc.seed_default_incentive_rules(TENANT_ID, db)
+    rules = db.query(IncentiveRule).filter_by(tenant_id=TENANT_ID).all()
+    assert all(r.reward_type != "monetary" for r in rules)
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +352,6 @@ def _patch_deps(monkeypatch, *, scores, summary, mission):
 
 def test_evaluate_no_profile_returns_active_without_granting(monkeypatch):
     db = _db()
-    # no profile created
     called = {"hybrid": False}
 
     def boom(*a, **k):
@@ -297,13 +373,24 @@ def test_evaluate_unapproved_profile_returns_active_without_granting(monkeypatch
     assert result == []
 
 
+def test_evaluate_flag_off_skips_grants(monkeypatch):
+    # flag `incentives` desligada -> nao avalia regras nem concede.
+    db = _db()
+    _setup_tenant_walker(db, flag_on=False)
+    monkeypatch.setattr(svc, "calculate_hybrid_reputation_score",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not run when flag off")))
+    result = svc.evaluate_incentives("w1", db)
+    assert result == []
+    assert db.query(WalkerIncentive).count() == 0
+    assert db.query(IncentiveRule).count() == 0
+
+
 @pytest.mark.parametrize("risk", ["risk", "critical", "suspended"])
 def test_evaluate_high_risk_skips_grants(monkeypatch, risk):
     db = _db()
-    _profile(db, user_id="w1", status="approved")
+    _setup_tenant_walker(db)
     monkeypatch.setattr(svc, "calculate_hybrid_reputation_score",
                         lambda wid, db: {"hybrid_reputation_score": 99, "risk_level": risk})
-    # summary/mission should never be consulted
     monkeypatch.setattr(svc, "reputation_summary",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("skip")))
     result = svc.evaluate_incentives("w1", db)
@@ -311,29 +398,43 @@ def test_evaluate_high_risk_skips_grants(monkeypatch, risk):
     assert db.query(WalkerIncentive).count() == 0
 
 
-def test_evaluate_grants_reputation_badge(monkeypatch):
+def test_evaluate_seeds_defaults_on_first_run(monkeypatch):
+    # flag on + tenant sem regras -> seed dos 3 defaults na 1a avaliacao.
     db = _db()
-    _profile(db, user_id="w1", status="approved")
+    _setup_tenant_walker(db)
     _patch_deps(
         monkeypatch,
         scores={"hybrid_reputation_score": 50, "risk_level": "normal"},
-        summary={"reviews_count": 5, "rating_average": 4.8},
+        summary={"reviews_count": 0, "rating_average": 0.0, "total_walks": 0},
+        mission={"completed_missions": 0},
+    )
+    svc.evaluate_incentives("w1", db)
+    assert db.query(IncentiveRule).filter_by(tenant_id=TENANT_ID).count() == 3
+
+
+def test_evaluate_grants_well_rated_recognition(monkeypatch):
+    db = _db()
+    _setup_tenant_walker(db)
+    _patch_deps(
+        monkeypatch,
+        scores={"hybrid_reputation_score": 50, "risk_level": "normal"},
+        summary={"reviews_count": 5, "rating_average": 4.8, "total_walks": 0},
         mission={"completed_missions": 0},
     )
     result = svc.evaluate_incentives("w1", db)
     badges = [r for r in result if r.title == "Passeador bem avaliado"]
     assert len(badges) == 1
-    assert badges[0].incentive_type == "badge"
-    assert badges[0].visibility_effect == "low"
+    assert badges[0].incentive_type == "recognition"
+    assert badges[0].reward_type == "recognition"
 
 
 def test_evaluate_no_badge_when_below_thresholds(monkeypatch):
     db = _db()
-    _profile(db, user_id="w1", status="approved")
+    _setup_tenant_walker(db)
     _patch_deps(
         monkeypatch,
         scores={"hybrid_reputation_score": 50, "risk_level": "normal"},
-        summary={"reviews_count": 4, "rating_average": 5.0},  # only 4 reviews
+        summary={"reviews_count": 4, "rating_average": 5.0, "total_walks": 0},  # only 4 reviews
         mission={"completed_missions": 0},
     )
     result = svc.evaluate_incentives("w1", db)
@@ -342,11 +443,11 @@ def test_evaluate_no_badge_when_below_thresholds(monkeypatch):
 
 def test_evaluate_grants_mission_recognition(monkeypatch):
     db = _db()
-    _profile(db, user_id="w1", status="approved")
+    _setup_tenant_walker(db)
     _patch_deps(
         monkeypatch,
         scores={"hybrid_reputation_score": 50, "risk_level": "normal"},
-        summary={"reviews_count": 0, "rating_average": 0.0},
+        summary={"reviews_count": 0, "rating_average": 0.0, "total_walks": 0},
         mission={"completed_missions": 3},
     )
     result = svc.evaluate_incentives("w1", db)
@@ -357,11 +458,11 @@ def test_evaluate_grants_mission_recognition(monkeypatch):
 
 def test_evaluate_mission_summary_missing_key_defaults_zero(monkeypatch):
     db = _db()
-    _profile(db, user_id="w1", status="approved")
+    _setup_tenant_walker(db)
     _patch_deps(
         monkeypatch,
         scores={"hybrid_reputation_score": 50, "risk_level": "normal"},
-        summary={"reviews_count": 0, "rating_average": 0.0},
+        summary={"reviews_count": 0, "rating_average": 0.0, "total_walks": 0},
         mission={},  # no completed_missions key -> .get default 0
     )
     result = svc.evaluate_incentives("w1", db)
@@ -370,11 +471,11 @@ def test_evaluate_mission_summary_missing_key_defaults_zero(monkeypatch):
 
 def test_evaluate_grants_visibility_boost_at_high_score(monkeypatch):
     db = _db()
-    _profile(db, user_id="w1", status="approved")
+    _setup_tenant_walker(db)
     _patch_deps(
         monkeypatch,
         scores={"hybrid_reputation_score": 88, "risk_level": "normal"},
-        summary={"reviews_count": 0, "rating_average": 0.0},
+        summary={"reviews_count": 0, "rating_average": 0.0, "total_walks": 0},
         mission={"completed_missions": 0},
     )
     result = svc.evaluate_incentives("w1", db)
@@ -382,15 +483,16 @@ def test_evaluate_grants_visibility_boost_at_high_score(monkeypatch):
     assert len(boost) == 1
     assert boost[0].incentive_type == "visibility_boost"
     assert boost[0].visibility_effect == "medium"
+    assert boost[0].reward_type == "visibility"
 
 
 def test_evaluate_no_boost_below_88(monkeypatch):
     db = _db()
-    _profile(db, user_id="w1", status="approved")
+    _setup_tenant_walker(db)
     _patch_deps(
         monkeypatch,
         scores={"hybrid_reputation_score": 87.99, "risk_level": "normal"},
-        summary={"reviews_count": 0, "rating_average": 0.0},
+        summary={"reviews_count": 0, "rating_average": 0.0, "total_walks": 0},
         mission={"completed_missions": 0},
     )
     result = svc.evaluate_incentives("w1", db)
@@ -398,14 +500,14 @@ def test_evaluate_no_boost_below_88(monkeypatch):
 
 
 def test_evaluate_no_boost_when_risk_not_normal_even_if_below_threshold(monkeypatch):
-    # risk_level "attention" passes the early-return gate (not in risk/critical/suspended)
-    # but the visibility boost requires risk_level == "normal"
+    # risk_level "attention" passa o gate (nao esta em risk/critical/suspended)
+    # mas o visibility boost (hybrid_score) exige risk_level == "normal".
     db = _db()
-    _profile(db, user_id="w1", status="approved")
+    _setup_tenant_walker(db)
     _patch_deps(
         monkeypatch,
         scores={"hybrid_reputation_score": 95, "risk_level": "attention"},
-        summary={"reviews_count": 0, "rating_average": 0.0},
+        summary={"reviews_count": 0, "rating_average": 0.0, "total_walks": 0},
         mission={"completed_missions": 0},
     )
     result = svc.evaluate_incentives("w1", db)
@@ -414,11 +516,11 @@ def test_evaluate_no_boost_when_risk_not_normal_even_if_below_threshold(monkeypa
 
 def test_evaluate_grants_all_three_when_qualified(monkeypatch):
     db = _db()
-    _profile(db, user_id="w1", status="approved")
+    _setup_tenant_walker(db)
     _patch_deps(
         monkeypatch,
         scores={"hybrid_reputation_score": 90, "risk_level": "normal"},
-        summary={"reviews_count": 10, "rating_average": 5.0},
+        summary={"reviews_count": 10, "rating_average": 5.0, "total_walks": 0},
         mission={"completed_missions": 5},
     )
     result = svc.evaluate_incentives("w1", db)
@@ -429,14 +531,77 @@ def test_evaluate_grants_all_three_when_qualified(monkeypatch):
 
 def test_evaluate_is_idempotent_across_runs(monkeypatch):
     db = _db()
-    _profile(db, user_id="w1", status="approved")
+    _setup_tenant_walker(db)
     _patch_deps(
         monkeypatch,
         scores={"hybrid_reputation_score": 90, "risk_level": "normal"},
-        summary={"reviews_count": 10, "rating_average": 5.0},
+        summary={"reviews_count": 10, "rating_average": 5.0, "total_walks": 0},
         mission={"completed_missions": 5},
     )
     svc.evaluate_incentives("w1", db)
     svc.evaluate_incentives("w1", db)
-    # dedup prevents duplicates
     assert db.query(WalkerIncentive).count() == 3
+
+
+def test_evaluate_monetary_rule_records_amount(monkeypatch):
+    # regra monetaria criada pelo tenant -> concede registrando amount = reward_value.
+    db = _db()
+    _setup_tenant_walker(db)
+    db.add(IncentiveRule(
+        id=uuid4().hex, tenant_id=TENANT_ID, key="cash_bonus", title="Bonus de performance",
+        description="bonus", trigger_type="hybrid_score", threshold=80.0,
+        reward_type="monetary", reward_value=75.0, visibility_effect="none", active=True,
+    ))
+    db.commit()
+    _patch_deps(
+        monkeypatch,
+        scores={"hybrid_reputation_score": 90, "risk_level": "normal"},
+        summary={"reviews_count": 0, "rating_average": 0.0, "total_walks": 0},
+        mission={"completed_missions": 0},
+    )
+    result = svc.evaluate_incentives("w1", db)
+    bonus = [r for r in result if r.title == "Bonus de performance"]
+    assert len(bonus) == 1
+    assert bonus[0].reward_type == "monetary"
+    assert bonus[0].incentive_type == "monetary"
+    assert bonus[0].amount == 75.0
+
+
+def test_evaluate_inactive_rule_not_granted(monkeypatch):
+    db = _db()
+    _setup_tenant_walker(db)
+    db.add(IncentiveRule(
+        id=uuid4().hex, tenant_id=TENANT_ID, key="off_rule", title="Inativa",
+        description="", trigger_type="hybrid_score", threshold=10.0,
+        reward_type="recognition", reward_value=0.0, visibility_effect="none", active=False,
+    ))
+    db.commit()
+    _patch_deps(
+        monkeypatch,
+        scores={"hybrid_reputation_score": 90, "risk_level": "normal"},
+        summary={"reviews_count": 0, "rating_average": 0.0, "total_walks": 0},
+        mission={"completed_missions": 0},
+    )
+    result = svc.evaluate_incentives("w1", db)
+    assert all(r.title != "Inativa" for r in result)
+    # nao semeia defaults porque o tenant ja tem (pelo menos) uma regra.
+    assert db.query(IncentiveRule).filter_by(tenant_id=TENANT_ID).count() == 1
+
+
+def test_evaluate_completed_walks_trigger(monkeypatch):
+    db = _db()
+    _setup_tenant_walker(db)
+    db.add(IncentiveRule(
+        id=uuid4().hex, tenant_id=TENANT_ID, key="veteran", title="Veterano",
+        description="", trigger_type="completed_walks", threshold=20.0,
+        reward_type="recognition", reward_value=0.0, visibility_effect="none", active=True,
+    ))
+    db.commit()
+    _patch_deps(
+        monkeypatch,
+        scores={"hybrid_reputation_score": 50, "risk_level": "normal"},
+        summary={"reviews_count": 0, "rating_average": 0.0, "total_walks": 25},
+        mission={"completed_missions": 0},
+    )
+    result = svc.evaluate_incentives("w1", db)
+    assert any(r.title == "Veterano" for r in result)

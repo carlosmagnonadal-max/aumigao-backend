@@ -143,8 +143,8 @@ def get_eligible_walkers(request: MatchingWalkerRequest, db: Session) -> list[Wa
             continue
         if calculate_availability_score(profile, request, db) <= 0:
             continue
-        if calculate_hybrid_reputation_score(profile.user_id, db)["risk_level"] == "suspended":
-            continue
+        # (Removida guarda de risk_level == "suspended": inalcancavel aqui, pois a query
+        # ja exige status == "active" e "suspended" so ocorre com status suspended/blocked.)
         eligible.append(profile)
     return eligible
 

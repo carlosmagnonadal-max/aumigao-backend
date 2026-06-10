@@ -14,7 +14,9 @@ import sqlalchemy as sa
 
 
 revision: str = "0011_recurring_plans"
-down_revision: Union[str, None] = "0010_payment_split"
+# Encadeado após 0011_upload_files (que também descende de 0010) para manter a
+# árvore de migrations LINEAR — evita duas heads e quebra de deploy.
+down_revision: Union[str, None] = "0011_upload_files"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -5,7 +5,9 @@ from app.schemas.tenant_branding_update import TenantBrandingUpdatePayload
 from app.services.tenant_context import get_default_tenant, resolve_current_tenant
 
 
-DEFAULT_PRIMARY_COLOR = "#315f29"
+# Default da marca Aumigão: roxo da logo (PURPLE[600] do theme do app). Antes era
+# um verde (#315f29) desalinhado da marca — corrigido em 2026-06-10.
+DEFAULT_PRIMARY_COLOR = "#6429E8"
 DEFAULT_SECONDARY_COLOR = "#101811"
 
 

@@ -1,5 +1,5 @@
 ﻿from uuid import uuid4
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import create_access_token, get_password_hash, verify_password
@@ -22,7 +22,7 @@ def build_session(user: User) -> TokenResponse:
     return TokenResponse(access_token=token, refresh_token=token, user=UserResponse.model_validate(user))
 
 @router.post("/register", response_model=TokenResponse)
-def register(payload: UserCreate, db: Session = Depends(get_db)):
+def register(payload: UserCreate, request: Request, db: Session = Depends(get_db)):
     if len(payload.password or "") < 8 or not any(char.isalpha() for char in payload.password) or not any(char.isdigit() for char in payload.password):
         raise HTTPException(status_code=400, detail="A senha deve ter pelo menos 8 caracteres, incluindo 1 letra e 1 numero.")
     try:
@@ -61,7 +61,10 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail={"message": "Cadastro de passeador incompleto.", "errors": missing})
     if payload.referral_code and role in {"walker", "passeador"}:
         validate_referral_code(payload.referral_code, db)
-    tenant_id = default_tenant_id(db)
+    # Split: o build dedicado do tenant envia X-Tenant-Slug; o middleware resolve em
+    # request.state.tenant_id. Tutor entra no tenant do build; sem header (combined/walker)
+    # cai no default. (Passeador e plataforma; o vinculo real e via TenantWalkerAccess.)
+    tenant_id = getattr(request.state, "tenant_id", None) or default_tenant_id(db)
     user = User(id=str(uuid4()), email=email, full_name=payload.full_name, role=role, password_hash=get_password_hash(payload.password), tenant_id=tenant_id)
     db.add(user)
     if role == "tutor" and (cpf or phone):

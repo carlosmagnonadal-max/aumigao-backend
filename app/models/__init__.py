@@ -38,3 +38,4 @@ from app.models.recurring_plan import RecurringPlan, TutorSubscription
 from app.models.pet_tour import TenantPetTourConfig
 from app.models.shared_walk import SharedWalk, SharedWalkParticipant, TenantSharedWalkConfig
 from app.models.coupon import Coupon, CouponRedemption
+from app.models.contact_message import ContactMessage

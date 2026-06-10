@@ -263,7 +263,10 @@ class LegalAcceptanceCreate(BaseModel):
 
 
 def _normalize_role(role: str | None, user: User | None = None) -> str:
-    raw = (role or user.role if user else role or "").strip().lower()
+    # Role explicito (ex.: ?role= no GET) tem prioridade; sem ele, cai no role do
+    # usuario autenticado. (Corrige a precedencia de operador do codigo original,
+    # que avaliava `(role or user.role) if user else ...` e ignorava o role recebido.)
+    raw = (role or (user.role if user else None) or "").strip().lower()
     if raw in {"walker", "passeador"}:
         return "passeador"
     if raw in {"admin", "super_admin"}:
@@ -366,7 +369,9 @@ def accept_documents(
     if not payload.accepted:
         raise HTTPException(status_code=400, detail="Aceite explicito obrigatorio para continuar.")
 
-    normalized_role = _normalize_role(payload.role, current_user)
+    # O aceite e do usuario logado: o role DELE e a fonte de verdade (payload.role
+    # tem default "tutor", entao nao serve para distinguir passeador de tutor).
+    normalized_role = _normalize_role(getattr(current_user, "role", "") or payload.role)
     versions = _versions()
     acceptance = LegalAcceptance(
         id=str(uuid.uuid4()),

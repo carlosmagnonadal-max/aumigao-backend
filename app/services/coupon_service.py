@@ -1,0 +1,121 @@
+"""Regras de negócio dos cupons (Onda 2 — monetização).
+
+Gated pela feature flag por tenant `coupons`. Antifraude: limite total de usos e
+limite por usuário (via registro de resgates). O desconto é definido pelo tenant.
+"""
+from datetime import datetime
+
+from fastapi import HTTPException
+from sqlalchemy.orm import Session
+
+from app.models.coupon import (
+    COUPONS_FEATURE_KEY,
+    DISCOUNT_FIXED,
+    DISCOUNT_PERCENT,
+    Coupon,
+    CouponRedemption,
+)
+from app.models.tenant import Tenant
+from app.services.tenant_plan_service import enforce_tenant_product_feature, tenant_has_feature
+
+FEATURE_LABEL = "Cupons"
+
+
+def coupons_enabled(tenant: Tenant, db: Session) -> bool:
+    return tenant_has_feature(tenant, db, COUPONS_FEATURE_KEY)
+
+
+def enforce_enabled(tenant: Tenant, db: Session) -> None:
+    enforce_tenant_product_feature(tenant, db, COUPONS_FEATURE_KEY, FEATURE_LABEL)
+
+
+def _normalize(code: str) -> str:
+    return (code or "").strip().upper()
+
+
+def get_by_code(db: Session, tenant_id: str, code: str) -> Coupon | None:
+    return (
+        db.query(Coupon)
+        .filter(Coupon.tenant_id == tenant_id, Coupon.code == _normalize(code))
+        .first()
+    )
+
+
+def compute_discount(coupon: Coupon, amount: float) -> float:
+    if coupon.discount_type == DISCOUNT_PERCENT:
+        disc = amount * (coupon.discount_value / 100.0)
+    else:  # fixed
+        disc = coupon.discount_value
+    # Nunca desconta mais que o valor; nunca negativo.
+    return round(max(0.0, min(disc, amount)), 2)
+
+
+def validate(db: Session, tenant: Tenant, code: str, user_id: str, amount: float) -> dict:
+    """Avalia um cupom para um usuário/valor SEM resgatar. Retorna dict de resultado
+    (valid/discount/message) — não levanta exceção, para o preview no checkout."""
+    norm = _normalize(code)
+    fail = lambda msg: {"valid": False, "code": norm, "discount_amount": 0.0, "final_amount": round(amount, 2), "message": msg}
+
+    coupon = get_by_code(db, tenant.id, norm)
+    if not coupon or not coupon.active:
+        return fail("Cupom inválido.")
+    now = datetime.utcnow()
+    if coupon.valid_from and now < coupon.valid_from:
+        return fail("Cupom ainda não está válido.")
+    if coupon.valid_until and now > coupon.valid_until:
+        return fail("Cupom expirado.")
+    if amount < coupon.min_amount:
+        return fail(f"Valor mínimo de {coupon.min_amount:.2f} para usar este cupom.")
+    if coupon.max_uses is not None and coupon.uses_count >= coupon.max_uses:
+        return fail("Cupom esgotado.")
+    if coupon.max_uses_per_user is not None:
+        used_by_user = (
+            db.query(CouponRedemption)
+            .filter(CouponRedemption.coupon_id == coupon.id, CouponRedemption.user_id == user_id)
+            .count()
+        )
+        if used_by_user >= coupon.max_uses_per_user:
+            return fail("Você já usou este cupom.")
+
+    discount = compute_discount(coupon, amount)
+    return {
+        "valid": True,
+        "code": norm,
+        "discount_amount": discount,
+        "final_amount": round(amount - discount, 2),
+        "message": "Cupom aplicado.",
+    }
+
+
+def redeem(db: Session, tenant: Tenant, code: str, user_id: str, amount: float, walk_id: str | None = None) -> CouponRedemption:
+    """Resgata o cupom (no checkout): revalida, registra o resgate e incrementa usos."""
+    enforce_enabled(tenant, db)
+    result = validate(db, tenant, code, user_id, amount)
+    if not result["valid"]:
+        raise HTTPException(status_code=409, detail=result["message"])
+    coupon = get_by_code(db, tenant.id, code)
+    redemption = CouponRedemption(
+        coupon_id=coupon.id,
+        tenant_id=tenant.id,
+        user_id=user_id,
+        walk_id=walk_id,
+        amount_discounted=result["discount_amount"],
+    )
+    db.add(redemption)
+    coupon.uses_count += 1
+    coupon.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(redemption)
+    return redemption
+
+
+# ----- Admin (catálogo) -----
+def list_coupons(db: Session, tenant_id: str) -> list[Coupon]:
+    return db.query(Coupon).filter(Coupon.tenant_id == tenant_id).order_by(Coupon.created_at.desc()).all()
+
+
+def get_or_404(db: Session, tenant_id: str, coupon_id: str) -> Coupon:
+    coupon = db.query(Coupon).filter(Coupon.tenant_id == tenant_id, Coupon.id == coupon_id).first()
+    if not coupon:
+        raise HTTPException(status_code=404, detail="Cupom não encontrado.")
+    return coupon

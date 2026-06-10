@@ -143,8 +143,8 @@ def get_eligible_walkers(request: MatchingWalkerRequest, db: Session) -> list[Wa
             continue
         if calculate_availability_score(profile, request, db) <= 0:
             continue
-        if calculate_hybrid_reputation_score(profile.user_id, db)["risk_level"] == "suspended":
-            continue
+        # (Removida guarda de risk_level == "suspended": inalcancavel aqui, pois a query
+        # ja exige status == "active" e "suspended" so ocorre com status suspended/blocked.)
         eligible.append(profile)
     return eligible
 
@@ -197,7 +197,7 @@ def demo_matching_response(request: MatchingWalkerRequest, debug: bool = False) 
             "rating_average": 4.9,
             "reviews_count": 126,
             "total_walks": 38,
-            "level": "Destaque",
+            "level": "Ouro",
             "distance_km": 1.8,
             "estimated_arrival_minutes": 12,
             "badges": ["Mais recomendado", "Perto de voce", "Destaque da regiao"],
@@ -220,7 +220,7 @@ def demo_matching_response(request: MatchingWalkerRequest, debug: bool = False) 
             "rating_average": 4.8,
             "reviews_count": 64,
             "total_walks": 82,
-            "level": "Elite Aumigao",
+            "level": "Diamante",
             "distance_km": 3.6,
             "estimated_arrival_minutes": 18,
             "badges": ["Mais experiente", "Responde rapido"],
@@ -243,7 +243,7 @@ def demo_matching_response(request: MatchingWalkerRequest, debug: bool = False) 
             "rating_average": 4.6,
             "reviews_count": 18,
             "total_walks": 22,
-            "level": "Confiavel",
+            "level": "Prata",
             "distance_km": 5.2,
             "estimated_arrival_minutes": 28,
             "badges": ["Responde rapido"],

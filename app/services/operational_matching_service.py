@@ -474,7 +474,7 @@ def _candidate_for_selected_walker(walk: Walk, walker_id: str, db: Session) -> d
             "experience_score": 55,
             "availability_score": 80,
             "distance_km": None,
-            "level": "Confiavel",
+            "level": "Prata",
         }
     return None
 

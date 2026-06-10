@@ -537,30 +537,30 @@ def _walker_level(total_completed: int, rating_avg: float, acceptance_rate: int,
     levels = [
         {
             "key": "iniciante",
-            "name": "Iniciante",
+            "name": "Bronze",
             "min_completed_walks": 0,
             "min_rating": 0,
             "benefit": "Primeiros passos com acompanhamento e orientacoes da plataforma.",
         },
         {
             "key": "confiavel",
-            "name": "Confiavel",
+            "name": "Prata",
             "min_completed_walks": 10,
             "min_rating": 4.5,
             "benefit": "Mais consistencia para aparecer em boas oportunidades.",
         },
         {
             "key": "destaque",
-            "name": "Destaque",
-            "min_completed_walks": 30,
+            "name": "Ouro",
+            "min_completed_walks": 50,
             "min_rating": 4.7,
             "benefit": "Perfil com potencial para selos e campanhas futuras.",
         },
         {
             "key": "elite_aumigao",
-            "name": "Elite Aumigao",
-            "min_completed_walks": 60,
-            "min_rating": 4.85,
+            "name": "Diamante",
+            "min_completed_walks": 150,
+            "min_rating": 4.9,
             "benefit": "Prioridade e beneficios especiais quando a regra comercial for ativada.",
         },
     ]
@@ -1297,7 +1297,7 @@ def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_d
         "tips_policy": "Gorjetas sao opcionais, surgem apos entrega do pet e nao entram nas metas de ganhos.",
         "goal_total_walks": 14,
         "future_reward_preview": "Beneficios futuros podem ser ativados por campanhas, selos e prioridade em solicitacoes.",
-        "level": "Destaque",
+        "level": "Ouro",
         "score": 87,
         "transactions": transactions,
     }
@@ -1350,7 +1350,7 @@ def _public_walker_rows(db: Session) -> list[dict]:
             "rating_average": 4.9,
             "reviews_count": 126,
             "total_walks": 38,
-            "level": "Destaque",
+            "level": "Ouro",
             "reputation_score": 83.4,
         }
         return [

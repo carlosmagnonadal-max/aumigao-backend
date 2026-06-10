@@ -25,14 +25,14 @@ def is_completed_walk(walk: Walk) -> bool:
 
 def walker_level(total_walks: int, rating_average: float, reviews_count: int) -> str:
     if reviews_count == 0:
-        return "Iniciante"
-    if total_walks >= 80 and rating_average >= 4.85:
-        return "Elite Aumigao"
-    if total_walks >= 30 and rating_average >= 4.7:
-        return "Destaque"
+        return "Bronze"
+    if total_walks >= 150 and rating_average >= 4.9:
+        return "Diamante"
+    if total_walks >= 50 and rating_average >= 4.7:
+        return "Ouro"
     if total_walks >= 10 and rating_average >= 4.5:
-        return "Confiavel"
-    return "Iniciante"
+        return "Prata"
+    return "Bronze"
 
 
 def anonymized_tutor_name(user: User | None) -> str:

@@ -1,0 +1,208 @@
+"""Testes de ROTA (camada HTTP) do modulo app/routes/tenant_branding.py.
+
+Padrao do projeto (ver tests/test_routes_onda1.py e tests/test_routes_auth.py):
+monta um FastAPI MINIMO com apenas os routers de branding, SQLite em memoria
+(StaticPool), overrides de get_db / get_current_user. NAO importa app.main (que
+conecta no banco de PROD).
+
+Cobre:
+- GET publico /tenants/current/branding-runtime (defaults quando nao ha branding,
+  resolucao para o tenant default).
+- GET publico /tenants/{tenant_id}/branding-runtime (por id e por slug; fallback
+  para default quando id desconhecido).
+- PATCH admin /api/admin/tenants/current/branding: happy path (persiste, incrementa
+  version), 401 (sem auth), 403 (sem permissao RBAC).
+"""
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+import app.models  # noqa: F401 - registra todas as tabelas no Base.metadata
+from app.core.database import Base, get_db
+from app.dependencies.auth import get_current_user
+from app.models.tenant import Tenant, TenantBranding
+from app.models.user import User
+from app.routes import tenant_branding
+from app.services.tenant_branding_service import DEFAULT_PRIMARY_COLOR, DEFAULT_SECONDARY_COLOR
+from app.services.tenant_seed_service import DEFAULT_TENANT_SLUG
+
+TENANT_ID = "t-test"
+ADMIN_ID = "admin-test"
+
+
+def build(*, branding: dict | None = None, admin_role: str = "super_admin"):
+    """Monta app minimo com os routers de branding e um SQLite em memoria isolado.
+
+    O admin e seedado com role super_admin: a rede de seguranca do RBAC
+    (user_has_permission) sempre concede permissao a super_admin sem precisar
+    seedar papeis/permissoes.
+    """
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+
+    # slug = DEFAULT para resolve_current_tenant/get_default_tenant resolver este
+    # tenant sem criar outro (request.state.tenant_id nao existe no TestClient).
+    db.add(Tenant(id=TENANT_ID, name="Aumigao", slug=DEFAULT_TENANT_SLUG, status="active", plan="business"))
+    db.add(User(id=ADMIN_ID, email="admin@test.com", password_hash="x", role=admin_role, tenant_id=TENANT_ID))
+    if branding is not None:
+        db.add(TenantBranding(tenant_id=TENANT_ID, **branding))
+    db.commit()
+
+    test_app = FastAPI()
+    test_app.include_router(tenant_branding.router)
+    test_app.include_router(tenant_branding.api_router)
+    test_app.include_router(tenant_branding.admin_api_router)
+    test_app.dependency_overrides[get_db] = lambda: db
+    return TestClient(test_app), db
+
+
+def as_admin(client, db, user_id=ADMIN_ID):
+    client.app.dependency_overrides[get_current_user] = lambda: db.get(User, user_id)
+
+
+# ---------------------------------------------------- GET current (publico) ---
+def test_get_current_branding_defaults_when_no_branding():
+    """Sem registro de branding: usa nome do tenant e cores default."""
+    client, _ = build()
+    r = client.get("/tenants/current/branding-runtime")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["tenant_id"] == TENANT_ID
+    assert body["display_name"] == "Aumigao"  # cai no tenant.name
+    assert body["app_name"] == "Aumigao"
+    assert body["logo_url"] == ""
+    assert body["primary_color"] == DEFAULT_PRIMARY_COLOR
+    assert body["secondary_color"] == DEFAULT_SECONDARY_COLOR
+    assert body["accent_color"] == ""
+    assert body["powered_by_enabled"] is True
+    assert body["version"] == 1
+
+
+def test_get_current_branding_no_auth_required():
+    """A rota publica nao exige Authorization header."""
+    client, _ = build()
+    r = client.get("/tenants/current/branding-runtime")
+    assert r.status_code == 200
+
+
+def test_get_current_branding_reflects_stored_values():
+    client, _ = build(branding={
+        "display_name": "Pet Lovers",
+        "app_name": "PetLoversApp",
+        "logo_url": "https://cdn/logo.png",
+        "primary_color": "#ff0000",
+        "secondary_color": "#00ff00",
+        "accent_color": "#0000ff",
+        "powered_by_enabled": False,
+        "published_version": 7,
+    })
+    body = client.get("/tenants/current/branding-runtime").json()
+    assert body["display_name"] == "Pet Lovers"
+    assert body["app_name"] == "PetLoversApp"
+    assert body["logo_url"] == "https://cdn/logo.png"
+    assert body["primary_color"] == "#ff0000"
+    assert body["accent_color"] == "#0000ff"
+    assert body["powered_by_enabled"] is False
+    assert body["version"] == 7
+
+
+def test_get_current_branding_via_api_prefix():
+    """O api_router expoe o mesmo endpoint sob /api/tenants."""
+    client, _ = build()
+    r = client.get("/api/tenants/current/branding-runtime")
+    assert r.status_code == 200
+    assert r.json()["tenant_id"] == TENANT_ID
+
+
+# -------------------------------------------------- GET by tenant_id (pub) ----
+def test_get_branding_by_id():
+    client, _ = build(branding={"display_name": "Marca X"})
+    body = client.get(f"/tenants/{TENANT_ID}/branding-runtime").json()
+    assert body["tenant_id"] == TENANT_ID
+    assert body["display_name"] == "Marca X"
+
+
+def test_get_branding_by_slug():
+    client, _ = build()
+    body = client.get(f"/tenants/{DEFAULT_TENANT_SLUG}/branding-runtime").json()
+    assert body["tenant_id"] == TENANT_ID
+
+
+def test_get_branding_unknown_id_falls_back_to_default():
+    """tenant_id inexistente cai no tenant default (_resolve_tenant)."""
+    client, _ = build()
+    r = client.get("/tenants/nao-existe-123/branding-runtime")
+    assert r.status_code == 200
+    assert r.json()["tenant_id"] == TENANT_ID
+
+
+# ------------------------------------------------------ PATCH admin (RBAC) ----
+def test_patch_branding_requires_auth_401():
+    """Sem Authorization header e sem override -> get_current_user real -> 401."""
+    client, _ = build()
+    r = client.patch("/api/admin/tenants/current/branding", json={"display_name": "X"})
+    assert r.status_code == 401
+
+
+def test_patch_branding_forbidden_without_permission_403():
+    """Usuario comum (sem permissao branding.*) -> 403."""
+    client, db = build(admin_role="cliente")
+    as_admin(client, db)
+    r = client.patch("/api/admin/tenants/current/branding", json={"display_name": "X"})
+    assert r.status_code == 403
+    assert "permiss" in r.json()["detail"].lower()
+
+
+def test_patch_branding_happy_path_persists_and_bumps_version():
+    client, db = build()
+    as_admin(client, db)
+    r = client.patch("/api/admin/tenants/current/branding", json={
+        "display_name": "Nova Marca",
+        "app_name": "NovaApp",
+        "logo_url": "https://cdn/novo.png",
+        "primary_color": "#123456",
+        "secondary_color": "#654321",
+        "accent_color": "#abcdef",
+        "powered_by_enabled": False,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["display_name"] == "Nova Marca"
+    assert body["app_name"] == "NovaApp"
+    assert body["logo_url"] == "https://cdn/novo.png"
+    assert body["primary_color"] == "#123456"
+    assert body["accent_color"] == "#abcdef"
+    assert body["powered_by_enabled"] is False
+    # cria o registro e incrementa published_version (0 -> 1)
+    assert body["version"] == 1
+
+    stored = db.query(TenantBranding).filter(TenantBranding.tenant_id == TENANT_ID).first()
+    assert stored is not None
+    assert stored.display_name == "Nova Marca"
+    assert stored.published_version == 1
+
+
+def test_patch_branding_increments_existing_version():
+    client, db = build(branding={"display_name": "Antiga", "published_version": 4})
+    as_admin(client, db)
+    r = client.patch("/api/admin/tenants/current/branding", json={"display_name": "Atualizada"})
+    assert r.status_code == 200, r.text
+    assert r.json()["version"] == 5  # 4 -> 5
+
+
+def test_patch_branding_then_get_reflects_update():
+    """Apos publicar, o GET publico devolve os novos valores."""
+    client, db = build()
+    as_admin(client, db)
+    client.patch("/api/admin/tenants/current/branding", json={
+        "display_name": "Publicada", "primary_color": "#aa0011",
+    })
+    body = client.get("/tenants/current/branding-runtime").json()
+    assert body["display_name"] == "Publicada"
+    assert body["primary_color"] == "#aa0011"

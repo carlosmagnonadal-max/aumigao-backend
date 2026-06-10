@@ -16,6 +16,7 @@ from app.models.payment import Payment
 from app.models.walk import Walk, WalkMatchingAttempt
 from app.models.walk_completion_review import WalkCompletionReview
 from app.models.walk_review import WalkReview
+from app.models.walker_review import WalkerReview
 from app.models.walk_tip import WalkTip
 from app.models.user import User
 from app.models.pet import Pet
@@ -470,6 +471,21 @@ def create_walk_review(walk_id: str, payload: WalkReviewCreate, user: User = Dep
         tags_json=json.dumps(tags),
     )
     db.add(review)
+    # Bridge: alimenta tambem walker_reviews, que e a fonte lida por reputation_service
+    # (nota media, score, risco, flag) e pelas listagens publicas/admin. Sem isto a
+    # avaliacao nao afetaria a reputacao do passeador (ver walk_reviews vs walker_reviews).
+    if not db.query(WalkerReview).filter(WalkerReview.walk_id == walk.id).first():
+        db.add(
+            WalkerReview(
+                id=str(uuid4()),
+                tenant_id=getattr(walk, "tenant_id", None),
+                walk_id=walk.id,
+                tutor_id=user.id,
+                walker_id=walk.walker_id or walk.assigned_walker_id,
+                rating=payload.rating,
+                comment=(payload.comment or "").strip() or None,
+            )
+        )
     db.commit()
     db.refresh(review)
     db.refresh(walk)

@@ -35,3 +35,4 @@ from app.models.tenant_payment_config import TenantPaymentConfig
 from app.models.upload_file import UploadFile
 from app.models.recurring_plan import RecurringPlan, TutorSubscription
 from app.models.pet_tour import TenantPetTourConfig
+from app.models.shared_walk import SharedWalk, SharedWalkParticipant, TenantSharedWalkConfig

@@ -4,8 +4,10 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_admin
 from app.dependencies.rbac import require_permission
+from app.dependencies.tenant_scope import get_admin_tenant_scope
 from app.models.user import User
 from app.models.walker_referral import WalkerReferral
+from app.schemas.metrics import ReferralMetricsResponse
 from app.schemas.walker_referral import (
     AdminWalkerReferralListResponse,
     AdminWalkerReferralResponse,
@@ -17,6 +19,7 @@ from app.schemas.walker_referral import (
     WalkerReferralSummary,
     WalkerReferralValidateCode,
 )
+from app.services.metrics_service import get_referral_metrics
 from app.services.walker_referrals import create_walker_referral, link_referral_to_user, update_referral_status, validate_referral_code
 
 router = APIRouter(prefix="/referrals", tags=["referrals"])
@@ -93,6 +96,21 @@ def link_walker_referral_user(referral_id: str, payload: WalkerReferralLinkUser,
     if code != referral.referral_code:
         raise HTTPException(status_code=409, detail="Codigo nao corresponde a indicacao.")
     return link_referral_to_user(code, user, db)
+
+
+@admin_router.get("/metrics", response_model=ReferralMetricsResponse)
+@api_admin_router.get("/metrics", response_model=ReferralMetricsResponse)
+def admin_referral_metrics(
+    admin: User = Depends(require_permission("referrals.read")),
+    db: Session = Depends(get_db),
+):
+    """Métricas de indicações de passeador: totais, by_status, ativadas, recompensas e série semanal.
+
+    WalkerReferral não possui tenant_id — dados são globais independente do scope.
+    """
+    scope = get_admin_tenant_scope(admin)
+    data = get_referral_metrics(db, scope)
+    return ReferralMetricsResponse(**data)
 
 
 @admin_router.get("/walkers", response_model=AdminWalkerReferralListResponse)

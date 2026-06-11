@@ -23,8 +23,10 @@ from app.schemas.incentive import (
     IncentiveRuleResponse,
     IncentiveRuleUpdate,
 )
+from app.schemas.metrics import IncentiveMetricsResponse
 from app.services import incentive_rule_service as svc
 from app.services.incentive_engine_service import evaluate_incentives, incentive_payload
+from app.services.metrics_service import get_incentive_metrics
 from app.services.tenant_context import resolve_current_tenant_id
 
 # Rotas walker (self-service): ve seus incentivos.
@@ -87,6 +89,18 @@ def admin_grant_incentive(walker_id: str, payload: IncentiveGrantRequest, admin:
 def admin_revoke_incentive(incentive_id: str, payload: IncentiveRevokeRequest | None = None, admin: User = Depends(require_permission("admin.access")), db: Session = Depends(get_db)):
     notes = payload.admin_notes if payload else None
     return svc.revoke_granted(_admin_tenant_id(admin, db), incentive_id, db, admin_notes=notes)
+
+
+@admin_router.get("/incentives/metrics", response_model=IncentiveMetricsResponse)
+@api_admin_router.get("/incentives/metrics", response_model=IncentiveMetricsResponse)
+def admin_incentive_metrics(
+    admin: User = Depends(require_permission("admin.access")),
+    db: Session = Depends(get_db),
+):
+    """Métricas de incentivos: regras, concessões, breakdown por tipo e série semanal."""
+    scope = get_admin_tenant_scope(admin)
+    data = get_incentive_metrics(db, scope)
+    return IncentiveMetricsResponse(**data)
 
 
 @admin_router.get("/incentives", response_model=GrantedIncentiveListResponse)

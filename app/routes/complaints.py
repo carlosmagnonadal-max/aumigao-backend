@@ -15,6 +15,7 @@ from app.schemas.complaint import (
     ComplaintResponse,
     RiskScoreResponse,
 )
+from app.schemas.metrics import ComplaintMetricsResponse
 from app.services.complaint_service import (
     admin_review_decision,
     admin_update_complaint,
@@ -24,6 +25,7 @@ from app.services.complaint_service import (
     list_complaints_for_user,
 )
 from app.services.admin_operational_event_service import record_admin_operational_event
+from app.services.metrics_service import get_complaint_metrics
 
 router = APIRouter(prefix="/complaints", tags=["complaints"])
 api_router = APIRouter(prefix="/api/complaints", tags=["complaints"])
@@ -54,6 +56,22 @@ def list_my_cases(user: User = Depends(get_current_user), db: Session = Depends(
 @api_router.get("/{complaint_id}", response_model=ComplaintResponse)
 def get_case(complaint_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return get_complaint_or_403(complaint_id, user, db)
+
+
+@admin_router.get("/metrics", response_model=ComplaintMetricsResponse)
+@api_admin_router.get("/metrics", response_model=ComplaintMetricsResponse)
+def admin_complaint_metrics(
+    admin: User = Depends(require_permission("occurrences.read")),
+    db: Session = Depends(get_db),
+):
+    """Métricas de ocorrências: contadores, médias, breakdown e série semanal.
+
+    Tenant-scoped (Complaint.tenant_id). avg_resolution_hours é null se não houver
+    ocorrências com resolved_at preenchido.
+    """
+    scope = get_admin_tenant_scope(admin)
+    data = get_complaint_metrics(db, scope)
+    return ComplaintMetricsResponse(**data)
 
 
 @admin_router.get("", response_model=ComplaintListResponse)

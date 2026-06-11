@@ -21,8 +21,10 @@ from app.schemas.coupon import (
     CouponValidateRequest,
     CouponValidateResult,
 )
+from app.schemas.metrics import CouponMetricsResponse
 from app.services import coupon_service as svc
 from app.services.audit_service import record_audit_log
+from app.services.metrics_service import get_coupon_metrics
 from app.services.tenant_context import resolve_current_tenant, resolve_current_tenant_id
 
 router = APIRouter(prefix="/coupons", tags=["coupons"])
@@ -92,6 +94,18 @@ def admin_create(payload: CouponCreate, admin: User = Depends(require_permission
     db.commit()
     db.refresh(coupon)
     return coupon
+
+
+@admin_router.get("/metrics", response_model=CouponMetricsResponse)
+@api_admin_router.get("/metrics", response_model=CouponMetricsResponse)
+def admin_coupon_metrics(
+    admin: User = Depends(require_permission("finance.read")),
+    db: Session = Depends(get_db),
+):
+    """Métricas de cupons do tenant: totais, top cupons e série semanal de resgates."""
+    scope = get_admin_tenant_scope(admin)
+    data = get_coupon_metrics(db, scope)
+    return CouponMetricsResponse(**data)
 
 
 @admin_router.patch("/{coupon_id}", response_model=CouponResponse)

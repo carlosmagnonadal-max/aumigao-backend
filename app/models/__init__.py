@@ -39,3 +39,5 @@ from app.models.pet_tour import TenantPetTourConfig
 from app.models.shared_walk import SharedWalk, SharedWalkParticipant, TenantSharedWalkConfig
 from app.models.coupon import Coupon, CouponRedemption
 from app.models.contact_message import ContactMessage
+from app.models.app_setting import AppSetting
+from app.models.walker_program_action import WalkerProgramAction

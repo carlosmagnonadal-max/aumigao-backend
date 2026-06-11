@@ -8,6 +8,12 @@ from uuid import uuid4
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 from app.core.database import get_db
+from app.services.app_settings_service import (
+    append_walker_program_action,
+    get_setting,
+    recent_walker_program_actions,
+    save_setting,
+)
 from app.dependencies.rbac import require_permission
 from app.services.audit_service import record_audit_log
 from app.services.payment_split_service import get_or_create_payment_config, update_payment_config
@@ -274,7 +280,7 @@ FAKE_ENTITY_TOKENS = (
     "request-demo",
 )
 
-REFERRAL_PROGRAM_SETTINGS = {
+DEFAULT_REFERRAL_PROGRAM_SETTINGS = {
     "program_enabled": False,
     "client_referral_enabled": False,
     "walker_referral_enabled": False,
@@ -297,6 +303,7 @@ REFERRAL_PROGRAM_SETTINGS = {
     "updated_by": "sistema",
 }
 
+# LEGADO/DEMO: consolidar com routes/referrals.py (não persistido de propósito — Fase de limpeza)
 REFERRAL_RECORDS = [
     {
         "id": "ref-demo-1",
@@ -318,7 +325,7 @@ REFERRAL_RECORDS = [
     }
 ]
 
-WALKER_PROGRAM_SETTINGS = {
+DEFAULT_WALKER_PROGRAM_SETTINGS = {
     "tips": {
         "enabled": True,
         "separate_from_earnings": True,
@@ -386,9 +393,6 @@ WALKER_PROGRAM_SETTINGS = {
     "updated_at": "",
     "updated_by": "sistema",
 }
-
-WALKER_PROGRAM_ACTIONS = []
-
 
 def _now() -> str:
     return datetime.utcnow().isoformat()
@@ -1945,17 +1949,18 @@ def walker_operations(db: Session = Depends(get_db)):
 
 
 @router.get("/referral-program/settings")
-def referral_program_settings():
-    return REFERRAL_PROGRAM_SETTINGS
+def referral_program_settings(db: Session = Depends(get_db)):
+    return get_setting(db, "referral_program", DEFAULT_REFERRAL_PROGRAM_SETTINGS)
 
 
 @router.put("/referral-program/settings")
-def update_referral_program_settings(payload: dict):
-    global REFERRAL_PROGRAM_SETTINGS
-    REFERRAL_PROGRAM_SETTINGS = _merge_dict(REFERRAL_PROGRAM_SETTINGS, payload or {})
-    REFERRAL_PROGRAM_SETTINGS["updated_at"] = _now()
-    REFERRAL_PROGRAM_SETTINGS["updated_by"] = "admin"
-    return REFERRAL_PROGRAM_SETTINGS
+def update_referral_program_settings(payload: dict, db: Session = Depends(get_db)):
+    current = get_setting(db, "referral_program", DEFAULT_REFERRAL_PROGRAM_SETTINGS)
+    merged = _merge_dict(current, payload or {})
+    merged["updated_at"] = _now()
+    merged["updated_by"] = "admin"
+    save_setting(db, "referral_program", merged, updated_by="admin")
+    return merged
 
 
 @router.get("/referrals")
@@ -1981,7 +1986,7 @@ def update_referral_status(referral_id: str, payload: dict):
 def walker_programs(db: Session = Depends(get_db)):
     rows = _walker_program_rows(db)
     return {
-        "settings": WALKER_PROGRAM_SETTINGS,
+        "settings": get_setting(db, "walker_program", DEFAULT_WALKER_PROGRAM_SETTINGS),
         "metrics": _walker_program_metrics(rows),
         "walkers": rows,
         "tips_review_queue": [
@@ -1994,58 +1999,59 @@ def walker_programs(db: Session = Depends(get_db)):
                 "status": "pending",
             }
         ] if rows else [],
-        "actions": WALKER_PROGRAM_ACTIONS[-20:],
+        "actions": recent_walker_program_actions(db, limit=20),
     }
 
 
 @router.put("/walker-programs/settings")
-def update_walker_program_settings(payload: dict):
-    global WALKER_PROGRAM_SETTINGS
-    WALKER_PROGRAM_SETTINGS = _merge_dict(WALKER_PROGRAM_SETTINGS, payload or {})
-    WALKER_PROGRAM_SETTINGS["updated_at"] = _now()
-    WALKER_PROGRAM_SETTINGS["updated_by"] = "admin"
-    return WALKER_PROGRAM_SETTINGS
+def update_walker_program_settings(payload: dict, db: Session = Depends(get_db)):
+    current = get_setting(db, "walker_program", DEFAULT_WALKER_PROGRAM_SETTINGS)
+    merged = _merge_dict(current, payload or {})
+    merged["updated_at"] = _now()
+    merged["updated_by"] = "admin"
+    save_setting(db, "walker_program", merged, updated_by="admin")
+    return merged
 
 
 @router.post("/walker-programs/walkers/{walker_id}/cr")
-def adjust_walker_cr(walker_id: str, payload: dict):
+def adjust_walker_cr(walker_id: str, payload: dict, db: Session = Depends(get_db)):
     action = {
-        "id": f"cr-{len(WALKER_PROGRAM_ACTIONS) + 1}",
+        "id": str(uuid4()),
         "type": "cr_adjustment",
         "walker_id": walker_id,
         "amount": int((payload or {}).get("amount", 0)),
         "reason": (payload or {}).get("reason", "Ajuste administrativo"),
         "created_at": _now(),
     }
-    WALKER_PROGRAM_ACTIONS.append(action)
+    append_walker_program_action(db, action_type="cr", walker_id=walker_id, payload=action)
     return {"ok": True, "action": action}
 
 
 @router.post("/walker-programs/walkers/{walker_id}/kit-audit")
-def audit_walker_kit(walker_id: str, payload: dict):
+def audit_walker_kit(walker_id: str, payload: dict, db: Session = Depends(get_db)):
     action = {
-        "id": f"kit-{len(WALKER_PROGRAM_ACTIONS) + 1}",
+        "id": str(uuid4()),
         "type": "kit_audit",
         "walker_id": walker_id,
         "status": (payload or {}).get("status", "aprovado"),
         "note": (payload or {}).get("note", ""),
         "created_at": _now(),
     }
-    WALKER_PROGRAM_ACTIONS.append(action)
+    append_walker_program_action(db, action_type="kit", walker_id=walker_id, payload=action)
     return {"ok": True, "action": action}
 
 
 @router.post("/walker-programs/tips/{tip_id}/review")
-def review_tip(tip_id: str, payload: dict):
+def review_tip(tip_id: str, payload: dict, db: Session = Depends(get_db)):
     action = {
-        "id": f"tip-{len(WALKER_PROGRAM_ACTIONS) + 1}",
+        "id": str(uuid4()),
         "type": "tip_review",
         "tip_id": tip_id,
         "status": (payload or {}).get("status", "approved"),
         "note": (payload or {}).get("note", ""),
         "created_at": _now(),
     }
-    WALKER_PROGRAM_ACTIONS.append(action)
+    append_walker_program_action(db, action_type="tip", walker_id=None, payload=action)
     return {"ok": True, "action": action}
 
 @router.post("/withdrawals/{payment_id}/approve")

@@ -13,7 +13,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0022_payment_invoice_url_walker_wallet"
+revision: str = "0022_invoice_url_wallet"
 down_revision: Union[str, None] = "0021_walk_location_pings"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

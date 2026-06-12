@@ -31,3 +31,4 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 uvicorn==0.46.0
 alembic==1.18.4
+sentry-sdk[fastapi]

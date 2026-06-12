@@ -1,15 +1,36 @@
 import asyncio
 import logging
 import os
+import traceback
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import inspect, text
 
+# O3 — logging estruturado: deve ser configurado o mais cedo possível, antes de
+# qualquer logger ser usado.
+from app.core.logging_config import configure_logging
+configure_logging()
+
+# O4 — Sentry opcional: import e init guardados para o app funcionar sem o pacote.
+_SENTRY_DSN = os.getenv("SENTRY_DSN", "").strip()
+if _SENTRY_DSN:
+    try:
+        import sentry_sdk  # type: ignore
+        sentry_sdk.init(
+            dsn=_SENTRY_DSN,
+            environment=os.getenv("ENVIRONMENT", "local"),
+            traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0")),
+        )
+    except Exception as _sentry_err:
+        logging.getLogger(__name__).warning("Sentry init falhou: %s", _sentry_err)
+
 from app.core.database import Base, SessionLocal, engine, get_database_diagnostics, mask_database_url
+from app.core.request_context import request_id_var
+from app.middleware.request_context import RequestContextMiddleware
 from app.middleware.tenant_resolver import TenantResolverMiddleware
 from app.models import (
     AdminOperationalEvent,
@@ -283,6 +304,48 @@ else:
 
 app = FastAPI(title="Aumigao Walk API")
 
+
+# O1 — Exception handler global: captura qualquer Exception não tratada
+# (HTTPException continua seguindo o fluxo normal do FastAPI).
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    request_id = request_id_var.get("-")
+    logger.error(
+        "unhandled_exception method=%s path=%s request_id=%s\n%s",
+        request.method,
+        request.url.path,
+        request_id,
+        traceback.format_exc(),
+    )
+    # Registra na tabela operacional sem deixar o registro derrubar o handler.
+    try:
+        from app.services.operational_observability_service import record_operational_exception
+        with SessionLocal() as _db:
+            record_operational_exception(
+                _db,
+                event_type="unhandled_exception",
+                source="global_exception_handler",
+                exc=exc,
+                context={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "request_id": request_id,
+                },
+            )
+            _db.commit()
+    except Exception as _reg_err:
+        logger.warning("Falha ao registrar exceção operacional: %s", _reg_err)
+
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Erro interno do servidor"},
+        headers={"X-Request-ID": request_id},
+    )
+
+
+# Middlewares — ordem de add_middleware é de fora para dentro (LIFO na execução).
+# RequestContextMiddleware fica mais externo para que o request_id esteja
+# disponível para todos os outros middlewares e rotas.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -291,6 +354,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(TenantResolverMiddleware, session_factory=SessionLocal)
+app.add_middleware(RequestContextMiddleware)
 
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 

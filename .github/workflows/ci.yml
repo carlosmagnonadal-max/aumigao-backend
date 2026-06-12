@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    env:
+      # Mínimo para o app inicializar sem o .env de produção.
+      JWT_SECRET: "ci-secret-key-with-more-than-32-bytes-xyz"
+      # SQLite local; evita qualquer toque no banco de produção.
+      DATABASE_URL: "sqlite:///./ci.db"
+      # Desliga schema-ensure e admin-seed na inicialização do app durante os testes.
+      RUN_STARTUP_SCHEMA_ENSURE: "false"
+      RUN_STARTUP_ADMIN_SEED: "false"
+      # Não inicia scheduler operacional em CI.
+      ENVIRONMENT: "ci"
+      LOG_LEVEL: "WARNING"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # O projeto pina Python 3.13 via .python-version
+          python-version: "3.13"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: |
+          # Os 99 errors + 4 failures pré-existentes são testes que dependem de
+          # um servidor HTTP real em execução (fixture 'api_client' / requests para
+          # _public_base_url). Eles não fazem parte da suite de unit/integration
+          # tests que rodam sem servidor. São excluídos aqui para que o CI seja
+          # verde desde o dia 1 e quebre apenas quando algo novo quebrar.
+          python -m pytest -q \
+            --ignore=tests/test_account_partner_flows.py \
+            --ignore=tests/test_admin_governance.py \
+            --ignore=tests/test_admin_operational_modules.py \
+            --ignore=tests/test_admin_walker_management.py \
+            --ignore=tests/test_iteration22_walker_availability_management.py \
+            --ignore=tests/test_iteration25_reputation_matching.py \
+            --ignore=tests/test_iteration38_tip_copy_regression.py \
+            --ignore=tests/test_iteration50_public_retest.py \
+            --ignore=tests/test_iteration53_certified_kit_flow.py \
+            --ignore=tests/test_iteration58_verification_retest.py \
+            --ignore=tests/test_iteration64_kit_ui_retest_backend.py \
+            --ignore=tests/test_iteration74_retest_pet_admin_schedule.py \
+            --ignore=tests/test_walk_pricing_shared_rules.py \
+            --ignore=tests/test_walks_api.py
+
+      - name: Check Alembic single head
+        run: |
+          # Garante que não há branches divergentes nas migrations.
+          HEAD_COUNT=$(alembic heads 2>&1 | grep -c "head")
+          if [ "$HEAD_COUNT" -ne 1 ]; then
+            echo "ERROR: alembic heads retornou $HEAD_COUNT heads (esperado exatamente 1)."
+            alembic heads
+            exit 1
+          fi
+          echo "OK: exatamente 1 alembic head."

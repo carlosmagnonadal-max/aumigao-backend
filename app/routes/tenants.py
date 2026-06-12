@@ -33,7 +33,9 @@ from app.schemas.tenant_onboarding import (
     TenantOnboardingUpdate,
 )
 from app.schemas.tenant_plan import TenantCapabilitiesResponse
+from app.dependencies.tenant_scope import get_admin_tenant_scope, is_super_admin
 from app.services.tenant_plan_service import (
+    DEFAULT_ON_FEATURE_KEYS,
     enforce_can_add_tenant_unit,
     enforce_tenant_feature_allowed,
     get_tenant_capabilities,
@@ -259,6 +261,13 @@ def list_tenant_features(tenant_id: str, db: Session = Depends(get_db)):
 @api_router.patch("/{tenant_id}/features", response_model=list[TenantFeatureResponse])
 def update_tenant_features(tenant_id: str, payload: list[TenantFeatureUpdate], admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
     tenant = _tenant_or_404(tenant_id, db)
+
+    # D5: admin nao-super_admin so pode alterar o PROPRIO tenant.
+    if not is_super_admin(admin):
+        scope = get_admin_tenant_scope(admin)
+        if scope.tenant_id != tenant_id:
+            raise HTTPException(status_code=403, detail="Acesso negado: admin só pode alterar as features do próprio tenant.")
+
     existing = {
         item.feature_key: item
         for item in db.query(TenantFeature).filter(TenantFeature.tenant_id == tenant_id).all()

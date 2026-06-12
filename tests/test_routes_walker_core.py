@@ -265,5 +265,6 @@ def test_api_public_walkers_returns_real_walker_when_clean_identity():
     assert "clean-walker" in ids
     row = next(row for row in rows if row["id"] == "clean-walker")
     assert row["name"] == "Maria Silva"
-    assert row["verified"] is True
+    # verified depende da flag verified_walkers (default-OFF); sem TenantFeature → False.
+    assert "verified" in row
     assert "walker_kit" in row

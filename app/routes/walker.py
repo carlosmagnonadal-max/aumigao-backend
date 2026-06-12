@@ -1507,7 +1507,7 @@ def _build_walker_kit_from_row(user_id: str | None, kit_row) -> dict:
     }
 
 
-def _public_walker_rows(db: Session) -> list[dict]:
+def _public_walker_rows(db: Session, verified_walkers_enabled: bool = True) -> list[dict]:
     profiles = db.query(WalkerProfile).filter(
         WalkerProfile.status == "active",
         WalkerProfile.active_as_walker.is_(True),
@@ -1543,7 +1543,7 @@ def _public_walker_rows(db: Session) -> list[dict]:
                     "neighborhood": "Pituba",
                     "bio": "Passeador verificado com kit publicado para consulta do tutor.",
                     "walk_price": 35,
-                    "verified": True,
+                    "verified": verified_walkers_enabled,
                     "walker_kit": _build_walker_kit("walker-demo-user-1", db),
             }
         ]
@@ -1611,20 +1611,33 @@ def _public_walker_rows(db: Session) -> list[dict]:
                 "neighborhood": profile.state,
                 "bio": profile.bio or "Passeador disponivel com kit publicado para consulta.",
                 "walk_price": 35,
-                "verified": True,
+                "verified": verified_walkers_enabled,
                 "walker_kit": _build_walker_kit_from_row(profile.user_id, kit_row),
         })
     return rows
 
 
+def _get_verified_walkers_enabled(db: Session, request) -> bool:
+    """Resolve se verified_walkers esta ativo para o tenant da request."""
+    from app.services.tenant_context import resolve_current_tenant
+    from app.services.tenant_plan_service import tenant_feature_enabled
+    try:
+        tenant = resolve_current_tenant(db, request)
+        return tenant_feature_enabled(tenant, db, "verified_walkers")
+    except Exception:
+        return False  # default-OFF para verified_walkers
+
+
 @router.get("/public")
-def public_walkers(db: Session = Depends(get_db)):
-    return {"walkers": _public_walker_rows(db)}
+def public_walkers(request: Request = None, db: Session = Depends(get_db)):
+    verified_enabled = _get_verified_walkers_enabled(db, request) if request is not None else False
+    return {"walkers": _public_walker_rows(db, verified_walkers_enabled=verified_enabled)}
 
 
 @api_public_router.get("/walkers")
-def api_public_walkers(db: Session = Depends(get_db)):
-    return _public_walker_rows(db)
+def api_public_walkers(request: Request = None, db: Session = Depends(get_db)):
+    verified_enabled = _get_verified_walkers_enabled(db, request) if request is not None else False
+    return _public_walker_rows(db, verified_walkers_enabled=verified_enabled)
 
 
 @router.get("/availability")

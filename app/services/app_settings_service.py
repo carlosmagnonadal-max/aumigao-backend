@@ -1,8 +1,8 @@
 """Service para configuracoes administrativas persistidas no banco.
 
 Expoe:
-  get_setting(db, key, default_dict) — read-through com fallback ao default
-  save_setting(db, key, merged_dict, updated_by) — upsert serializando JSON
+  get_setting(db, key, default_dict, tenant_id=None) — read-through com fallback global e depois ao default
+  save_setting(db, key, merged_dict, updated_by, tenant_id=None) — upsert serializando JSON
   append_walker_program_action(db, action_type, walker_id, payload)
   recent_walker_program_actions(db, limit=20) — ultimas N acoes, mais recentes primeiro
 """
@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from app.models.app_setting import AppSetting
@@ -28,13 +29,41 @@ def _merge_dict(base: dict, updates: dict) -> dict:
     return merged
 
 
-def get_setting(db: Session, key: str, default_dict: dict) -> dict:
+def _find_row(db: Session, key: str, tenant_id: str | None) -> AppSetting | None:
+    """Localiza a linha exata do escopo (tenant ou global)."""
+    if tenant_id:
+        return (
+            db.query(AppSetting)
+            .filter(AppSetting.key == key, AppSetting.tenant_id == tenant_id)
+            .first()
+        )
+    # Escopo global: tenant_id IS NULL
+    return (
+        db.query(AppSetting)
+        .filter(AppSetting.key == key, AppSetting.tenant_id.is_(None))
+        .first()
+    )
+
+
+def get_setting(db: Session, key: str, default_dict: dict, tenant_id: str | None = None) -> dict:
     """Retorna o setting mesclado: default como base, valor salvo sobrescreve.
+
+    Ordem de lookup:
+    1. Linha do tenant (tenant_id fornecido) → prioridade maxima
+    2. Linha global (tenant_id IS NULL) → fallback intermediario
+    3. default_dict → fallback final
 
     Numa base vazia (primeira execucao ou pos-deploy limpo) retorna o default
     intacto, preservando o comportamento anterior.
     """
-    row: AppSetting | None = db.get(AppSetting, key)
+    # Linha do tenant especifico
+    row: AppSetting | None = _find_row(db, key, tenant_id) if tenant_id else None
+    if row is None and tenant_id:
+        # Fallback para linha global
+        row = _find_row(db, key, None)
+    elif row is None:
+        row = _find_row(db, key, None)
+
     if row is None:
         return dict(default_dict)
     try:
@@ -49,13 +78,15 @@ def save_setting(
     key: str,
     merged_dict: dict,
     updated_by: str = "admin",
+    tenant_id: str | None = None,
 ) -> AppSetting:
-    """Faz upsert do setting serializado como JSON."""
-    row: AppSetting | None = db.get(AppSetting, key)
+    """Faz upsert do setting serializado como JSON no escopo dado (tenant ou global)."""
+    row: AppSetting | None = _find_row(db, key, tenant_id)
     now = datetime.utcnow()
     if row is None:
         row = AppSetting(
             key=key,
+            tenant_id=tenant_id,
             value_json=json.dumps(merged_dict, ensure_ascii=False),
             updated_at=now,
             updated_by=updated_by,

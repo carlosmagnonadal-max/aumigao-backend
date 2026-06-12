@@ -17,10 +17,12 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.dependencies.tenant_scope import get_admin_tenant_scope
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.walk import Walk
 from app.models.walk_location_ping import WalkLocationPing
 from app.services.operational_matching_service import WALKER_ARRIVING, RIDE_IN_PROGRESS
+from app.services.tenant_plan_service import tenant_feature_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,13 @@ def _post_locations(walk_id: str, body: PingBatchIn, user: User, db: Session):
     # Apenas o walker atribuído ao passeio pode enviar pings.
     if walk.walker_id != user.id:
         raise HTTPException(status_code=403, detail="Apenas o passeador atribuido pode enviar localizacao")
+
+    # Gate live_gps: se desabilitado, retorna 200 com saved=0 sem quebrar o app.
+    _gps_tenant_id = walk.tenant_id or user.tenant_id
+    if _gps_tenant_id:
+        _gps_tenant = db.get(Tenant, _gps_tenant_id)
+        if _gps_tenant and not tenant_feature_enabled(_gps_tenant, db, "live_gps"):
+            return {"saved": 0, "disabled": True}
 
     _assert_active(walk)
 

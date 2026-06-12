@@ -5,6 +5,7 @@ from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_admin
 from app.dependencies.rbac import require_permission
 from app.dependencies.tenant_scope import get_admin_tenant_scope
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.walker_referral import WalkerReferral
 from app.schemas.metrics import ReferralMetricsResponse
@@ -20,7 +21,18 @@ from app.schemas.walker_referral import (
     WalkerReferralValidateCode,
 )
 from app.services.metrics_service import get_referral_metrics
+from app.services.tenant_plan_service import tenant_feature_enabled
 from app.services.walker_referrals import create_walker_referral, link_referral_to_user, update_referral_status, validate_referral_code
+
+
+def _assert_referral_feature(user: User, db: Session, feature_key: str) -> None:
+    """Gate de referral por tenant. O AppSetting global continua como kill-switch adicional."""
+    tenant_id = user.tenant_id
+    if not tenant_id:
+        return
+    tenant = db.get(Tenant, tenant_id)
+    if tenant and not tenant_feature_enabled(tenant, db, feature_key):
+        raise HTTPException(status_code=403, detail="Programa de indicações não está habilitado para este tenant.")
 
 router = APIRouter(prefix="/referrals", tags=["referrals"])
 api_router = APIRouter(prefix="/api/referrals", tags=["referrals"])
@@ -43,6 +55,7 @@ def _admin_payload(referral: WalkerReferral, db: Session) -> AdminWalkerReferral
 @router.post("/walkers", response_model=WalkerReferralResponse)
 @api_router.post("/walkers", response_model=WalkerReferralResponse)
 def create_walker_referral_endpoint(payload: WalkerReferralCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _assert_referral_feature(user, db, "walker_referrals")
     return create_walker_referral(payload, user, db)
 
 

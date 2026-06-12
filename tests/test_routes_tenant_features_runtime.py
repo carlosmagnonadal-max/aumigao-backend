@@ -27,6 +27,7 @@ from app.core.database import Base, get_db
 from app.models.tenant import Tenant, TenantFeature
 from app.routes import tenant_features_runtime
 from app.services.tenant_feature_runtime_service import PRODUCT_RUNTIME_FEATURE_KEYS, RUNTIME_FEATURE_KEYS
+from app.services.tenant_plan_service import DEFAULT_ON_FEATURE_KEYS
 from app.services.tenant_seed_service import DEFAULT_TENANT_SLUG
 
 ALL_RUNTIME_KEYS = (*RUNTIME_FEATURE_KEYS, *PRODUCT_RUNTIME_FEATURE_KEYS)
@@ -84,13 +85,22 @@ def test_response_has_all_runtime_keys():
 
 
 def test_starter_plan_all_features_off_by_default():
-    # Plano starter: nenhuma capability base liberada -> defaults (tudo False).
+    # Plano starter: nenhuma capability comercial base liberada -> False para RUNTIME_FEATURE_KEYS.
+    # Fase 3 T1: chaves default-on de produto retornam True (gated por TenantFeature, nao por plano).
     client, _ = build(tenants=[
         dict(id="t-starter", name="Starter", slug=DEFAULT_TENANT_SLUG,
              status="active", plan="starter")
     ])
     body = client.get("/tenants/t-starter/features-runtime").json()
-    assert body["features"] == {key: False for key in ALL_RUNTIME_KEYS}
+    features = body["features"]
+    # Chaves comerciais: False para starter
+    for key in RUNTIME_FEATURE_KEYS:
+        assert features[key] is False, f"Commercial key {key!r} should be False for starter"
+    # Chaves default-on: True (sem linha na tabela → default-on)
+    for key in DEFAULT_ON_FEATURE_KEYS:
+        assert features[key] is True, f"Default-on key {key!r} should be True"
+    # verified_walkers: False (default-off)
+    assert features.get("verified_walkers") is False
 
 
 def test_business_plan_enables_base_allowed_features():
@@ -106,13 +116,21 @@ def test_business_plan_enables_base_allowed_features():
 
 
 def test_enterprise_plan_enables_all_features():
+    """Fase 3 T1: enterprise libera chaves comerciais; chaves default-on True; verified_walkers False."""
     client, _ = build(tenants=[
         dict(id="t-ent", name="Ent", slug="ent-slug",
              status="active", plan="enterprise")
     ])
     body = client.get("/tenants/t-ent/features-runtime").json()
-    # comerciais True (enterprise libera tudo); verified_walkers e flag de produto -> False sem TenantFeature.
-    assert body["features"] == {**{key: True for key in RUNTIME_FEATURE_KEYS}, "verified_walkers": False}
+    features = body["features"]
+    # Chaves comerciais: True para enterprise
+    for key in RUNTIME_FEATURE_KEYS:
+        assert features[key] is True, f"Commercial key {key!r} should be True for enterprise"
+    # Chaves default-on: True
+    for key in DEFAULT_ON_FEATURE_KEYS:
+        assert features[key] is True, f"Default-on key {key!r} should be True"
+    # verified_walkers: False (default-off)
+    assert features["verified_walkers"] is False
 
 
 # ---------------------------------------------------- AND base + tenant -------

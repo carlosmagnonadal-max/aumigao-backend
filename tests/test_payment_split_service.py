@@ -110,7 +110,10 @@ def test_compute_split_accepts_numeric_string_amount():
 
 def test_compute_split_returns_expected_keys():
     result = svc.compute_split(100.0, 20.0)
-    assert set(result.keys()) == {"commission_percent", "platform_amount", "walker_amount"}
+    # Fase 3 T1: tenant_amount e tenant_margin_percent sao campos novos (default 0)
+    assert {"commission_percent", "platform_amount", "walker_amount"}.issubset(set(result.keys()))
+    assert result.get("tenant_amount", 0.0) == 0.0
+    assert result.get("tenant_margin_percent", 0.0) == 0.0
 
 
 # --------------------------------------------------------------------------

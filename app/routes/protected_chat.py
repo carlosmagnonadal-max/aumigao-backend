@@ -10,8 +10,10 @@ from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.notification import Notification
 from app.models.protected_chat_message import ProtectedChatMessage
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.walk import Walk
+from app.services.tenant_plan_service import tenant_feature_enabled
 from app.services.tenant_seed_service import default_tenant_id
 
 
@@ -156,8 +158,18 @@ def _get_walk_or_404(db: Session, walk_id: str) -> Walk:
     return walk
 
 
+def _assert_protected_chat_feature(walk: Walk, user: User, db: Session) -> None:
+    tenant_id = walk.tenant_id or user.tenant_id
+    if not tenant_id:
+        return
+    tenant = db.get(Tenant, tenant_id)
+    if tenant and not tenant_feature_enabled(tenant, db, "protected_chat"):
+        raise HTTPException(status_code=403, detail="Chat protegido não está habilitado para este tenant.")
+
+
 def list_messages(walk_id: str, user: User, db: Session) -> dict:
     walk = _get_walk_or_404(db, walk_id)
+    _assert_protected_chat_feature(walk, user, db)
     _assert_chat_available(walk, user)
     messages = (
         db.query(ProtectedChatMessage)
@@ -179,6 +191,7 @@ def list_messages(walk_id: str, user: User, db: Session) -> dict:
 
 def create_message(payload: ProtectedChatMessageCreate, user: User, db: Session) -> dict:
     walk = _get_walk_or_404(db, payload.walk_id)
+    _assert_protected_chat_feature(walk, user, db)
     participant_role = _assert_chat_available(walk, user)
     body = payload.body.strip()
     if not body:

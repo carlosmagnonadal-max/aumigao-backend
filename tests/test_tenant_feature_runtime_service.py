@@ -12,8 +12,18 @@ from app.models.tenant import (
 from app.models.tenant_onboarding import TenantOnboarding
 from app.services import tenant_feature_runtime_service as svc
 from app.services.tenant_feature_runtime_service import PRODUCT_RUNTIME_FEATURE_KEYS, RUNTIME_FEATURE_KEYS
+from app.services.tenant_plan_service import DEFAULT_ON_FEATURE_KEYS
 
 ALL_RUNTIME_KEYS = (*RUNTIME_FEATURE_KEYS, *PRODUCT_RUNTIME_FEATURE_KEYS)
+
+# Mapa de defaults esperados para as chaves de produto (Fase 3 T1).
+_DEFAULT_PRODUCT_RUNTIME = {
+    key: (key in DEFAULT_ON_FEATURE_KEYS)
+    for key in PRODUCT_RUNTIME_FEATURE_KEYS
+}
+# Chaves comerciais (RUNTIME_FEATURE_KEYS) sempre iniciam False.
+EXPECTED_DEFAULT_RUNTIME = {key: False for key in RUNTIME_FEATURE_KEYS}
+EXPECTED_DEFAULT_RUNTIME.update(_DEFAULT_PRODUCT_RUNTIME)
 
 
 def _db():
@@ -59,9 +69,10 @@ def _feature(db, tenant_id: str, feature_key: str, *, enabled: bool, limit_value
 
 
 def test_get_default_feature_runtime_all_false():
+    # Fase 3 T1: chaves default-on agora iniciam True; chaves comerciais e verified_walkers False.
     runtime = svc.get_default_feature_runtime()
-    assert runtime == {key: False for key in ALL_RUNTIME_KEYS}
     assert set(runtime.keys()) == set(ALL_RUNTIME_KEYS)
+    assert runtime == EXPECTED_DEFAULT_RUNTIME
 
 
 def test_get_default_feature_runtime_returns_fresh_dict():
@@ -77,47 +88,76 @@ def test_get_default_feature_runtime_returns_fresh_dict():
 
 
 def test_runtime_starter_plan_all_disabled():
-    """starter plan allows none of the commercial capabilities at the base level."""
+    """starter plan allows none of the commercial capabilities at the base level.
+    Fase 3 T1: product default-on keys (tips, protected_chat, etc.) ainda retornam True
+    pois sao gated por TenantFeature (default-on), nao por plano.
+    """
     db = _db()
     tenant = _tenant(db, plan="starter")
     runtime = svc.get_tenant_feature_runtime(db, tenant=tenant)
     assert runtime["tenant_id"] == tenant.id
-    assert runtime["features"] == {key: False for key in ALL_RUNTIME_KEYS}
+    features = runtime["features"]
+    # Chaves comerciais continuam False para starter.
+    for key in RUNTIME_FEATURE_KEYS:
+        assert features[key] is False, f"Commercial key {key!r} should be False for starter"
+    # Chaves default-on retornam True (sem linha na tabela → default-on).
+    for key in DEFAULT_ON_FEATURE_KEYS:
+        assert features[key] is True, f"Default-on product key {key!r} should be True"
+    # verified_walkers continua False (default-off).
+    assert features["verified_walkers"] is False
 
 
 def test_runtime_enterprise_plan_all_enabled_without_overrides():
-    """enterprise plan allows all base caps AND tenant caps default to plan caps."""
+    """enterprise plan allows all base caps AND tenant caps default to plan caps.
+    Fase 3 T1: inclui chaves novas default-on.
+    """
     db = _db()
     tenant = _tenant(db, plan="enterprise")
     runtime = svc.get_tenant_feature_runtime(db, tenant=tenant)
-    assert runtime["features"] == {
-        "network_access": True,
-        "dedicated_app": True,
-        "custom_products": True,
-        "custom_projects": True,
-        "verified_walkers": False,
-    }
+    features = runtime["features"]
+    # Chaves comerciais: enterprise → True
+    assert features["network_access"] is True
+    assert features["dedicated_app"] is True
+    assert features["custom_products"] is True
+    assert features["custom_projects"] is True
+    # verified_walkers: default-off
+    assert features["verified_walkers"] is False
+    # Chaves default-on: True
+    for key in DEFAULT_ON_FEATURE_KEYS:
+        assert features[key] is True, f"{key!r} should be True (default-on) for enterprise"
 
 
 def test_runtime_business_plan_partial():
-    """business plan: network/dedicated/custom_products allowed, custom_projects not."""
+    """business plan: network/dedicated/custom_products allowed, custom_projects not.
+    Fase 3 T1: inclui chaves novas default-on.
+    """
     db = _db()
     tenant = _tenant(db, plan="business")
     runtime = svc.get_tenant_feature_runtime(db, tenant=tenant)
-    assert runtime["features"] == {
-        "network_access": True,
-        "dedicated_app": True,
-        "custom_products": True,
-        "custom_projects": False,
-        "verified_walkers": False,
-    }
+    features = runtime["features"]
+    assert features["network_access"] is True
+    assert features["dedicated_app"] is True
+    assert features["custom_products"] is True
+    assert features["custom_projects"] is False
+    assert features["verified_walkers"] is False
+    for key in DEFAULT_ON_FEATURE_KEYS:
+        assert features[key] is True, f"{key!r} should be True (default-on) for business"
 
 
 def test_runtime_unknown_plan_falls_back_to_starter():
+    """Plano desconhecido: comportamento de starter para chaves comerciais.
+    Fase 3 T1: chaves default-on ainda retornam True (gated por TenantFeature, nao por plano).
+    """
     db = _db()
     tenant = _tenant(db, plan="totally_unknown_plan")
     runtime = svc.get_tenant_feature_runtime(db, tenant=tenant)
-    assert runtime["features"] == {key: False for key in ALL_RUNTIME_KEYS}
+    features = runtime["features"]
+    # Chaves comerciais: False (plano desconhecido → starter)
+    for key in RUNTIME_FEATURE_KEYS:
+        assert features[key] is False
+    # Chaves default-on: True
+    for key in DEFAULT_ON_FEATURE_KEYS:
+        assert features[key] is True
 
 
 # ---------------------------------------------------------------------------
@@ -188,16 +228,22 @@ def test_runtime_explicit_tenant_takes_precedence_over_id():
 def test_runtime_resolves_default_tenant_when_not_found():
     """When tenant_id is unknown, falls back to get_default_tenant which ensures the
     seeded 'aumigao' enterprise tenant (features default disabled at the TenantFeature
-    level, but base AND tenant => still False for runtime keys)."""
+    level, but base AND tenant => still False for commercial runtime keys).
+    Fase 3 T1: chaves default-on retornam True (gated por TenantFeature, nao por plano).
+    """
     db = _db()
     # No tenant created; service must seed default 'aumigao'
     runtime = svc.get_tenant_feature_runtime(db, tenant_id="does-not-exist")
     seeded = db.query(Tenant).filter(Tenant.slug == "aumigao").first()
     assert seeded is not None
     assert runtime["tenant_id"] == seeded.id
-    # Default seed creates enterprise plan but TenantFeature rows enabled=False,
-    # so runtime (base AND tenant) is False for all keys.
-    assert runtime["features"] == {key: False for key in ALL_RUNTIME_KEYS}
+    features = runtime["features"]
+    # Chaves comerciais: False (seeded com TenantFeature enabled=False)
+    for key in RUNTIME_FEATURE_KEYS:
+        assert features[key] is False, f"Commercial key {key!r} should be False for seeded tenant"
+    # Chaves default-on: True (sem linha na tabela para o tenant semeado → default-on)
+    for key in DEFAULT_ON_FEATURE_KEYS:
+        assert features[key] is True, f"Default-on key {key!r} should be True for seeded tenant"
 
 
 def test_runtime_tenant_id_current_falls_back_to_default():

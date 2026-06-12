@@ -1215,6 +1215,7 @@ def _serialize_payment_config(config) -> TenantPaymentConfigResponse:
         tenant_id=config.tenant_id,
         provider=config.provider,
         commission_percent=config.commission_percent,
+        tenant_margin_percent=getattr(config, "tenant_margin_percent", 0.0) or 0.0,
         split_enabled=config.split_enabled,
         active=config.active,
     )
@@ -1242,10 +1243,14 @@ def update_payment_config_endpoint(
 ):
     scope = get_admin_tenant_scope(admin)
     tenant_id = scope.tenant_id or resolve_current_tenant_id(db)
+    # Comissão da plataforma: somente super_admin pode alterar.
+    if payload.commission_percent is not None and admin.role != "super_admin":
+        raise HTTPException(status_code=403, detail="O percentual da plataforma só pode ser alterado pela operadora.")
     config = update_payment_config(
         db,
         tenant_id,
         commission_percent=payload.commission_percent,
+        tenant_margin_percent=payload.tenant_margin_percent,
         provider=payload.provider,
         split_enabled=payload.split_enabled,
         actor=admin,
@@ -2166,17 +2171,24 @@ def walker_operations(admin: User = Depends(require_permission("walkers.read")),
 
 
 @router.get("/referral-program/settings")
-def referral_program_settings(db: Session = Depends(get_db)):
-    return get_setting(db, "referral_program", DEFAULT_REFERRAL_PROGRAM_SETTINGS)
+@api_router.get("/referral-program/settings")
+def referral_program_settings(admin: User = Depends(require_permission("admin.access")), db: Session = Depends(get_db)):
+    scope = get_admin_tenant_scope(admin)
+    # super_admin sem act-as-tenant edita a global (tenant_id=None)
+    tenant_id = scope.tenant_id if not scope.is_global else None
+    return get_setting(db, "referral_program", DEFAULT_REFERRAL_PROGRAM_SETTINGS, tenant_id=tenant_id)
 
 
 @router.put("/referral-program/settings")
-def update_referral_program_settings(payload: dict, db: Session = Depends(get_db)):
-    current = get_setting(db, "referral_program", DEFAULT_REFERRAL_PROGRAM_SETTINGS)
+@api_router.put("/referral-program/settings")
+def update_referral_program_settings(payload: dict, admin: User = Depends(require_permission("admin.access")), db: Session = Depends(get_db)):
+    scope = get_admin_tenant_scope(admin)
+    tenant_id = scope.tenant_id if not scope.is_global else None
+    current = get_setting(db, "referral_program", DEFAULT_REFERRAL_PROGRAM_SETTINGS, tenant_id=tenant_id)
     merged = _merge_dict(current, payload or {})
     merged["updated_at"] = _now()
     merged["updated_by"] = "admin"
-    save_setting(db, "referral_program", merged, updated_by="admin")
+    save_setting(db, "referral_program", merged, updated_by="admin", tenant_id=tenant_id)
     return merged
 
 
@@ -2200,10 +2212,13 @@ def update_referral_status(referral_id: str, payload: dict):
 
 
 @router.get("/walker-programs")
-def walker_programs(db: Session = Depends(get_db)):
+@api_router.get("/walker-programs")
+def walker_programs(admin: User = Depends(require_permission("admin.access")), db: Session = Depends(get_db)):
+    scope = get_admin_tenant_scope(admin)
+    tenant_id = scope.tenant_id if not scope.is_global else None
     rows = _walker_program_rows(db)
     return {
-        "settings": get_setting(db, "walker_program", DEFAULT_WALKER_PROGRAM_SETTINGS),
+        "settings": get_setting(db, "walker_program", DEFAULT_WALKER_PROGRAM_SETTINGS, tenant_id=tenant_id),
         "metrics": _walker_program_metrics(rows),
         "walkers": rows,
         "tips_review_queue": [
@@ -2221,12 +2236,15 @@ def walker_programs(db: Session = Depends(get_db)):
 
 
 @router.put("/walker-programs/settings")
-def update_walker_program_settings(payload: dict, db: Session = Depends(get_db)):
-    current = get_setting(db, "walker_program", DEFAULT_WALKER_PROGRAM_SETTINGS)
+@api_router.put("/walker-programs/settings")
+def update_walker_program_settings(payload: dict, admin: User = Depends(require_permission("admin.access")), db: Session = Depends(get_db)):
+    scope = get_admin_tenant_scope(admin)
+    tenant_id = scope.tenant_id if not scope.is_global else None
+    current = get_setting(db, "walker_program", DEFAULT_WALKER_PROGRAM_SETTINGS, tenant_id=tenant_id)
     merged = _merge_dict(current, payload or {})
     merged["updated_at"] = _now()
     merged["updated_by"] = "admin"
-    save_setting(db, "walker_program", merged, updated_by="admin")
+    save_setting(db, "walker_program", merged, updated_by="admin", tenant_id=tenant_id)
     return merged
 
 

@@ -26,6 +26,7 @@ from app.schemas.walk_review import ALLOWED_WALK_REVIEW_TAGS, WalkReviewCreate
 from app.schemas.walk_tip import WalkTipCheckoutCreate
 from app.schemas.complaint import ComplaintCreate, ComplaintEvidenceCreate
 from app.services.complaint_service import create_complaint
+from app.services.tenant_plan_service import tenant_feature_enabled
 from app.services.operational_matching_service import (
     LEGACY_STATUS_TO_OPERATIONAL,
     RIDE_SCHEDULED,
@@ -330,6 +331,14 @@ def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db:
         if pet and not pet.tenant_id:
             pet.tenant_id = tenant_id
 
+        # Gate home_pickup: se a flag estiver OFF, bloqueia pickup_method que indique busca em casa.
+        _pickup_method = data.get("pickup_method", "")
+        _home_pickup_values = {"Buscar em casa", "home_pickup", "buscar_em_casa", "buscar em casa"}
+        if str(_pickup_method or "").strip().lower() in {v.lower() for v in _home_pickup_values}:
+            _tenant_obj = db.get(Tenant, tenant_id)
+            if _tenant_obj and not tenant_feature_enabled(_tenant_obj, db, "home_pickup"):
+                raise HTTPException(status_code=400, detail="Modalidade buscar em casa não está disponível.")
+
         # Pet Tour: valida flag/destino/duração e aplica o preço do tenant (server-authoritative).
         if data.get("modality") == PET_TOUR_MODALITY:
             tenant = db.get(Tenant, tenant_id)
@@ -477,6 +486,12 @@ def create_walk_review(walk_id: str, payload: WalkReviewCreate, user: User = Dep
     walk = _get_walk_for_user(walk_id, user, db)
     if walk.tutor_id != user.id:
         raise HTTPException(status_code=403, detail="Apenas o tutor dono do passeio pode avaliar.")
+    # Gate reviews
+    _review_tenant_id = walk.tenant_id or user.tenant_id
+    if _review_tenant_id:
+        _review_tenant = db.get(Tenant, _review_tenant_id)
+        if _review_tenant and not tenant_feature_enabled(_review_tenant, db, "reviews"):
+            raise HTTPException(status_code=403, detail="Avaliações não estão habilitadas para este tenant.")
     if walk.operational_status not in REVIEWABLE_COMPLETION_STATUSES:
         raise HTTPException(status_code=409, detail="Avaliação disponível apenas após finalização operacional aprovada.")
     if not walk.walker_id and not walk.assigned_walker_id:
@@ -541,6 +556,12 @@ def create_walk_tip_checkout(walk_id: str, payload: WalkTipCheckoutCreate, user:
     walk = _get_walk_for_user(walk_id, user, db)
     if walk.tutor_id != user.id:
         raise HTTPException(status_code=403, detail="Apenas o tutor dono do passeio pode enviar gorjeta.")
+    # Gate tips
+    _tip_tenant_id = walk.tenant_id or user.tenant_id
+    if _tip_tenant_id:
+        _tip_tenant = db.get(Tenant, _tip_tenant_id)
+        if _tip_tenant and not tenant_feature_enabled(_tip_tenant, db, "tips"):
+            raise HTTPException(status_code=403, detail="Gorjetas não estão habilitadas para esta operação.")
     if walk.operational_status != "ride_completed":
         raise HTTPException(status_code=409, detail="Gorjeta disponível apenas após finalização operacional aprovada.")
     if not _approved_completion_review_exists(walk.id, db):

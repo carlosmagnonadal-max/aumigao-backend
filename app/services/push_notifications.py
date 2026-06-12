@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models.notification import Notification
 from app.models.push_token import PushToken
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.operational_observability_service import record_operational_exception, record_operational_log
 
@@ -178,8 +179,28 @@ def _do_send(messages: list[dict], notification_id: str, notification_type: str,
         db.close()
 
 
+def _push_notifications_enabled_for(db: Session, notification: Notification) -> bool:
+    """Verifica se push_notifications esta habilitado para o tenant da notificacao."""
+    from app.services.tenant_plan_service import tenant_feature_enabled  # import local para evitar ciclo
+    tenant_id = getattr(notification, "tenant_id", None)
+    if not tenant_id:
+        # Tenta derivar do user da notificacao
+        user_id = getattr(notification, "user_id", None)
+        if user_id:
+            user = db.get(User, user_id)
+            tenant_id = getattr(user, "tenant_id", None) if user else None
+    if not tenant_id:
+        return True  # indeterminavel → envia (regra: se indeterminavel, envia)
+    tenant = db.get(Tenant, tenant_id)
+    if not tenant:
+        return True
+    return tenant_feature_enabled(tenant, db, "push_notifications")
+
+
 def send_push_for_notification(db: Session, notification: Notification) -> None:
     """Versao sincrona — usada pelo scheduler de retry (que ja tem sua propria sessao)."""
+    if not _push_notifications_enabled_for(db, notification):
+        return
     if not _should_push(notification):
         return
 
@@ -239,6 +260,8 @@ def send_push_for_notification_background(db: Session, notification: Notificatio
     O registro de falha (push_failed) ocorre numa sessao nova criada dentro do
     thread, garantindo que a sessao do request ja fechada nao cause problemas.
     """
+    if not _push_notifications_enabled_for(db, notification):
+        return
     if not _should_push(notification):
         return
 

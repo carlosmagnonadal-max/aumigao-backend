@@ -7,6 +7,45 @@ from sqlalchemy.orm import Session
 from app.models.tenant import Tenant, TenantFeature, TenantUnit
 
 
+# Funcionalidades que estao SEMPRE LIGADAS em producao (default-on).
+# Uma linha na tabela TenantFeature permite DESLIGA-LAS individualmente.
+# Chaves ausentes da tabela devolvem True para as keys aqui e False para as demais.
+DEFAULT_ON_FEATURE_KEYS: frozenset[str] = frozenset({
+    "tips",
+    "weekly_missions",
+    "tutor_gamification",
+    "protected_chat",
+    "live_gps",
+    "client_referrals",
+    "walker_referrals",
+    "reviews",
+    "walker_boosts",
+    "home_pickup",
+    "push_notifications",
+    "transactional_emails",
+    "support_tickets",
+})
+
+
+def tenant_feature_enabled(tenant: Tenant, db: Session, key: str) -> bool:
+    """Retorna se a feature esta habilitada para o tenant.
+
+    Semantica:
+    - Linha na TenantFeature presente → usa o campo `enabled`.
+    - Linha ausente → True se key em DEFAULT_ON_FEATURE_KEYS, False caso contrario.
+
+    Para features comerciais (plano-gated) use tenant_has_feature/enforce_tenant_feature_allowed.
+    """
+    row: TenantFeature | None = (
+        db.query(TenantFeature)
+        .filter(TenantFeature.tenant_id == tenant.id, TenantFeature.feature_key == key)
+        .first()
+    )
+    if row is not None:
+        return bool(row.enabled)
+    return key in DEFAULT_ON_FEATURE_KEYS
+
+
 TENANT_PLAN_STARTER = "starter"
 TENANT_PLAN_BUSINESS = "business"
 TENANT_PLAN_ENTERPRISE = "enterprise"

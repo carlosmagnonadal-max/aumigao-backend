@@ -15,8 +15,12 @@ import logging
 import os
 import smtplib
 from email.message import EmailMessage
+from typing import TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 LOGGER = logging.getLogger(__name__)
 RESEND_ENDPOINT = "https://api.resend.com/emails"
@@ -102,6 +106,21 @@ def _send_via_smtp(to: str, subject: str, body_text: str) -> None:
     LOGGER.info("e-mail transacional enviado via SMTP para %s subject=%r", to, subject)
 
 
+def _transactional_emails_enabled(db: "Session | None", tenant_id: str | None) -> bool:
+    """Retorna False se transactional_emails estiver desabilitado para o tenant."""
+    if db is None or not tenant_id:
+        return True  # indeterminavel → envia
+    try:
+        from app.models.tenant import Tenant  # import local para evitar ciclo
+        from app.services.tenant_plan_service import tenant_feature_enabled
+        tenant = db.get(Tenant, tenant_id)
+        if not tenant:
+            return True
+        return tenant_feature_enabled(tenant, db, "transactional_emails")
+    except Exception:
+        return True  # nunca falha silenciosamente
+
+
 def _send_email(to: str, subject: str, body_text: str, body_html: str | None = None) -> None:
     """Envia e-mail escolhendo Resend → SMTP → log-only.
 
@@ -126,11 +145,13 @@ def _send_email(to: str, subject: str, body_text: str, body_html: str | None = N
 # templates                                                                    #
 # --------------------------------------------------------------------------- #
 
-def send_password_reset_email(to: str, code: str, user_name: str) -> None:
+def send_password_reset_email(to: str, code: str, user_name: str, *, db: "Session | None" = None, tenant_id: str | None = None) -> None:
     """Envia o código de 6 dígitos para reset de senha.
 
     Fire-safe: captura toda exceção internamente — a rota nunca falha por causa do e-mail.
     """
+    if not _transactional_emails_enabled(db, tenant_id):
+        return
     name = (user_name or "").split()[0] or "Usuário"
     subject = "[Aumigão] Código para redefinir sua senha"
     body_text = (
@@ -158,11 +179,13 @@ def send_password_reset_email(to: str, code: str, user_name: str) -> None:
     _send_email(to, subject, body_text, body_html)
 
 
-def send_welcome_email(to: str, user_name: str) -> None:
+def send_welcome_email(to: str, user_name: str, *, db: "Session | None" = None, tenant_id: str | None = None) -> None:
     """Envia boas-vindas após cadastro.
 
     Fire-safe: captura toda exceção internamente — a rota nunca falha por causa do e-mail.
     """
+    if not _transactional_emails_enabled(db, tenant_id):
+        return
     name = (user_name or "").split()[0] or "Usuário"
     subject = "Bem-vindo(a) ao Aumigão! 🐾"
     body_text = (

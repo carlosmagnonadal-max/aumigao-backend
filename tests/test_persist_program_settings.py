@@ -130,7 +130,8 @@ class TestSaveAndGetSetting:
         db = _make_session(_make_engine())
         save_setting(db, "prog", {"x": 1}, updated_by="admin")
         from app.models.app_setting import AppSetting
-        row = db.get(AppSetting, "prog")
+        row = db.query(AppSetting).filter(AppSetting.key == "prog", AppSetting.tenant_id.is_(None)).first()
+        assert row is not None
         assert row.updated_by == "admin"
         assert row.updated_at is not None
 

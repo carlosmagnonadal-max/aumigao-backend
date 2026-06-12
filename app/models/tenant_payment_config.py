@@ -24,8 +24,11 @@ class TenantPaymentConfig(Base):
         String, ForeignKey("tenants.id"), nullable=False, unique=True, index=True
     )
     provider: Mapped[str] = mapped_column(String, default="asaas")
-    # % do valor do passeio que a plataforma/tenant retém (resto vai ao walker).
+    # % do valor do passeio que a PLATAFORMA retém (comissão operadora — só super_admin altera).
     commission_percent: Mapped[float] = mapped_column(Float, default=DEFAULT_COMMISSION_PERCENT)
+    # % adicional que o TENANT retém sobre o restante (margem do operador white-label).
+    # Default 0: resultado idêntico ao comportamento anterior.
+    tenant_margin_percent: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
     # Quando True, o split é executado no gateway (walker recebe direto — Fase B).
     split_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True)

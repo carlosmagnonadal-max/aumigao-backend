@@ -1,13 +1,16 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_admin
 from app.dependencies.rbac import require_permission
+from app.dependencies.tenant_scope import get_admin_tenant_scope
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.walker_profile import WalkerProfile
+from app.services.tenant_plan_service import tenant_feature_enabled
 from app.schemas.matching import (
     MatchingDebugResponse,
     MatchingResponse,
@@ -85,7 +88,13 @@ def list_walker_boosts(status: str | None = Query(None), db: Session = Depends(g
 
 @admin_router.patch("/boosts/{walker_id}", response_model=WalkerBoostResponse)
 @api_admin_router.patch("/boosts/{walker_id}", response_model=WalkerBoostResponse)
-def update_walker_boost(walker_id: str, payload: WalkerBoostUpdate, db: Session = Depends(get_db)):
+def update_walker_boost(walker_id: str, payload: WalkerBoostUpdate, admin: User = Depends(require_permission("matching.read")), db: Session = Depends(get_db)):
+    # Gate walker_boosts por tenant do admin (super_admin global não aplica gate).
+    scope = get_admin_tenant_scope(admin)
+    if scope.tenant_id:
+        _boost_tenant = db.get(Tenant, scope.tenant_id)
+        if _boost_tenant and not tenant_feature_enabled(_boost_tenant, db, "walker_boosts"):
+            raise HTTPException(status_code=403, detail="Boosts de passeador não estão habilitados para este tenant.")
     profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == walker_id).first()
     if not profile:
         profile = WalkerProfile(

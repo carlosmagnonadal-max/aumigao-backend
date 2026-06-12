@@ -13,6 +13,7 @@ from app.models.pet import Pet
 from app.models.user import User
 from app.models.walk import Walk, WalkMatchingAttempt, WalkOperationalLog
 from app.models.walk_completion_review import WalkCompletionReview
+from app.models.walk_location_ping import WalkLocationPing
 from app.models.walk_operational_event import WalkOperationalEvent
 from app.models.walk_review import WalkReview
 from app.models.walk_tip import WalkTip
@@ -278,6 +279,17 @@ def _serialize_walk_tip(tip: WalkTip | None) -> dict | None:
     }
 
 
+def _has_live_tracking(walk_id: str, db: Session) -> bool:
+    """Retorna True se existir ping de localização nos últimos 2 minutos."""
+    cutoff = datetime.utcnow() - timedelta(minutes=2)
+    return (
+        db.query(WalkLocationPing)
+        .filter(WalkLocationPing.walk_id == walk_id, WalkLocationPing.recorded_at >= cutoff)
+        .limit(1)
+        .count()
+    ) > 0
+
+
 def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None, include_private: bool = False) -> dict:
     pet = db.get(Pet, walk.pet_id) if walk.pet_id else None
     tutor = db.get(User, walk.tutor_id) if walk.tutor_id else None
@@ -390,6 +402,7 @@ def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None
         "tip_status": visible_tip.status if visible_tip else None,
         "tip_paid_at": visible_tip.paid_at if visible_tip else None,
         "created_at": walk.created_at,
+        "has_live_tracking": _has_live_tracking(walk.id, db),
     }
 
 

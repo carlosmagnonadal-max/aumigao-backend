@@ -18,6 +18,10 @@ class SupportTicket(Base):
     tenant_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("tenants.id"), nullable=True, index=True
     )
+    # Autor do ticket (usuário logado que abriu via app)
+    user_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("users.id"), nullable=True, index=True
+    )
     subject: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     requester_name: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -33,6 +37,9 @@ class SupportTicket(Base):
     )  # low | normal | high
     assignee_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
     internal_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Resposta pública ao usuário (visível no app)
+    reply: Mapped[str | None] = mapped_column(Text, nullable=True)
+    replied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, index=True
     )

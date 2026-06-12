@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import inspect
+from sqlalchemy import and_, exists, func, inspect, not_, or_
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.services.app_settings_service import (
@@ -941,16 +941,120 @@ def operational_alerts(admin: User = Depends(require_permission("walks.read")), 
         "items": [_serialize_admin_walk(walk, db) for walk in alert_walks],
     }
 
+def _not_fake_token_conditions(columns: list):
+    """Gera clausulas NOT LIKE para cada token fake em cada coluna informada.
+
+    Retorna uma lista de clausulas AND (cada uma garante que nenhum token aparece
+    na concatenacao das colunas em lowercase).  Colunas devem ser atributos ORM.
+    """
+    conditions = []
+    for token in FAKE_ENTITY_TOKENS:
+        token_lower = token.lower()
+        # Qualquer coluna contendo o token => entidade fake => excluir
+        col_conditions = [func.lower(func.coalesce(col, "")).contains(token_lower) for col in columns]
+        conditions.append(not_(or_(*col_conditions)))
+    return conditions
+
+
+def _sql_real_tutor_filters(scope):
+    """Filtros SQL equivalentes a _is_real_tutor (sem apply_tenant_filter)."""
+    tutor_roles = ("tutor", "cliente", "client", "customer")
+    fake_free = _not_fake_token_conditions([User.id, User.email, User.full_name])
+    return [
+        User.role.in_(tutor_roles),
+        User.email.ilike("%@%"),
+        *fake_free,
+    ]
+
+
+def _sql_count_real_tutors(db: Session, scope) -> int:
+    """Conta tutores reais em SQL substituindo User.all() + _is_real_tutor."""
+    q = apply_tenant_filter(db.query(func.count(User.id)), User, scope)
+    q = q.filter(*_sql_real_tutor_filters(scope))
+    return q.scalar() or 0
+
+
+def _sql_count_real_pets(db: Session, scope) -> int:
+    """Conta pets reais em SQL substituindo Pet.all() + _is_real_pet."""
+    # Pet nao pode ter tokens fake nas colunas chave
+    fake_free_pet = _not_fake_token_conditions([Pet.id, Pet.name, Pet.photo_url, Pet.tutor_id])
+    # Tutor do pet tambem precisa ser real (EXISTS subquery)
+    real_tutor_sub = (
+        db.query(User.id)
+        .filter(User.id == Pet.tutor_id, *_sql_real_tutor_filters(scope))
+        .exists()
+    )
+    q = apply_tenant_filter(db.query(func.count(Pet.id)), Pet, scope)
+    q = q.filter(*fake_free_pet, real_tutor_sub)
+    return q.scalar() or 0
+
+
+def _sql_count_real_active_walkers(db: Session) -> int:
+    """Conta walkers reais ativos em SQL substituindo WalkerProfile.all() + _is_real_active_walker_profile.
+
+    WalkerProfile e global (nao passa por apply_tenant_filter) — mantido assim por design.
+    """
+    walker_roles = ("walker", "passeador")
+    fake_free_profile = _not_fake_token_conditions([
+        WalkerProfile.full_name, WalkerProfile.cpf, WalkerProfile.phone,
+        WalkerProfile.id, WalkerProfile.user_id,
+    ])
+    # O usuario do walker tambem nao pode ser fake
+    real_walker_user_sub = (
+        db.query(User.id)
+        .filter(
+            User.id == WalkerProfile.user_id,
+            User.role.in_(walker_roles),
+            *_not_fake_token_conditions([User.email, User.full_name]),
+        )
+        .exists()
+    )
+    q = db.query(func.count(WalkerProfile.id)).filter(
+        WalkerProfile.status == "active",
+        WalkerProfile.active_as_walker.is_(True),
+        *fake_free_profile,
+        real_walker_user_sub,
+    )
+    return q.scalar() or 0
+
+
+def _sql_count_risk_walkers(db: Session) -> int:
+    """Conta walkers em status de risco nao-fake em SQL.
+
+    WalkerProfile e global por design.
+    """
+    fake_free_profile = _not_fake_token_conditions([
+        WalkerProfile.full_name, WalkerProfile.cpf, WalkerProfile.phone,
+        WalkerProfile.id, WalkerProfile.user_id,
+    ])
+    real_user_sub = (
+        db.query(User.id)
+        .filter(
+            User.id == WalkerProfile.user_id,
+            *_not_fake_token_conditions([User.email, User.full_name]),
+        )
+        .exists()
+    )
+    q = db.query(func.count(WalkerProfile.id)).filter(
+        WalkerProfile.status.in_(["restricted", "suspended"]),
+        *fake_free_profile,
+        real_user_sub,
+    )
+    return q.scalar() or 0
+
+
 @router.get("/dashboard")
 @api_router.get("/dashboard")
 def dashboard(admin: User = Depends(require_permission("admin.access")), db: Session = Depends(get_db)):
     scope = get_admin_tenant_scope(admin)
-    real_clients = [user for user in apply_tenant_filter(db.query(User), User, scope).all() if _is_real_tutor(user)]
-    real_pets = [
-        pet
-        for pet in apply_tenant_filter(db.query(Pet), Pet, scope).all()
-        if _is_real_pet(pet, db.get(User, pet.tutor_id) if pet.tutor_id else None)
-    ]
+
+    # --- Agregacoes SQL: O(1) queries em vez de carregar tabelas inteiras ---
+    total_real_clients = _sql_count_real_tutors(db, scope)
+    total_real_pets = _sql_count_real_pets(db, scope)
+    real_active_walkers_count = _sql_count_real_active_walkers(db)
+    real_risk_walkers_count = _sql_count_risk_walkers(db)
+
+    # Walks: preloaded batch (ja era eficiente; mantido para calculo de critical/completed)
     walk_rows = apply_tenant_filter(db.query(Walk), Walk, scope).all()
     walk_users_by_id, walk_pets_by_id, walk_profiles_by_user_id = _preload_admin_walk_realness(walk_rows, db)
     real_walks = [
@@ -959,12 +1063,10 @@ def dashboard(admin: User = Depends(require_permission("admin.access")), db: Ses
         if _is_real_admin_walk_preloaded(walk, walk_users_by_id, walk_pets_by_id, walk_profiles_by_user_id)
     ]
     critical_walks = [
-    walk
-    for walk in real_walks
-    if str(
-        walk.operational_status or walk.status or ""
-    ).lower() in RECOVERY_WALK_STATUSES
-]
+        walk
+        for walk in real_walks
+        if str(walk.operational_status or walk.status or "").lower() in RECOVERY_WALK_STATUSES
+    ]
     completed_real_walks = [
         walk
         for walk in real_walks
@@ -972,23 +1074,23 @@ def dashboard(admin: User = Depends(require_permission("admin.access")), db: Ses
         and _is_real_admin_walk_preloaded(walk, walk_users_by_id, walk_pets_by_id, walk_profiles_by_user_id, require_walker=True)
     ]
     real_revenue_walk_ids = {walk.id for walk in completed_real_walks}
-    payments = [
-        payment
-        for payment in apply_tenant_filter(db.query(Payment), Payment, scope).filter(Payment.status.in_(PAID_PAYMENT_STATUSES)).all()
-        if _is_real_paid_payment(payment, real_revenue_walk_ids)
-    ]
+
+    # Payments: soma em SQL limitando por status e walk_ids reais
+    if real_revenue_walk_ids:
+        revenue_q = (
+            apply_tenant_filter(db.query(func.sum(Payment.amount)), Payment, scope)
+            .filter(
+                Payment.status.in_(PAID_PAYMENT_STATUSES),
+                Payment.walk_id.in_(real_revenue_walk_ids),
+                *_not_fake_token_conditions([Payment.id, Payment.tutor_id, Payment.walk_id, Payment.provider, Payment.provider_payment_id]),
+            )
+        )
+        estimated_revenue = float(revenue_q.scalar() or 0)
+    else:
+        estimated_revenue = 0.0
+
     no_show_total = len([walk for walk in real_walks if walk.status in {"Não comparecimento do cliente", "Não comparecimento do passeador"}])
     walk_total = len(real_walks)
-    real_active_walkers_count = sum(
-        1
-        for profile in db.query(WalkerProfile).all()
-        if _is_real_active_walker_profile(profile, db)
-    )
-    real_risk_walkers_count = sum(
-        1
-        for profile in db.query(WalkerProfile).filter(WalkerProfile.status.in_(["restricted", "suspended"])).all()
-        if not _is_fake_walker_profile(profile, _profile_user(profile, db))
-    )
     beta_operational_health = _build_beta_operational_health(db, real_walks, completed_real_walks, critical_walks)
     operational_observability = get_operational_observability_snapshot(db)
     operational_scheduler = get_operational_scheduler_status()
@@ -1000,9 +1102,9 @@ def dashboard(admin: User = Depends(require_permission("admin.access")), db: Ses
         recovery_statuses=RECOVERY_WALK_STATUSES,
     )
     return {
-        "total_clients": len(real_clients),
-        "total_tutors": len(real_clients),
-        "total_pets": len(real_pets),
+        "total_clients": total_real_clients,
+        "total_tutors": total_real_clients,
+        "total_pets": total_real_pets,
         "total_active_walkers": real_active_walkers_count,
         "total_walkers": real_active_walkers_count,
         "total_walks_scheduled": len([walk for walk in real_walks if walk.status == "Agendado"]),
@@ -1010,8 +1112,8 @@ def dashboard(admin: User = Depends(require_permission("admin.access")), db: Ses
         "total_walks_finished": len(completed_real_walks),
         "completed_walks": len(completed_real_walks),
         "total_walks_in_progress": len([walk for walk in real_walks if walk.status in IN_PROGRESS_WALK_STATUSES or walk.operational_status in IN_PROGRESS_WALK_STATUSES]),
-        "estimated_revenue_paid": sum(float(payment.amount or 0) for payment in payments),
-        "estimated_revenue": sum(float(payment.amount or 0) for payment in payments),
+        "estimated_revenue_paid": estimated_revenue,
+        "estimated_revenue": estimated_revenue,
         "pending_occurrences": 0,
         "open_disputes": 0,
         "walkers_at_risk": real_risk_walkers_count,
@@ -1040,10 +1142,15 @@ def dashboard(admin: User = Depends(require_permission("admin.access")), db: Ses
 
 @router.get("/users")
 @api_router.get("/users")
-def users(admin: User = Depends(require_permission("users.read")), db: Session = Depends(get_db)):
+def users(
+    admin: User = Depends(require_permission("users.read")),
+    db: Session = Depends(get_db),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
     # super_admin enxerga todos os tenants; admin regular fica restrito ao seu.
     query = apply_tenant_filter(db.query(User), User, get_admin_tenant_scope(admin))
-    return query.all()
+    return query.order_by(User.created_at.desc()).offset(offset).limit(limit).all()
 
 
 @router.get("/audit-logs")
@@ -1169,13 +1276,19 @@ def _serialize_admin_tutor(user: User, db: Session) -> dict:
 
 @router.get("/tutors")
 @api_router.get("/tutors")
-def tutors(admin: User = Depends(require_permission("users.read")), db: Session = Depends(get_db)):
+def tutors(
+    admin: User = Depends(require_permission("users.read")),
+    db: Session = Depends(get_db),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
     users = [
         user
         for user in apply_tenant_filter(db.query(User), User, get_admin_tenant_scope(admin)).order_by(User.created_at.desc()).all()
         if _is_real_tutor(user)
     ]
-    return [_serialize_admin_tutor(user, db) for user in users]
+    paginated = users[offset: offset + limit]
+    return [_serialize_admin_tutor(user, db) for user in paginated]
 
 def _serialize_admin_pet(pet: Pet, db: Session) -> dict:
     tutor = db.get(User, pet.tutor_id) if pet.tutor_id else None
@@ -1337,7 +1450,12 @@ def reject_walker(walker_id: str, request: Request, payload: dict | None = None,
 
 @router.get("/walks")
 @api_router.get("/walks")
-def walks(admin: User = Depends(require_permission("walks.read")), db: Session = Depends(get_db)):
+def walks(
+    admin: User = Depends(require_permission("walks.read")),
+    db: Session = Depends(get_db),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
     process_expired_attempts(db)
     real_walks = [
         walk
@@ -1345,9 +1463,10 @@ def walks(admin: User = Depends(require_permission("walks.read")), db: Session =
         if _is_real_admin_walk(walk, db)
     ]
     _refresh_reliability_events(real_walks, db)
+    paginated = real_walks[offset: offset + limit]
     rows = [
         _serialize_admin_walk(walk, db)
-        for walk in real_walks
+        for walk in paginated
     ]
     return rows
 
@@ -1637,10 +1756,16 @@ def recover_walk(walk_id: str, admin: User = Depends(require_permission("walks.r
 
 @router.get("/payments")
 @api_router.get("/payments")
-def payments(admin: User = Depends(require_permission("finance.read")), db: Session = Depends(get_db)):
+def payments(
+    admin: User = Depends(require_permission("finance.read")),
+    db: Session = Depends(get_db),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
     # require_permission convive com o require_admin do router durante a migração.
     query = apply_tenant_filter(db.query(Payment), Payment, get_admin_tenant_scope(admin))
-    return [_serialize_admin_payment(payment, db) for payment in query.order_by(Payment.created_at.desc()).all()]
+    rows = query.order_by(Payment.created_at.desc()).offset(offset).limit(limit).all()
+    return [_serialize_admin_payment(payment, db) for payment in rows]
 
 
 @router.get("/walk-completions/pending")

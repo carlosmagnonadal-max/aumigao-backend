@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -25,6 +26,10 @@ CRITICAL_NOTIFICATION_TYPES = {
     "walk_payment_released",
 }
 CRITICAL_WALK_STATUS_ACTIONS = {"walker_accepted", "ride_in_progress"}
+
+# ThreadPoolExecutor module-level para envio fire-and-forget.
+# daemon=True: threads nao impedem shutdown do processo.
+_PUSH_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="push_worker")
 
 
 def _metadata(notification: Notification) -> dict[str, Any]:
@@ -96,7 +101,80 @@ def _handle_expo_response(db: Session, notification: Notification, token_rows: l
         )
 
 
+def _do_send(messages: list[dict], notification_id: str, notification_type: str, token_rows: list[PushToken], session_factory) -> None:
+    """Executa o HTTP call e registra resultado numa sessao propria (thread-safe)."""
+    from app.core.database import SessionLocal as _SessionLocal  # import local para evitar ciclo na inicializacao
+    factory = session_factory or _SessionLocal
+    db = factory()
+    try:
+        try:
+            request = urllib.request.Request(
+                EXPO_PUSH_URL,
+                data=json.dumps(messages).encode("utf-8"),
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=4) as response:
+                raw_response = response.read().decode("utf-8")
+                try:
+                    payload = json.loads(raw_response or "{}")
+                except Exception:
+                    payload = {}
+
+            # Recria objetos minimos para _handle_expo_response sem depender de ORM vivo
+            tickets = payload.get("data")
+            if isinstance(tickets, dict):
+                tickets = [tickets]
+            if isinstance(tickets, list):
+                for token_row, ticket in zip(token_rows, tickets):
+                    if not isinstance(ticket, dict) or ticket.get("status") != "error":
+                        continue
+                    details = ticket.get("details") if isinstance(ticket.get("details"), dict) else {}
+                    error_code = str(details.get("error") or ticket.get("message") or "expo_push_error")
+                    if error_code == "DeviceNotRegistered":
+                        row = db.query(PushToken).filter(PushToken.expo_push_token == token_row.expo_push_token).first()
+                        if row:
+                            db.delete(row)
+                            record_operational_log(
+                                db,
+                                event_type="push_token_invalidated",
+                                severity="warning",
+                                source="push_notifications",
+                                message="Token Expo removido após retorno de dispositivo inválido.",
+                                context={"notification_id": notification_id, "token_id": row.id, "user_id": row.user_id, "reason": error_code},
+                            )
+                    else:
+                        record_operational_log(
+                            db,
+                            event_type="push_failed",
+                            severity="warning",
+                            source="push_notifications",
+                            message=str(ticket.get("message") or error_code),
+                            context={"notification_id": notification_id, "type": notification_type, "expo_error": error_code},
+                        )
+        except Exception as exc:
+            LOGGER.warning("push notification skipped notification_id=%s error=%s", notification_id, exc)
+            record_operational_exception(
+                db,
+                event_type="push_failed",
+                source="push_notifications",
+                exc=exc,
+                severity="warning",
+                context={"notification_id": notification_id, "type": notification_type},
+            )
+        db.commit()
+    except Exception:
+        LOGGER.exception("push worker: falha ao persistir log notification_id=%s", notification_id)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
 def send_push_for_notification(db: Session, notification: Notification) -> None:
+    """Versao sincrona — usada pelo scheduler de retry (que ja tem sua propria sessao)."""
     if not _should_push(notification):
         return
 
@@ -146,3 +224,45 @@ def send_push_for_notification(db: Session, notification: Notification) -> None:
             severity="warning",
             context={"notification_id": notification.id, "type": notification.type},
         )
+
+
+def send_push_for_notification_background(db: Session, notification: Notification, *, session_factory=None) -> None:
+    """Versao fire-and-forget — usada pelos routes HTTP.
+
+    Coleta tokens e monta mensagens no thread do request (sessao ainda viva),
+    depois despacha o I/O de rede para o _PUSH_EXECUTOR sem bloquear o worker.
+    O registro de falha (push_failed) ocorre numa sessao nova criada dentro do
+    thread, garantindo que a sessao do request ja fechada nao cause problemas.
+    """
+    if not _should_push(notification):
+        return
+
+    token_rows = _tokens_for_notification(db, notification)
+    if not token_rows:
+        return
+
+    metadata = _metadata(notification)
+    messages = [
+        {
+            "to": token_row.expo_push_token,
+            "sound": "default",
+            "title": notification.title,
+            "body": notification.message,
+            "data": {
+                "notification_id": notification.id,
+                "type": notification.type,
+                "related_entity_type": notification.related_entity_type,
+                "related_entity_id": notification.related_entity_id,
+                **metadata,
+            },
+        }
+        for token_row in token_rows
+    ]
+
+    # Copia os dados necessarios fora da sessao ORM (evita uso pos-fechamento)
+    notification_id = notification.id
+    notification_type = notification.type
+    # token_rows sao leves; a sessao ainda esta viva neste ponto
+    token_snapshot = list(token_rows)
+
+    _PUSH_EXECUTOR.submit(_do_send, messages, notification_id, notification_type, token_snapshot, session_factory)

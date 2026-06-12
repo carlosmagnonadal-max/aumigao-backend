@@ -49,7 +49,10 @@ def mask_database_url(database_url: str = SQLALCHEMY_DATABASE_URL) -> str:
 
 
 connect_args = {"check_same_thread": False} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args=connect_args)
+engine_kwargs = {}
+if not SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+    engine_kwargs = {"pool_pre_ping": True, "pool_recycle": 300, "pool_size": 5, "max_overflow": 10}
+engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args=connect_args, **engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

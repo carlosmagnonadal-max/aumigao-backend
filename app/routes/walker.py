@@ -28,7 +28,8 @@ from app.schemas.walker_profile import WalkerProfileCreate, WalkerProfileRespons
 from app.schemas.complaint import ComplaintCreate, ComplaintEvidenceCreate
 from app.services.complaint_service import create_complaint
 from app.services.identity_uniqueness import ensure_unique_identity
-from app.services.reputation_service import reputation_summary
+from app.models.walker_review import WalkerReview
+from app.services.reputation_service import COMPLETED_STATUSES as _WALK_COMPLETED_STATUSES, reputation_summary, walker_level
 from app.services.tenant_seed_service import default_tenant_id
 from app.services.walker_referrals import mark_referral_approved, mark_referral_rejected, mark_referral_under_review
 from app.utils.registration_validation import normalize_cpf_or_raise, normalize_email_or_raise, normalize_phone_or_raise
@@ -1341,6 +1342,170 @@ def update_kit(payload: dict, user: User = Depends(get_current_user), db: Sessio
     return {"ok": True, "walker_kit": _build_walker_kit(user.id, db)}
 
 
+def _batch_walk_review_summaries(walker_ids: list[str], db: Session) -> dict[str, dict]:
+    """Uma query para todos os WalkReview dos walkers; agrega em Python por walker_id.
+
+    Reproduz exatamente a matematica de _walk_review_reputation_summary:
+    - rating_avg: media dos ratings (arredondada 2 casas)
+    - rating_count: total de reviews
+    - recent_review_comments: ate 5 reviews com comment, por walker, ordem desc
+    - top_review_tags: ate 5 tags mais frequentes, por walker
+    """
+    if not walker_ids:
+        return {}
+    all_reviews = (
+        db.query(WalkReview)
+        .filter(WalkReview.walker_id.in_(walker_ids))
+        .order_by(WalkReview.created_at.desc())
+        .all()
+    )
+    # Agrupa por walker_id mantendo a ordem desc (query ja ordenou)
+    by_walker: dict[str, list[WalkReview]] = {}
+    for review in all_reviews:
+        by_walker.setdefault(review.walker_id, []).append(review)
+
+    result: dict[str, dict] = {}
+    empty = {
+        "rating_avg": 0,
+        "rating_count": 0,
+        "recent_review_comments": [],
+        "top_review_tags": [],
+    }
+    for walker_id in walker_ids:
+        reviews = by_walker.get(walker_id, [])
+        if not reviews:
+            result[walker_id] = dict(empty)
+            continue
+        rating_count = len(reviews)
+        rating_avg = round(sum(r.rating for r in reviews) / rating_count, 2)
+        tag_counts: dict[str, int] = {}
+        for review in reviews:
+            for tag in _walk_review_tags(review):
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        top_review_tags = [
+            {"tag": tag, "count": count}
+            for tag, count in sorted(tag_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+        ]
+        recent_review_comments = [
+            {
+                "id": r.id,
+                "walk_id": r.walk_id,
+                "rating": r.rating,
+                "comment": r.comment,
+                "created_at": r.created_at,
+            }
+            for r in reviews
+            if r.comment
+        ][:5]
+        result[walker_id] = {
+            "rating_avg": rating_avg,
+            "rating_count": rating_count,
+            "recent_review_comments": recent_review_comments,
+            "top_review_tags": top_review_tags,
+        }
+    return result
+
+
+def _batch_reputation_summaries(walker_ids: list[str], db: Session) -> dict[str, dict]:
+    """Uma query por tabela (WalkerReview, Walk) para todos os walkers; agrega em Python.
+
+    Reproduz exatamente a matematica de reputation_service.reputation_summary:
+    - rating_average, reviews_count, total_walks, level, reputation_score
+    """
+    if not walker_ids:
+        return {}
+    all_walker_reviews = (
+        db.query(WalkerReview)
+        .filter(WalkerReview.walker_id.in_(walker_ids))
+        .all()
+    )
+    walker_reviews_by_id: dict[str, list[WalkerReview]] = {}
+    for wr in all_walker_reviews:
+        walker_reviews_by_id.setdefault(wr.walker_id, []).append(wr)
+
+    completed_counts: dict[str, int] = {}
+    if walker_ids:
+        walks_completed = (
+            db.query(Walk.walker_id, Walk.id)
+            .filter(Walk.walker_id.in_(walker_ids), Walk.status.in_(_WALK_COMPLETED_STATUSES))
+            .all()
+        )
+        for row in walks_completed:
+            completed_counts[row.walker_id] = completed_counts.get(row.walker_id, 0) + 1
+
+    result: dict[str, dict] = {}
+    for walker_id in walker_ids:
+        reviews = walker_reviews_by_id.get(walker_id, [])
+        reviews_count = len(reviews)
+        rating_average = round(sum(r.rating for r in reviews) / reviews_count, 2) if reviews_count else 0.0
+        total_walks = completed_counts.get(walker_id, 0)
+        reputation_score = (
+            round((rating_average / 5) * 70 + min(total_walks, 80) / 80 * 15, 2)
+            if reviews_count else None
+        )
+        result[walker_id] = {
+            "rating_average": rating_average,
+            "reviews_count": reviews_count,
+            "total_walks": total_walks,
+            "level": walker_level(total_walks, rating_average, reviews_count),
+            "reputation_score": reputation_score,
+            "acceptance_rate": None,
+            "cancellation_rate": None,
+        }
+    return result
+
+
+def _build_walker_kit_from_row(user_id: str | None, kit_row) -> dict:
+    """Variante de _build_walker_kit que aceita a row pre-carregada (evita query por walker)."""
+    submission = _kit_submission_payload(kit_row)
+    submitted_items = submission.get("items", {})
+    item_payloads = []
+    available_keys = set()
+
+    for definition in KIT_ITEM_DEFINITIONS:
+        item_state = submitted_items.get(definition["key"], {})
+        available = bool(item_state.get("available"))
+        photo_urls = item_state.get("photo_urls") or []
+        if available:
+            available_keys.add(definition["key"])
+        item_payloads.append({
+            **definition,
+            "available": available,
+            "photo_urls": photo_urls,
+            "has_photo": bool(photo_urls),
+            "required_for": [tier["key"] for tier in KIT_TIERS if definition["key"] in tier["items"]],
+        })
+
+    current_tier = KIT_TIERS[0]
+    for tier in KIT_TIERS:
+        if all(key in available_keys for key in tier["items"]):
+            current_tier = tier
+
+    next_tier = next((tier for tier in KIT_TIERS if len(tier["items"]) > len(current_tier["items"])), None)
+    target_tier = next_tier or current_tier
+    missing_for_target = [key for key in target_tier["items"] if key not in available_keys]
+    photo_count = sum(len(item.get("photo_urls") or []) for item in submitted_items.values())
+
+    return {
+        "level": current_tier["key"],
+        "level_number": KIT_TIERS.index(current_tier) + 1,
+        "label": f"Kit {current_tier['label']}",
+        "ranking_bonus": current_tier["ranking_bonus"],
+        "audit_status": submission.get("audit_status", "rascunho"),
+        "audit_note": submission.get("audit_note", ""),
+        "updated_at": submission.get("updated_at"),
+        "tiers": KIT_TIERS,
+        "target_level": target_tier["key"],
+        "target_label": f"Kit {target_tier['label']}",
+        "missing_for_target": missing_for_target,
+        "photo_count": photo_count,
+        "items": item_payloads,
+        "public_photo_urls": [url for item in item_payloads for url in item["photo_urls"]][:6],
+        "public_note": "Tutor visualiza o nivel do kit, itens confirmados e fotos enviadas no perfil do passeador.",
+        "credential_note": "O nivel do kit e um parametro proprio e nao substitui score, avaliacao ou nivel operacional do passeador.",
+    }
+
+
 def _public_walker_rows(db: Session) -> list[dict]:
     profiles = db.query(WalkerProfile).filter(
         WalkerProfile.status == "active",
@@ -1381,19 +1546,51 @@ def _public_walker_rows(db: Session) -> list[dict]:
                     "walker_kit": _build_walker_kit("walker-demo-user-1", db),
             }
         ]
+
+    # --- Batch pre-load: O(1) queries independente do numero de walkers ---
+    walker_user_ids = [p.user_id for p in profiles if p.user_id]
+
+    # 1. Users em uma query
+    users_by_id: dict[str, User] = {}
+    if walker_user_ids:
+        users_by_id = {u.id: u for u in db.query(User).filter(User.id.in_(walker_user_ids)).all()}
+
+    # 2. WalkReview aggregates (para _walk_review_reputation_summary)
+    walk_review_summaries = _batch_walk_review_summaries(walker_user_ids, db)
+
+    # 3. WalkerReview + Walk completed (para reputation_summary)
+    rep_summaries = _batch_reputation_summaries(walker_user_ids, db)
+
+    # 4. WalkerKitSubmission em uma query
+    kit_rows_by_user: dict[str, object] = {}
+    if walker_user_ids:
+        kit_rows_by_user = {
+            r.walker_user_id: r
+            for r in db.query(WalkerKitSubmission).filter(WalkerKitSubmission.walker_user_id.in_(walker_user_ids)).all()
+        }
+
     rows = []
     seen_keys = set()
     for profile in profiles:
-        user = db.get(User, profile.user_id) if profile.user_id else None
+        user = users_by_id.get(profile.user_id) if profile.user_id else None
         if not _is_public_real_walker(profile, user):
             continue
         dedupe_key = (profile.cpf or profile.user_id or profile.id or profile.phone or (user.email if user else "")).strip().lower()
         if not dedupe_key or dedupe_key in seen_keys:
             continue
         seen_keys.add(dedupe_key)
+        summary = rep_summaries.get(profile.user_id, {
+            "rating_average": 0.0, "reviews_count": 0, "total_walks": 0,
+            "level": "Bronze", "reputation_score": None,
+            "acceptance_rate": None, "cancellation_rate": None,
+        })
+        walk_review_summary = walk_review_summaries.get(profile.user_id, {
+            "rating_avg": 0, "rating_count": 0, "recent_review_comments": [], "top_review_tags": [],
+        })
+        kit_row = kit_rows_by_user.get(profile.user_id)
         rows.append({
-                **(summary := reputation_summary(profile.user_id, db)),
-                **(walk_review_summary := _walk_review_reputation_summary(profile.user_id, db)),
+                **summary,
+                **walk_review_summary,
                 "id": profile.user_id,
                 "partner_id": profile.id,
                 "name": profile.full_name or "Passeador",
@@ -1414,7 +1611,7 @@ def _public_walker_rows(db: Session) -> list[dict]:
                 "bio": profile.bio or "Passeador disponivel com kit publicado para consulta.",
                 "walk_price": 35,
                 "verified": True,
-                "walker_kit": _build_walker_kit(profile.user_id, db),
+                "walker_kit": _build_walker_kit_from_row(profile.user_id, kit_row),
         })
     return rows
 

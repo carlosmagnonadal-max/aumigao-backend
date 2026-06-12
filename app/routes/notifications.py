@@ -13,7 +13,7 @@ from app.dependencies.auth import get_current_user
 from app.models.notification import Notification
 from app.models.push_token import PushToken
 from app.models.user import User
-from app.services.push_notifications import send_push_for_notification
+from app.services.push_notifications import send_push_for_notification, send_push_for_notification_background
 from app.services.tenant_context import resolve_current_tenant_id
 
 
@@ -102,7 +102,7 @@ def _create_notification(db: Session, payload: NotificationCreate) -> Notificati
     )
     db.add(notification)
     db.flush()
-    send_push_for_notification(db, notification)
+    send_push_for_notification_background(db, notification)
     return notification
 
 

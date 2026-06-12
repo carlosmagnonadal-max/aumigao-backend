@@ -1,13 +1,18 @@
-﻿from uuid import uuid4
+﻿import base64
+import json
+from uuid import uuid4
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
+
 from app.core.database import get_db
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.dependencies.auth import get_current_user
 from app.models.user import User
 from app.models.tutor_profile import TutorProfile
 from app.models.walker_profile import WalkerProfile
-from app.schemas.auth import LoginRequest, TokenResponse
+from app.schemas.auth import LoginRequest, SocialLoginPayload, TokenResponse
 from app.schemas.user import UserCreate, UserResponse
 from app.services.identity_uniqueness import ensure_unique_identity
 from app.services.login_rate_limiter import login_rate_limiter
@@ -135,3 +140,68 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 @router.get("/me", response_model=UserResponse)
 def me(user: User = Depends(get_current_user)):
     return user
+
+
+async def _google_user_info(access_token: str) -> dict:
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Token Google inválido ou expirado.")
+    return resp.json()
+
+
+def _decode_apple_jwt_payload(identity_token: str) -> dict:
+    """Decodifica o payload do JWT da Apple sem verificar assinatura."""
+    parts = identity_token.split(".")
+    if len(parts) != 3:
+        raise HTTPException(status_code=400, detail="Token Apple malformado.")
+    padded = parts[1] + "=" * (4 - len(parts[1]) % 4)
+    try:
+        return json.loads(base64.b64decode(padded).decode())
+    except Exception:
+        raise HTTPException(status_code=400, detail="Não foi possível decodificar o token Apple.")
+
+
+@router.post("/social", response_model=TokenResponse)
+async def social_login(payload: SocialLoginPayload, request: Request, db: Session = Depends(get_db)):
+    if payload.provider == "google":
+        info = await _google_user_info(payload.token)
+        email = info.get("email", "").strip().lower()
+        full_name = info.get("name") or ""
+    elif payload.provider == "apple":
+        token_data = _decode_apple_jwt_payload(payload.token)
+        email = (token_data.get("email") or payload.email or "").strip().lower()
+        full_name = payload.full_name or ""
+    else:
+        raise HTTPException(status_code=400, detail="Provider inválido. Use 'google' ou 'apple'.")
+
+    if not email:
+        raise HTTPException(status_code=400, detail="Email não disponível no token. Tente novamente.")
+
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        # Passeadores não podem criar conta via social login — precisam do fluxo de cadastro
+        # com documentos. Se app_target=walker, bloqueia a criação de conta nova.
+        if payload.app_target == "walker":
+            raise HTTPException(
+                status_code=403,
+                detail="Passeadores devem se cadastrar pelo formulário de candidatura. Use email e senha para entrar se já tiver conta.",
+            )
+        tenant_id = getattr(request.state, "tenant_id", None) or default_tenant_id(db)
+        user = User(
+            id=str(uuid4()),
+            email=email,
+            full_name=full_name or email.split("@")[0],
+            role="tutor",
+            password_hash="",
+            tenant_id=tenant_id,
+            is_active=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    return build_session(user)

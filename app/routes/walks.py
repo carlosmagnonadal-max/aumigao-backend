@@ -390,7 +390,7 @@ def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db:
 
         walk.operational_status = "pending_walker_confirmation"
         walk.status = "Agendado"
-        walk.no_walker_reason = "Matching inicial adiado para evitar timeout no beta."
+        walk.no_walker_reason = "Buscando o melhor passeador disponível."
 
         logger.warning(
             "create_walk.before_commit walk_id=%s operational_status=%s",

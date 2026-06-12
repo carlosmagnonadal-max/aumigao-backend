@@ -304,27 +304,10 @@ DEFAULT_REFERRAL_PROGRAM_SETTINGS = {
     "updated_by": "sistema",
 }
 
-# LEGADO/DEMO: consolidar com routes/referrals.py (não persistido de propósito — Fase de limpeza)
-REFERRAL_RECORDS = [
-    {
-        "id": "ref-demo-1",
-        "referral_code": "DOG-CARLO",
-        "referral_type": "passeador_para_passeador",
-        "status": "criada",
-        "referrer_user_id": "walker-demo-1",
-        "referred_user_id": None,
-        "referrer_role": "passeador",
-        "referred_role": "passeador",
-        "created_at": "2026-05-02T12:00:00",
-        "activated_at": None,
-        "unlock_condition": {"min_completed_walks": 20, "min_rating_required": 4.7},
-        "reward_amount": 100,
-        "reward_released_at": None,
-        "benefit_released_at": None,
-        "condition_progress": {"completed_walks": 11, "rating_avg": 4.9},
-        "fraud_flags": [],
-    }
-]
+# LEGADO: endpoint GET /admin/referrals é legado de tela demo.
+# O sistema real de indicações está em routes/referrals.py (GET /admin/referrals/walkers).
+# Dados demo removidos; lista vazia até eventual remoção do endpoint legado.
+REFERRAL_RECORDS: list[dict] = []
 
 DEFAULT_WALKER_PROGRAM_SETTINGS = {
     "tips": {
@@ -705,8 +688,24 @@ def _split_scheduled_date(value: str) -> tuple[str | None, str | None]:
     return date_part or None, time_part[:5] or None
 
 
-def _serialize_admin_walk(walk: Walk, db: Session, live_tracking_ids: set[str] | None = None) -> dict:
-    return serialize_operational_walk(walk, db, include_private=True, live_tracking_ids=live_tracking_ids)
+def _serialize_admin_walk(
+    walk: Walk,
+    db: Session,
+    live_tracking_ids: set[str] | None = None,
+    users_by_id: dict | None = None,
+    pets_by_id: dict | None = None,
+) -> dict:
+    payload = serialize_operational_walk(walk, db, include_private=True, live_tracking_ids=live_tracking_ids)
+    # is_test: usa preloads batch quando disponíveis (sem N+1 extra no listing).
+    if users_by_id is not None and pets_by_id is not None:
+        tutor = users_by_id.get(walk.tutor_id) if walk.tutor_id else None
+        pet = pets_by_id.get(walk.pet_id) if walk.pet_id else None
+        payload["is_test"] = not _is_real_admin_walk_preloaded(
+            walk, users_by_id, pets_by_id, {}
+        )
+    else:
+        payload["is_test"] = not _is_real_admin_walk(walk, db)
+    return payload
 
 
 def _table_exists(db: Session, table_name: str) -> bool:
@@ -840,6 +839,7 @@ def _serialize_admin_payment(payment: Payment, db: Session) -> dict:
     walk_date, walk_time = _split_scheduled_date(walk.scheduled_date) if walk else (None, None)
     return {
         "id": payment.id,
+        "is_test": _has_fake_token(payment.id, payment.tutor_id, payment.walk_id, payment.provider, payment.provider_payment_id),
         "tutor_id": payment.tutor_id,
         "tutor_name": (tutor.full_name if tutor else None) or (tutor.email if tutor else None),
         "client_name": (tutor.full_name if tutor else None) or (tutor.email if tutor else None),
@@ -1143,6 +1143,19 @@ def dashboard(admin: User = Depends(require_permission("admin.access")), db: Ses
         "beta_readiness": beta_readiness,
     }
 
+def _serialize_admin_user(user: User) -> dict:
+    return {
+        "id": user.id,
+        "is_test": _is_fake_user(user),
+        "email": user.email,
+        "full_name": user.full_name,
+        "role": user.role,
+        "is_active": user.is_active,
+        "tenant_id": user.tenant_id,
+        "created_at": user.created_at,
+    }
+
+
 @router.get("/users")
 @api_router.get("/users")
 def users(
@@ -1153,7 +1166,7 @@ def users(
 ):
     # super_admin enxerga todos os tenants; admin regular fica restrito ao seu.
     query = apply_tenant_filter(db.query(User), User, get_admin_tenant_scope(admin))
-    return query.order_by(User.created_at.desc()).offset(offset).limit(limit).all()
+    return [_serialize_admin_user(u) for u in query.order_by(User.created_at.desc()).offset(offset).limit(limit).all()]
 
 
 @router.get("/users/{user_id}")
@@ -1284,6 +1297,7 @@ def _serialize_admin_tutor(user: User, db: Session) -> dict:
     return {
         "id": user.id,
         "user_id": user.id,
+        "is_test": _is_fake_user(user),
         "email": user.email,
         "full_name": (profile.full_name if profile else None) or user.full_name or user.email,
         "name": (profile.full_name if profile else None) or user.full_name or user.email,
@@ -1331,6 +1345,7 @@ def _serialize_admin_pet(pet: Pet, db: Session) -> dict:
     return {
         "id": pet.id,
         "pet_id": pet.id,
+        "is_test": not _is_real_pet(pet, tutor),
         "tutor_id": pet.tutor_id,
         "user_id": pet.tutor_id,
         "owner_id": pet.tutor_id,
@@ -1525,7 +1540,7 @@ def walks(
     # Batch live-tracking: 1 query para toda a página
     live_ids = _batch_live_tracking([w.id for w in paginated], db)
     rows = [
-        _serialize_admin_walk(walk, db, live_tracking_ids=live_ids)
+        _serialize_admin_walk(walk, db, live_tracking_ids=live_ids, users_by_id=users_by_id, pets_by_id=pets_by_id)
         for walk in paginated
     ]
     return rows

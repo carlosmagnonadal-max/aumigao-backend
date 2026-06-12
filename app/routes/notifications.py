@@ -363,7 +363,7 @@ def create_push_test_notification(
         NotificationCreate(
             user_id=current_user.id,
             user_role=current_user.role or "tutor",
-            title="Teste de push beta",
+            title="Teste de notificação",
             message="Se você recebeu este alerta no dispositivo físico, o push real está ativo para este perfil.",
             type="push_test",
             metadata={"origin": "manual_push_test", "priority": "high"},

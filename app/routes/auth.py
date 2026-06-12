@@ -43,6 +43,15 @@ class ResetPasswordRequest(BaseModel):
     code: str
     new_password: str
 
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+# Rate limiter dedicado para change-password: 5 tentativas por 15 min (por user_id).
+_change_password_limiter = InMemoryLoginRateLimiter(max_failures=5, window_seconds=900)
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 # api_router removido: estava declarado mas nunca registrado em main.py e sem rotas.
 # Duplicar todos os decorators @router.xxx com @api_router.xxx seria invasivo sem
@@ -387,3 +396,33 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
     db.commit()
 
     return {"message": "Senha redefinida com sucesso."}
+
+
+@router.post("/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Altera a senha do usuário autenticado.
+
+    Valida a senha atual; valida a força da nova; troca o hash.
+    Rate limit: 5 tentativas por 15 min por usuário.
+    """
+    limiter_key = current_user.id
+    if _change_password_limiter.is_blocked(limiter_key):
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Tente novamente em 15 minutos.")
+
+    # Valida senha atual (mesmo que user tenha conta social sem senha)
+    current_hash = current_user.password_hash or ""
+    if not current_hash or not verify_password(str(payload.current_password or ""), current_hash):
+        _change_password_limiter.record_failure(limiter_key)
+        raise HTTPException(status_code=400, detail="Senha atual incorreta.")
+
+    _validate_password_strength(payload.new_password)
+
+    current_user.password_hash = get_password_hash(payload.new_password)
+    db.commit()
+
+    _change_password_limiter.clear(limiter_key)
+    return {"message": "Senha alterada com sucesso."}

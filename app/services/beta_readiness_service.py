@@ -23,7 +23,7 @@ OK: ReadinessStatus = "OK"
 ATTENTION: ReadinessStatus = "Atenção"
 CRITICAL: ReadinessStatus = "Crítico"
 
-EXPECTED_PAYMENT_MODE = "asaas_sandbox"
+ACCEPTED_PAYMENT_MODES = {"asaas_sandbox", "asaas_live"}
 TIP_PROVIDER = "internal_mock"
 
 CRITICAL_TABLES = {
@@ -95,15 +95,15 @@ def _overall_status(items: list[ReadinessItem]) -> str:
         return "Não recomendado"
     if any(item.status == ATTENTION for item in items):
         return "Pronto com ressalvas"
-    return "Pronto para beta assistido"
+    return "Pronto para operação"
 
 
 def _overall_summary(overall: str, counts: dict[str, int]) -> str:
     if overall == "Não recomendado":
-        return "Há dependências críticas indisponíveis para operar o beta com segurança."
+        return "Há dependências críticas indisponíveis para operar com segurança."
     if overall == "Pronto com ressalvas":
-        return "O beta pode operar com acompanhamento ativo dos pontos em atenção."
-    return "Checklist operacional completo para beta assistido."
+        return "A operação pode prosseguir com acompanhamento ativo dos pontos em atenção."
+    return "Checklist operacional completo."
 
 
 def build_beta_readiness_checklist(
@@ -440,19 +440,31 @@ def _push_item(db: Session, table_state: dict[str, bool]) -> ReadinessItem:
 
 
 def _payment_provider_item() -> ReadinessItem:
-    payment_mode = os.getenv("PAYMENT_MODE", EXPECTED_PAYMENT_MODE)
-    if payment_mode == EXPECTED_PAYMENT_MODE:
+    payment_mode = os.getenv("PAYMENT_MODE", "")
+    if payment_mode not in ACCEPTED_PAYMENT_MODES:
         return ReadinessItem(
             key="payment_provider",
             label="Payment provider em modo esperado",
-            status=OK,
-            message=f"Pagamento principal em {payment_mode}; gorjetas em {TIP_PROVIDER}.",
+            status=ATTENTION,
+            message=(
+                f"PAYMENT_MODE atual é '{payment_mode or '(não definido)'}'; "
+                f"valores aceitos: {', '.join(sorted(ACCEPTED_PAYMENT_MODES))}."
+            ),
         )
+    if payment_mode == "asaas_live":
+        live_key = os.getenv("ASAAS_LIVE_API_KEY", "")
+        if not live_key:
+            return ReadinessItem(
+                key="payment_provider",
+                label="Payment provider em modo esperado",
+                status=ATTENTION,
+                message="PAYMENT_MODE=asaas_live, mas ASAAS_LIVE_API_KEY não está definida.",
+            )
     return ReadinessItem(
         key="payment_provider",
         label="Payment provider em modo esperado",
-        status=ATTENTION,
-        message=f"PAYMENT_MODE atual é {payment_mode}; esperado para beta fechado: {EXPECTED_PAYMENT_MODE}.",
+        status=OK,
+        message=f"Pagamento principal em {payment_mode}; gorjetas em {TIP_PROVIDER}.",
     )
 
 

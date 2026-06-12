@@ -86,7 +86,7 @@ def calculate_walker_operational_score(walker_id: str | None, db: Session) -> di
                 "recent_operational_events": 0,
                 "completion_rejections": 0,
             },
-            "score_policy": "Indicador informativo para acompanhamento do beta. Não gera bloqueios automáticos.",
+            "score_policy": "Indicador informativo de desempenho. Não gera bloqueios automáticos.",
         }
 
     completed = _completed_walks(walker_id, db)
@@ -142,5 +142,5 @@ def calculate_walker_operational_score(walker_id: str | None, db: Session) -> di
             "high_attention_events": len(high_attention_events),
             "completion_rejections": rejected_count,
         },
-        "score_policy": "Indicador informativo para acompanhamento do beta. Não gera bloqueios automáticos.",
+        "score_policy": "Indicador informativo de desempenho. Não gera bloqueios automáticos.",
     }

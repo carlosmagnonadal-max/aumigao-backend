@@ -48,7 +48,8 @@ from app.models import (
     WalkCompletionReview,
     LegalAcceptance,
 )
-from app.routes import admin, auth, complaints, contact, coupons, incentives, legal, matching, notifications, operational_walks, payments, pet_routine, pet_tour, pets, protected_chat, recurring_plans, referrals, reviews, shared_walks, tenant_app_config, tenant_branding, tenant_commercial, tenant_dedicated_app_readiness, tenant_features_runtime, tenant_launch_readiness, tenant_units_runtime, tenants, tutor, tutor_gamification, walker, walker_network, walker_quality, walker_trust, walks, weekly_missions
+from app.models.support_ticket import SupportTicket  # noqa: F401 — garante tabela no metadata
+from app.routes import admin, admin_accounts, auth, complaints, contact, coupons, incentives, legal, matching, notifications, operational_walks, payments, pet_routine, pet_tour, pets, protected_chat, recurring_plans, referrals, reviews, shared_walks, support_tickets, tenant_app_config, tenant_branding, tenant_commercial, tenant_dedicated_app_readiness, tenant_features_runtime, tenant_launch_readiness, tenant_units_runtime, tenants, tutor, tutor_gamification, walker, walker_network, walker_quality, walker_trust, walks, weekly_missions
 from app.services.admin_seed_service import ensure_configured_admin_users
 from app.services.tenant_seed_service import ensure_default_tenant_links, ensure_network_profiles
 from app.services.operational_matching_service import ensure_operational_schema
@@ -366,6 +367,10 @@ app.include_router(walker_network.api_router)
 app.include_router(payments.router)
 app.include_router(admin.router)
 app.include_router(admin.api_router)
+app.include_router(admin_accounts.router)
+app.include_router(admin_accounts.api_router)
+app.include_router(support_tickets.router)
+app.include_router(support_tickets.api_router)
 app.include_router(tenant_branding.router)
 app.include_router(tenant_branding.api_router)
 app.include_router(tenant_branding.admin_api_router)

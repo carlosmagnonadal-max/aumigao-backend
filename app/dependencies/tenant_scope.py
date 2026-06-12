@@ -44,6 +44,25 @@ def get_admin_tenant_scope(user: User) -> AdminTenantScope:
     role = getattr(user, "role", "")
 
     if is_super_admin(user):
+        act = getattr(user, "_act_as_tenant_id", None)
+        if act and isinstance(act, str) and act.strip():
+            # super_admin optou por "operar como tenant" — escopo restrito ao tenant escolhido.
+            # Não validamos a existência do tenant no banco: se for inválido os filtros
+            # retornam vazio, sem vazar dados de outros tenants.
+            logger.info(
+                "super_admin_act_as_tenant",
+                extra={
+                    "user_id": getattr(user, "id", None),
+                    "act_as_tenant_id": act,
+                },
+            )
+            return AdminTenantScope(
+                user=user,
+                tenant_id=act.strip(),
+                is_global=False,
+                role=role,
+            )
+        # Sem header — comportamento global padrão
         _log_super_admin_bypass_once(user)
         return AdminTenantScope(
             user=user,
@@ -52,6 +71,8 @@ def get_admin_tenant_scope(user: User) -> AdminTenantScope:
             role=role,
         )
 
+    # Admin de tenant: NUNCA permite personificação via header.
+    # O _act_as_tenant_id é completamente ignorado aqui — segurança à prova de bala.
     if role != "admin":
         raise HTTPException(status_code=403, detail="Acesso restrito a administradores")
 

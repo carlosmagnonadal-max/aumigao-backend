@@ -638,6 +638,7 @@ def _serialize_walker_profile(profile: WalkerProfile, db: Session, include_inter
         "resubmission_requested_documents": [item for item in (profile.resubmission_requested_documents or "").split(",") if item],
         "created_at": profile.created_at,
         "updated_at": profile.updated_at or profile.created_at,
+        "asaas_wallet_id": getattr(profile, "asaas_wallet_id", None),
     }
     payload.update(calculate_walker_operational_score(profile.user_id, db))
     if include_internal:
@@ -1194,6 +1195,18 @@ def list_audit_logs(
         }
         for r in rows
     ]
+
+
+@router.get("/operational-observability")
+@api_router.get("/operational-observability")
+def get_operational_observability(
+    admin: User = Depends(require_permission("walks.read")),
+    db: Session = Depends(get_db),
+    limit: int = Query(20, ge=1, le=25),
+):
+    """Snapshot de logs operacionais (OperationalBetaLog) para a tela Saúde do Sistema."""
+    snapshot = get_operational_observability_snapshot(db, limit=limit)
+    return snapshot
 
 
 def _serialize_payment_config(config) -> TenantPaymentConfigResponse:

@@ -41,3 +41,4 @@ from app.models.coupon import Coupon, CouponRedemption
 from app.models.contact_message import ContactMessage
 from app.models.app_setting import AppSetting
 from app.models.walker_program_action import WalkerProgramAction
+from app.models.support_ticket import SupportTicket

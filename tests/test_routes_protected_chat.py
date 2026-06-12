@@ -256,3 +256,116 @@ def test_api_router_path_also_works():
     r = client.post("/api/protected-chat/messages", json={"walk_id": WALK_ID, "body": "via api"})
     assert r.status_code == 200, r.text
     assert r.json()["body"] == "via api"
+
+
+# ------------------------------------------------------- push type -----------
+def test_notification_type_is_protected_chat_message():
+    """Verifica que o tipo da notificacao gerada ao enviar mensagem e 'protected_chat_message'
+    — o mesmo tipo registrado em CRITICAL_NOTIFICATION_TYPES para disparo de push."""
+    from app.services.push_notifications import CRITICAL_NOTIFICATION_TYPES
+    assert "protected_chat_message" in CRITICAL_NOTIFICATION_TYPES
+
+    test_app, db = build()
+    client = client_as(test_app, db, TUTOR_ID)
+    client.post("/protected-chat/messages", json={"walk_id": WALK_ID, "body": "mensagem de teste"})
+    notif = db.query(Notification).filter(Notification.type == "protected_chat_message").first()
+    assert notif is not None
+    assert notif.type == "protected_chat_message"
+    assert notif.title == "Nova mensagem no chat do passeio"
+
+
+# ------------------------------------------------------- /messages/read ------
+def test_mark_read_endpoint_marks_only_other_participant_messages():
+    """POST /protected-chat/messages/read deve marcar apenas msgs do outro participante."""
+    test_app, db = build()
+
+    # Walker envia 2 mensagens; tutor envia 1
+    walker_client = client_as(test_app, db, WALKER_ID)
+    walker_client.post("/protected-chat/messages", json={"walk_id": WALK_ID, "body": "msg walker 1"})
+    walker_client.post("/protected-chat/messages", json={"walk_id": WALK_ID, "body": "msg walker 2"})
+    tutor_client = client_as(test_app, db, TUTOR_ID)
+    tutor_client.post("/protected-chat/messages", json={"walk_id": WALK_ID, "body": "msg tutor"})
+
+    # Confirma que nenhuma ainda esta lida pelo tutor
+    msgs = db.query(ProtectedChatMessage).all()
+    assert all(m.read_at is None for m in msgs)
+
+    # Tutor chama o endpoint de marcar como lidas
+    r = tutor_client.post("/protected-chat/messages/read", json={"walk_id": WALK_ID})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["marked"] == 2  # apenas as 2 msgs do walker
+
+    # Verifica estado no banco
+    walker_msgs = (
+        db.query(ProtectedChatMessage)
+        .filter(ProtectedChatMessage.sender_user_id == WALKER_ID)
+        .all()
+    )
+    tutor_msgs = (
+        db.query(ProtectedChatMessage)
+        .filter(ProtectedChatMessage.sender_user_id == TUTOR_ID)
+        .all()
+    )
+    assert all(m.read_at is not None for m in walker_msgs), "Msgs do walker devem estar lidas"
+    assert all(m.read_at is None for m in tutor_msgs), "Msg do tutor nao deve ser marcada pelo proprio tutor"
+
+
+def test_mark_read_endpoint_idempotent():
+    """Chamar /messages/read duas vezes nao duplica ou causa erro."""
+    test_app, db = build()
+    walker_client = client_as(test_app, db, WALKER_ID)
+    walker_client.post("/protected-chat/messages", json={"walk_id": WALK_ID, "body": "msg"})
+
+    tutor_client = client_as(test_app, db, TUTOR_ID)
+    r1 = tutor_client.post("/protected-chat/messages/read", json={"walk_id": WALK_ID})
+    assert r1.json()["marked"] == 1
+
+    # Segunda chamada: nada a marcar pois ja foi lida
+    r2 = tutor_client.post("/protected-chat/messages/read", json={"walk_id": WALK_ID})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["marked"] == 0
+
+
+# ------------------------------------------------------- unread_count --------
+def test_list_messages_returns_unread_count():
+    """GET /protected-chat/messages deve retornar unread_count correto antes de marcar como lida."""
+    test_app, db = build()
+
+    # Walker envia 3 mensagens; tutor nao leu nenhuma ainda
+    walker_client = client_as(test_app, db, WALKER_ID)
+    for i in range(3):
+        walker_client.post("/protected-chat/messages", json={"walk_id": WALK_ID, "body": f"msg {i}"})
+
+    # Tutor lista: unread_count deve ser 3 (antes de marcar)
+    r = client_as(test_app, db, TUTOR_ID).get("/protected-chat/messages", params={"walk_id": WALK_ID})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["unread_count"] == 3
+
+    # Apos listar, as mensagens devem estar marcadas como lidas
+    msgs = db.query(ProtectedChatMessage).filter(ProtectedChatMessage.sender_user_id == WALKER_ID).all()
+    assert all(m.read_at is not None for m in msgs)
+
+    # Segunda listagem: unread_count deve ser 0
+    r2 = client_as(test_app, db, TUTOR_ID).get("/protected-chat/messages", params={"walk_id": WALK_ID})
+    assert r2.json()["unread_count"] == 0
+
+
+def test_unread_count_perspective_is_per_user():
+    """unread_count reflete apenas msgs do OUTRO participante nao lidas."""
+    test_app, db = build()
+
+    # Tutor envia 2; walker envia 1
+    # Nota: client_as muta test_app.dependency_overrides — reatribuir antes de cada GET.
+    client_as(test_app, db, TUTOR_ID).post("/protected-chat/messages", json={"walk_id": WALK_ID, "body": "t1"})
+    client_as(test_app, db, TUTOR_ID).post("/protected-chat/messages", json={"walk_id": WALK_ID, "body": "t2"})
+    client_as(test_app, db, WALKER_ID).post("/protected-chat/messages", json={"walk_id": WALK_ID, "body": "w1"})
+
+    # Walker lista PRIMEIRO: unread = 2 (msgs do tutor), marcadas como lidas para o walker
+    r = client_as(test_app, db, WALKER_ID).get("/protected-chat/messages", params={"walk_id": WALK_ID})
+    assert r.json()["unread_count"] == 2
+
+    # Tutor lista em seguida: unread = 1 (msg do walker, ainda nao lida pelo tutor)
+    r2 = client_as(test_app, db, TUTOR_ID).get("/protected-chat/messages", params={"walk_id": WALK_ID})
+    assert r2.json()["unread_count"] == 1

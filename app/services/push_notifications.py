@@ -27,6 +27,7 @@ CRITICAL_NOTIFICATION_TYPES = {
     "walk_payment_released",
     "payment_confirmed",
     "support_reply",
+    "protected_chat_message",
 }
 CRITICAL_WALK_STATUS_ACTIONS = {"walker_accepted", "ride_in_progress"}
 

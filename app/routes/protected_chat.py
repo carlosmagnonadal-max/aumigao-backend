@@ -13,6 +13,7 @@ from app.models.protected_chat_message import ProtectedChatMessage
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.walk import Walk
+from app.services.push_notifications import send_push_for_notification_background
 from app.services.tenant_plan_service import tenant_feature_enabled
 from app.services.tenant_seed_service import default_tenant_id
 
@@ -42,6 +43,10 @@ CANCELLED_STATUSES = {
 class ProtectedChatMessageCreate(BaseModel):
     walk_id: str
     body: str = Field(min_length=1, max_length=1000)
+
+
+class MarkMessagesReadPayload(BaseModel):
+    walk_id: str
 
 
 def _normalize_role(role: str | None) -> str:
@@ -131,24 +136,25 @@ def _other_participant_id(walk: Walk, sender_id: str) -> tuple[str | None, str]:
     return walk.tutor_id, "tutor"
 
 
-def _create_in_app_notification(db: Session, walk: Walk, sender: User, message: ProtectedChatMessage) -> None:
+def _build_in_app_notification(db: Session, walk: Walk, sender: User, message: ProtectedChatMessage) -> Notification | None:
+    """Constroi (mas nao persiste) uma Notification de chat para o outro participante."""
     recipient_id, recipient_role = _other_participant_id(walk, sender.id)
     if not recipient_id:
-        return
-    notification = Notification(
+        return None
+    sender_label = "Passeador" if message.sender_role == "walker" else "Tutor"
+    return Notification(
         id=str(uuid4()),
         tenant_id=walk.tenant_id or sender.tenant_id or default_tenant_id(db),
         user_id=recipient_id,
         user_role=recipient_role,
-        title="Nova mensagem no passeio",
-        message="Voce recebeu uma mensagem no chat protegido do passeio.",
+        title="Nova mensagem no chat do passeio",
+        message=f"{sender_label} enviou uma mensagem no chat do passeio.",
         type="protected_chat_message",
         related_entity_type="walk",
         related_entity_id=walk.id,
         metadata_json=json.dumps({"message_id": message.id, "sender_role": message.sender_role}),
         created_at=datetime.utcnow(),
     )
-    db.add(notification)
 
 
 def _get_walk_or_404(db: Session, walk_id: str) -> Walk:
@@ -167,6 +173,30 @@ def _assert_protected_chat_feature(walk: Walk, user: User, db: Session) -> None:
         raise HTTPException(status_code=403, detail="Chat protegido não está habilitado para este tenant.")
 
 
+def _mark_walk_messages_read(walk_id: str, user_id: str, db: Session) -> int:
+    """Marca como lidas todas as mensagens do walk enviadas pelo outro participante.
+
+    Retorna o numero de mensagens marcadas.
+    """
+    messages = (
+        db.query(ProtectedChatMessage)
+        .filter(
+            ProtectedChatMessage.walk_id == walk_id,
+            ProtectedChatMessage.sender_user_id != user_id,
+            ProtectedChatMessage.read_at.is_(None),
+        )
+        .all()
+    )
+    if not messages:
+        return 0
+    now = datetime.utcnow()
+    for message in messages:
+        message.read_at = now
+        db.add(message)
+    db.commit()
+    return len(messages)
+
+
 def list_messages(walk_id: str, user: User, db: Session) -> dict:
     walk = _get_walk_or_404(db, walk_id)
     _assert_protected_chat_feature(walk, user, db)
@@ -177,6 +207,11 @@ def list_messages(walk_id: str, user: User, db: Session) -> dict:
         .order_by(ProtectedChatMessage.created_at.asc())
         .all()
     )
+    # Conta nao-lidas ANTES de marcar (perspectiva do usuario autenticado)
+    unread_count = sum(
+        1 for m in messages
+        if m.sender_user_id != user.id and m.read_at is None
+    )
     now = datetime.utcnow()
     changed = False
     for message in messages:
@@ -186,7 +221,19 @@ def list_messages(walk_id: str, user: User, db: Session) -> dict:
             changed = True
     if changed:
         db.commit()
-    return {"items": [_serialize_message(message) for message in messages], "chat_available": True}
+    return {
+        "items": [_serialize_message(message) for message in messages],
+        "chat_available": True,
+        "unread_count": unread_count,
+    }
+
+
+def mark_messages_read(walk_id: str, user: User, db: Session) -> dict:
+    walk = _get_walk_or_404(db, walk_id)
+    _assert_protected_chat_feature(walk, user, db)
+    _assert_chat_available(walk, user)
+    marked = _mark_walk_messages_read(walk.id, user.id, db)
+    return {"marked": marked}
 
 
 def create_message(payload: ProtectedChatMessageCreate, user: User, db: Session) -> dict:
@@ -206,9 +253,13 @@ def create_message(payload: ProtectedChatMessageCreate, user: User, db: Session)
     )
     db.add(message)
     db.flush()
-    _create_in_app_notification(db, walk, user, message)
+    notification = _build_in_app_notification(db, walk, user, message)
+    if notification:
+        db.add(notification)
     db.commit()
     db.refresh(message)
+    if notification:
+        send_push_for_notification_background(db, notification)
     return _serialize_message(message)
 
 
@@ -230,6 +281,15 @@ def post_protected_chat_message(
     return create_message(payload, user, db)
 
 
+@router.post("/messages/read")
+def post_mark_messages_read(
+    payload: MarkMessagesReadPayload,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return mark_messages_read(payload.walk_id, user, db)
+
+
 @api_router.get("/messages")
 def get_api_protected_chat_messages(
     walk_id: str,
@@ -246,3 +306,12 @@ def post_api_protected_chat_message(
     db: Session = Depends(get_db),
 ):
     return create_message(payload, user, db)
+
+
+@api_router.post("/messages/read")
+def post_api_mark_messages_read(
+    payload: MarkMessagesReadPayload,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return mark_messages_read(payload.walk_id, user, db)

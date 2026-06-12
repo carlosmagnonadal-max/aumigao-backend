@@ -280,17 +280,50 @@ def _serialize_walk_tip(tip: WalkTip | None) -> dict | None:
 
 
 def _has_live_tracking(walk_id: str, db: Session) -> bool:
-    """Retorna True se existir ping de localização nos últimos 2 minutos."""
+    """Retorna True se existir ping de localização nos últimos 2 minutos.
+
+    Usa .first() is not None em vez de .limit(1).count() para evitar COUNT(*) desnecessário.
+    """
     cutoff = datetime.utcnow() - timedelta(minutes=2)
     return (
         db.query(WalkLocationPing)
         .filter(WalkLocationPing.walk_id == walk_id, WalkLocationPing.recorded_at >= cutoff)
-        .limit(1)
-        .count()
-    ) > 0
+        .first()
+        is not None
+    )
 
 
-def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None, include_private: bool = False) -> dict:
+def _batch_live_tracking(walk_ids: list[str], db: Session) -> set[str]:
+    """Retorna o conjunto de walk_ids com ping de localização nos últimos 2 minutos.
+
+    1 query IN para toda a listagem — elimina o N+1 de _has_live_tracking em listagens.
+    """
+    if not walk_ids:
+        return set()
+    cutoff = datetime.utcnow() - timedelta(minutes=2)
+    rows = (
+        db.query(WalkLocationPing.walk_id)
+        .filter(WalkLocationPing.walk_id.in_(walk_ids), WalkLocationPing.recorded_at >= cutoff)
+        .distinct()
+        .all()
+    )
+    return {row[0] for row in rows}
+
+
+def serialize_operational_walk(
+    walk: Walk,
+    db: Session,
+    user: User | None = None,
+    include_private: bool = False,
+    live_tracking_ids: set[str] | None = None,
+) -> dict:
+    """Serializa um Walk com todos os campos operacionais.
+
+    live_tracking_ids: conjunto pré-computado por _batch_live_tracking (listagens).
+    Se None, calcula individualmente (detalhe único — 1 query OK).
+    O campo `has_live_tracking` está sempre presente no JSON para compatibilidade
+    com clients em produção.
+    """
     pet = db.get(Pet, walk.pet_id) if walk.pet_id else None
     tutor = db.get(User, walk.tutor_id) if walk.tutor_id else None
     walker_id = walk.walker_id or walk.assigned_walker_id
@@ -402,7 +435,13 @@ def serialize_operational_walk(walk: Walk, db: Session, user: User | None = None
         "tip_status": visible_tip.status if visible_tip else None,
         "tip_paid_at": visible_tip.paid_at if visible_tip else None,
         "created_at": walk.created_at,
-        "has_live_tracking": _has_live_tracking(walk.id, db),
+        # has_live_tracking: se live_tracking_ids foi pré-computado (batch de listagem)
+        # usa lookup em set (O(1)); senão faz 1 query — OK para endpoints de detalhe.
+        "has_live_tracking": (
+            walk.id in live_tracking_ids
+            if live_tracking_ids is not None
+            else _has_live_tracking(walk.id, db)
+        ),
     }
 
 

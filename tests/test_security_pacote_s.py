@@ -235,14 +235,31 @@ class TestS3PaymentIdempotency:
         assert r1.json()["id"] != r2.json()["id"]
         assert db.query(Payment).count() == 2
 
-    def test_no_walk_id_always_creates_new_payment(self, monkeypatch):
-        """Sem walk_id, nao ha idempotencia e cada chamada cria um novo payment."""
+    def test_no_walk_id_dedup_janela_curta(self, monkeypatch):
+        """Sem walk_id, dois POSTs com mesmo tutor+amount em < 2min → dedup (1 payment).
+
+        Comportamento corrigido em HF-backend fase 1: idempotência avulsa por janela de 2min.
+        """
+        monkeypatch.setattr(payments, "create_asaas_payment", _fake_asaas_ok())
+        _, db = _payment_engine_and_db()
+        client = _build_payment_app(db, current_user_id=TUTOR_ID)
+
+        r1 = client.post("/payments/create", json={"amount": 20.0, "method": "pix"})
+        r2 = client.post("/payments/create", json={"amount": 20.0, "method": "pix"})
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        # Idempotência: o mesmo payment deve ser devolvido
+        assert r1.json()["id"] == r2.json()["id"]
+        assert db.query(Payment).count() == 1
+
+    def test_no_walk_id_amounts_distintos_cria_dois(self, monkeypatch):
+        """Sem walk_id, amounts distintos não são deduplicados → 2 payments."""
         monkeypatch.setattr(payments, "create_asaas_payment", _fake_asaas_ok())
         _, db = _payment_engine_and_db()
         client = _build_payment_app(db, current_user_id=TUTOR_ID)
 
         client.post("/payments/create", json={"amount": 20.0, "method": "pix"})
-        client.post("/payments/create", json={"amount": 20.0, "method": "pix"})
+        client.post("/payments/create", json={"amount": 30.0, "method": "pix"})
         assert db.query(Payment).count() == 2
 
     def test_finalized_payment_does_not_block_new_one(self, monkeypatch):

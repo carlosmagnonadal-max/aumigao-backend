@@ -34,6 +34,7 @@ from app.services.operational_matching_service import (
     serialize_operational_walk,
     start_matching,
     update_operational_status,
+    _batch_live_tracking,
 )
 from app.services.operational_reliability_service import detect_reliability_events, record_late_cancellation_if_applicable
 from app.services.tenant_seed_service import default_tenant_id
@@ -283,7 +284,9 @@ def list_walks(
             query = query.filter(Walk.tutor_id == user.id)
         walks = query.order_by(Walk.created_at.desc()).limit(limit).all()
         _refresh_reliability_events(walks, db)
-        return [serialize_operational_walk(walk, db, user=user) for walk in walks]
+        # Batch: 1 query para live-tracking de toda a listagem (elimina N+1)
+        _live_ids = _batch_live_tracking([w.id for w in walks], db)
+        return [serialize_operational_walk(walk, db, user=user, live_tracking_ids=_live_ids) for walk in walks]
 
     query = _walk_list_query(db)
     if user.role == "walker":

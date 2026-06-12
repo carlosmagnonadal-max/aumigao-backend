@@ -42,6 +42,7 @@ from app.services.operational_matching_service import (
     process_expired_attempts,
     serialize_operational_walk,
     start_matching,
+    _batch_live_tracking,
 )
 from app.services.operational_reliability_service import (
     detect_reliability_events,
@@ -704,8 +705,8 @@ def _split_scheduled_date(value: str) -> tuple[str | None, str | None]:
     return date_part or None, time_part[:5] or None
 
 
-def _serialize_admin_walk(walk: Walk, db: Session) -> dict:
-    return serialize_operational_walk(walk, db, include_private=True)
+def _serialize_admin_walk(walk: Walk, db: Session, live_tracking_ids: set[str] | None = None) -> dict:
+    return serialize_operational_walk(walk, db, include_private=True, live_tracking_ids=live_tracking_ids)
 
 
 def _table_exists(db: Session, table_name: str) -> bool:
@@ -1485,16 +1486,41 @@ def walks(
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
+    """Listagem paginada de walks reais do admin.
+
+    Estratégia de performance (item 3 HF):
+    - ORDER BY created_at DESC é executado no banco (SQL).
+    - _is_real_admin_walk requer critérios em Python (email válido, fake-token em múltiplos
+      campos) que não se traduzem trivialmente em SQL sem JOINs pesados. Mantemos o filtro
+      em Python, mas eliminamos o N+1 de 2×db.get/walk usando _preload_admin_walk_realness
+      (3 queries de batch: users, pets, walker_profiles).
+    - has_live_tracking é resolvido em 1 query batch (_batch_live_tracking).
+    - A contagem real pode diferir de uma paginação SQL pura porque os fake-tokens são
+      avaliados após o fetch; para a página solicitada isso é transparente ao client.
+    """
     process_expired_attempts(db)
+    scope = get_admin_tenant_scope(admin)
+    # Todos os walks do tenant (ordem SQL), sem paginação antecipada pois o filtro de
+    # "real" acontece em Python. Para tenants grandes considerar adicionar filtros SQL
+    # básicos de role e e-mail via JOIN (fase futura de otimização).
+    all_walks = (
+        apply_tenant_filter(db.query(Walk), Walk, scope)
+        .order_by(Walk.created_at.desc())
+        .all()
+    )
+    # Batch preload: elimina N+1 de db.get(User) e db.get(Pet) por walk
+    users_by_id, pets_by_id, profiles_by_user_id = _preload_admin_walk_realness(all_walks, db)
     real_walks = [
         walk
-        for walk in apply_tenant_filter(db.query(Walk), Walk, get_admin_tenant_scope(admin)).order_by(Walk.created_at.desc()).all()
-        if _is_real_admin_walk(walk, db)
+        for walk in all_walks
+        if _is_real_admin_walk_preloaded(walk, users_by_id, pets_by_id, profiles_by_user_id)
     ]
     _refresh_reliability_events(real_walks, db)
     paginated = real_walks[offset: offset + limit]
+    # Batch live-tracking: 1 query para toda a página
+    live_ids = _batch_live_tracking([w.id for w in paginated], db)
     rows = [
-        _serialize_admin_walk(walk, db)
+        _serialize_admin_walk(walk, db, live_tracking_ids=live_ids)
         for walk in paginated
     ]
     return rows

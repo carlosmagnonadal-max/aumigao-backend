@@ -4,7 +4,7 @@ import json
 import secrets
 import logging
 from contextvars import ContextVar
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -259,7 +259,14 @@ def payment_response(payment: Payment, **extra):
         "pix_qr_code": extra.get("pix_qr_code"),
         "pix_copy_paste": extra.get("pix_copy_paste"),
         "pix_expiration_date": extra.get("pix_expiration_date"),
-        "sandbox_message": extra.get("sandbox_message") or "Ambiente Sandbox: nenhuma cobranca real sera realizada.",
+        # sandbox_message: usa sentinela _UNSET para distinguir None explícito (live) de ausente.
+        # Quando o caller passa sandbox_message=None (modo live), o campo fica None no JSON.
+        # Quando não passa nada (ex: get_payment), cai no default apenas se sandbox-mode.
+        "sandbox_message": (
+            extra["sandbox_message"]
+            if "sandbox_message" in extra
+            else "Ambiente Sandbox: nenhuma cobranca real sera realizada."
+        ),
         "commission_percent": payment.commission_percent,
         "platform_amount": payment.platform_amount,
         "walker_amount": payment.walker_amount,
@@ -473,6 +480,34 @@ async def create_payment(payload: PaymentCreate, user: User = Depends(get_curren
                 existing,
                 method=payload.method,
                 sandbox_message="Pagamento ja existente devolvido (idempotencia). Nenhuma nova cobranca foi criada.",
+            )
+    else:
+        # Pagamento avulso (walk_id=None): dedup por tutor + amount em janela de 2 min
+        # para evitar cobranças duplas por duplo-clique ou retry do client.
+        _dedup_cutoff = datetime.utcnow() - timedelta(minutes=2)
+        existing_avulso = (
+            db.query(Payment)
+            .filter(
+                Payment.tutor_id == user.id,
+                Payment.walk_id.is_(None),
+                Payment.amount == payload.amount,
+                Payment.status.in_(PAYMENT_PENDING_STATUSES),
+                Payment.created_at >= _dedup_cutoff,
+            )
+            .first()
+        )
+        if existing_avulso:
+            logger.warning(
+                "create_payment.idempotente_avulso tutor_id=%s amount=%s payment_id=%s status=%s",
+                user.id,
+                payload.amount,
+                existing_avulso.id,
+                existing_avulso.status,
+            )
+            return payment_response(
+                existing_avulso,
+                method=payload.method,
+                sandbox_message="Pagamento avulso ja existente devolvido (idempotencia). Nenhuma nova cobranca foi criada.",
             )
 
     split = build_payment_split(db, user.tenant_id, payload.amount)

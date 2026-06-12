@@ -44,7 +44,9 @@ class ResetPasswordRequest(BaseModel):
     new_password: str
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-api_router = APIRouter(prefix="/api/auth", tags=["auth"])
+# api_router removido: estava declarado mas nunca registrado em main.py e sem rotas.
+# Duplicar todos os decorators @router.xxx com @api_router.xxx seria invasivo sem
+# benefício comprovado em prod. Se necessário no futuro, adicionar espelhamento aqui.
 
 def build_session(user: User) -> TokenResponse:
     token = create_access_token(user.id, {"role": user.role})

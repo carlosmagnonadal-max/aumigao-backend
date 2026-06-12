@@ -102,8 +102,12 @@ def _handle_expo_response(db: Session, notification: Notification, token_rows: l
         )
 
 
-def _do_send(messages: list[dict], notification_id: str, notification_type: str, token_rows: list[PushToken], session_factory) -> None:
-    """Executa o HTTP call e registra resultado numa sessao propria (thread-safe)."""
+def _do_send(messages: list[dict], notification_id: str, notification_type: str, token_strings: list[str], session_factory) -> None:
+    """Executa o HTTP call e registra resultado numa sessao propria (thread-safe).
+
+    token_strings: lista de strings expo_push_token (NÃO objetos ORM — a sessão
+    original já foi fechada quando este thread executa).
+    """
     from app.core.database import SessionLocal as _SessionLocal  # import local para evitar ciclo na inicializacao
     factory = session_factory or _SessionLocal
     db = factory()
@@ -122,18 +126,18 @@ def _do_send(messages: list[dict], notification_id: str, notification_type: str,
                 except Exception:
                     payload = {}
 
-            # Recria objetos minimos para _handle_expo_response sem depender de ORM vivo
+            # token_strings é lista de strings — sem risco de DetachedInstanceError
             tickets = payload.get("data")
             if isinstance(tickets, dict):
                 tickets = [tickets]
             if isinstance(tickets, list):
-                for token_row, ticket in zip(token_rows, tickets):
+                for token_str, ticket in zip(token_strings, tickets):
                     if not isinstance(ticket, dict) or ticket.get("status") != "error":
                         continue
                     details = ticket.get("details") if isinstance(ticket.get("details"), dict) else {}
                     error_code = str(details.get("error") or ticket.get("message") or "expo_push_error")
                     if error_code == "DeviceNotRegistered":
-                        row = db.query(PushToken).filter(PushToken.expo_push_token == token_row.expo_push_token).first()
+                        row = db.query(PushToken).filter(PushToken.expo_push_token == token_str).first()
                         if row:
                             db.delete(row)
                             record_operational_log(
@@ -142,7 +146,7 @@ def _do_send(messages: list[dict], notification_id: str, notification_type: str,
                                 severity="warning",
                                 source="push_notifications",
                                 message="Token Expo removido após retorno de dispositivo inválido.",
-                                context={"notification_id": notification_id, "token_id": row.id, "user_id": row.user_id, "reason": error_code},
+                                context={"notification_id": notification_id, "token": token_str, "reason": error_code},
                             )
                     else:
                         record_operational_log(
@@ -260,10 +264,11 @@ def send_push_for_notification_background(db: Session, notification: Notificatio
         for token_row in token_rows
     ]
 
-    # Copia os dados necessarios fora da sessao ORM (evita uso pos-fechamento)
+    # Copia dados escalares ANTES de submeter ao thread — a sessão ORM fecha quando o
+    # request termina e acessar atributos de objetos ORM no thread causa DetachedInstanceError.
     notification_id = notification.id
     notification_type = notification.type
-    # token_rows sao leves; a sessao ainda esta viva neste ponto
-    token_snapshot = list(token_rows)
+    # Extrai expo_push_token (string) de cada ORM row enquanto a sessão ainda está viva.
+    token_strings = [str(row.expo_push_token) for row in token_rows]
 
-    _PUSH_EXECUTOR.submit(_do_send, messages, notification_id, notification_type, token_snapshot, session_factory)
+    _PUSH_EXECUTOR.submit(_do_send, messages, notification_id, notification_type, token_strings, session_factory)

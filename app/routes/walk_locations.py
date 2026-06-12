@@ -192,7 +192,12 @@ def _get_locations(
 
     if since is not None:
         # Polling incremental: retorna apenas pings após `since`.
-        since_naive = since.replace(tzinfo=None) if since.tzinfo else since
+        # Correção de timezone: se `since` vier com offset (ex: -03:00), converter para UTC
+        # antes de remover tzinfo; caso contrário assume-se UTC (comportamento anterior).
+        if since.tzinfo is not None:
+            since_naive = since.astimezone(timezone.utc).replace(tzinfo=None)
+        else:
+            since_naive = since
         query = query.filter(WalkLocationPing.recorded_at > since_naive)
 
     pings = (

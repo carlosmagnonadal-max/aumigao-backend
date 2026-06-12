@@ -41,6 +41,7 @@ from app.services.operational_matching_service import (
     serialize_operational_walk,
     start_matching,
     update_operational_status,
+    _batch_live_tracking,
 )
 from app.services.walker_operational_score_service import calculate_walker_operational_score
 from app.routes.notifications import NotificationCreate, _create_notification
@@ -1792,7 +1793,10 @@ def walker_walks(user: User = Depends(get_current_user), db: Session = Depends(g
         .all()
     )
 
-    return [serialize_operational_walk(walk, db, user=user) for walk in walks]
+    # Batch: 1 query para saber quais walks têm live-tracking ativo (elimina N+1)
+    walk_ids = [walk.id for walk in walks]
+    live_ids = _batch_live_tracking(walk_ids, db)
+    return [serialize_operational_walk(walk, db, user=user, live_tracking_ids=live_ids) for walk in walks]
 
 
 @router.post("/walks/{walk_id}/accept")

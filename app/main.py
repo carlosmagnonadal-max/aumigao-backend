@@ -415,6 +415,11 @@ def serve_upload(upload_path: str, request: Request):
 # contornaria essa protecao, entao nao deve ser usado.
 
 app.include_router(auth.router)
+# Colisão de rota corrigida: admin_router do operational_walks deve ser registrado
+# ANTES de admin.router para que /admin/walks/operational-metrics não seja capturado
+# pelo paramétrico /admin/walks/{walk_id} do admin.router.
+app.include_router(operational_walks.admin_router)
+app.include_router(operational_walks.api_admin_router)
 app.include_router(tutor.router)
 app.include_router(pets.router)
 app.include_router(walks.router)
@@ -482,8 +487,6 @@ app.include_router(pet_routine.router)
 app.include_router(pet_routine.api_router)
 app.include_router(walker_trust.router)
 app.include_router(walker_trust.api_router)
-app.include_router(operational_walks.admin_router)
-app.include_router(operational_walks.api_admin_router)
 app.include_router(referrals.router)
 app.include_router(referrals.api_router)
 app.include_router(referrals.admin_router)

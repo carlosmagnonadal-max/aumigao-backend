@@ -53,12 +53,16 @@ ASAAS_LIVE_API_KEY = os.getenv("ASAAS_LIVE_API_KEY")
 SENSITIVE_KEYS = {"access_token", "authorization", "api_key", "token", "password"}
 
 # ---------------------------------------------------------------------------
-# ContextVar para split_config — async-safe, sem alterar assinatura pública de
+# ContextVars — async-safe, sem alterar assinatura pública de
 # create_asaas_payment (que é monkeypatchada nos testes existentes).
-# O router seta _split_config_ctx antes de chamar create_asaas_payment;
-# a função lê o valor dentro da mesma tarefa asyncio.
+# O router seta os valores antes de chamar create_asaas_payment;
+# a função lê os valores dentro da mesma tarefa asyncio.
 # ---------------------------------------------------------------------------
 _split_config_ctx: ContextVar[dict | None] = ContextVar("_split_config_ctx", default=None)
+
+# CPF do TutorProfile (apenas dígitos, 11 chars). None quando não disponível
+# (sandbox usa fallback; live rejeita com 400 dentro de create_asaas_customer).
+_tutor_cpf_ctx: ContextVar[str | None] = ContextVar("_tutor_cpf_ctx", default=None)
 
 # ---------------------------------------------------------------------------
 # Mapeamentos de status
@@ -274,13 +278,32 @@ def payment_response(payment: Payment, **extra):
     }
 
 
-async def create_asaas_customer(client: httpx.AsyncClient, user: User, *, is_live: bool = False):
-    cpf_cnpj = ASAAS_SANDBOX_DEFAULT_CPF_CNPJ if not is_live else (
-        # No modo live usamos CPF real do usuário (campo a ser preenchido no perfil).
-        # Por ora, fallback para o mesmo default para evitar quebrar o fluxo;
-        # o operador deve garantir que o CPF real esteja disponível antes do live.
-        ASAAS_SANDBOX_DEFAULT_CPF_CNPJ
-    )
+async def create_asaas_customer(
+    client: httpx.AsyncClient,
+    user: User,
+    *,
+    is_live: bool = False,
+    tutor_cpf: str | None = None,
+):
+    """Cria ou busca um customer no Asaas para o usuário.
+
+    tutor_cpf: CPF do TutorProfile (apenas dígitos, 11 chars) pré-carregado pelo
+    caller para evitar acesso a banco dentro da coroutine.
+
+    Lógica de CPF:
+    - Sandbox: usa tutor_cpf quando disponível, senão usa ASAAS_SANDBOX_DEFAULT_CPF_CNPJ.
+    - Live: exige tutor_cpf válido; sem ele lança HTTPException 400.
+    """
+    if is_live:
+        if not tutor_cpf or len(tutor_cpf) != 11:
+            raise HTTPException(
+                status_code=400,
+                detail="Informe seu CPF no perfil para concluir o pagamento.",
+            )
+        cpf_cnpj = tutor_cpf
+    else:
+        cpf_cnpj = tutor_cpf if (tutor_cpf and len(tutor_cpf) == 11) else ASAAS_SANDBOX_DEFAULT_CPF_CNPJ
+
     payload = {
         "name": user.full_name or user.email,
         "email": user.email,
@@ -320,12 +343,17 @@ async def create_asaas_payment(payload: PaymentCreate, user: User):
     # esta função — async-safe via ContextVar, sem alterar a assinatura pública.
     split_config = _split_config_ctx.get()
 
+    # CPF do TutorProfile — pré-carregado via ContextVar (async-safe).
+    # O router injeta _tutor_cpf_ctx antes de chamar create_asaas_payment;
+    # sem injeção (mocks de teste antigos) o valor é None → sandbox usa default.
+    tutor_cpf = _tutor_cpf_ctx.get()
+
     async with httpx.AsyncClient(
         base_url=base_url,
         headers=asaas_headers(api_key, mode="live" if is_live else "sandbox"),
         timeout=20,
     ) as client:
-        customer_id = await create_asaas_customer(client, user, is_live=is_live)
+        customer_id = await create_asaas_customer(client, user, is_live=is_live, tutor_cpf=tutor_cpf)
         payment_payload = {
             "customer": customer_id,
             "billingType": billing_type,
@@ -515,6 +543,13 @@ async def create_payment(payload: PaymentCreate, user: User = Depends(get_curren
     # Injeta split_config via ContextVar (async-safe) antes de chamar create_asaas_payment,
     # mantendo a assinatura pública (payload, user) compatível com mocks de teste.
     _split_config_ctx.set(split_config)
+
+    # Carrega CPF do TutorProfile e injeta via ContextVar (async-safe).
+    # Em modo live sem CPF válido, create_asaas_customer levantará 400.
+    from app.models.tutor_profile import TutorProfile as _TutorProfile
+    _tp = db.query(_TutorProfile).filter(_TutorProfile.user_id == user.id).first()
+    _tutor_cpf = (_tp.cpf or "").strip() if _tp else ""
+    _tutor_cpf_ctx.set(_tutor_cpf if len(_tutor_cpf) == 11 else None)
 
     try:
         provider_data, pix_data, _billing_type = await create_asaas_payment(payload, user)

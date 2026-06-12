@@ -383,3 +383,217 @@ def test_patch_wallet_empty_string_returns_422():
     client = as_user(test_app, db, "admin-1")
     r = client.patch(f"/admin/walkers/{WALKER_USER_ID}/wallet", json={"asaas_wallet_id": ""})
     assert r.status_code == 422, r.text
+
+
+# ---------------------------------------------------------------------------
+# Testes de CPF do tutor no modo live
+# ---------------------------------------------------------------------------
+
+import asyncio
+
+from app.models.tutor_profile import TutorProfile
+from app.routes.payments import create_asaas_customer, _tutor_cpf_ctx
+
+VALID_CPF_11 = "52998224725"  # CPF válido (dígitos verificadores corretos)
+
+
+def build_payments_app_with_cpf(*, tutor_cpf: str = "") -> tuple:
+    """Monta app de payments com TutorProfile opcionalmente configurado com CPF."""
+    _engine, Session = _make_engine_and_session()
+    db = Session()
+
+    db.add(Tenant(id=TENANT_ID, name="LiveCPF", slug=DEFAULT_TENANT_SLUG, status="active", plan="business"))
+    db.add(User(id=TUTOR_ID, email="tutor@live.com", password_hash="x", role="cliente", tenant_id=TENANT_ID))
+    db.add(TutorProfile(
+        id="tp-live-cpf",
+        user_id=TUTOR_ID,
+        tenant_id=TENANT_ID,
+        full_name="Tutor Teste",
+        cpf=tutor_cpf,
+        phone="",
+    ))
+    db.add(TenantPaymentConfig(
+        tenant_id=TENANT_ID,
+        commission_percent=20.0,
+        split_enabled=False,
+        active=True,
+    ))
+    db.commit()
+
+    test_app = FastAPI()
+    test_app.include_router(payments.router)
+    test_app.dependency_overrides[get_db] = lambda: db
+    return test_app, db
+
+
+# ---------------------------------------------------------------------------
+# Testes unitários de create_asaas_customer (função pura via httpx mock)
+# ---------------------------------------------------------------------------
+
+class _FakeHttpxClient:
+    """Cliente httpx mínimo para testar create_asaas_customer sem rede."""
+
+    def __init__(self, status_code: int = 200, payload: dict | None = None):
+        self._status_code = status_code
+        self._payload = payload or {"id": "cust-123"}
+        self.posted_payload: dict | None = None
+
+    async def post(self, path: str, json: dict | None = None):
+        self.posted_payload = json
+
+        class _Resp:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+            @property
+            def text(self):
+                return str(self._payload)
+
+        return _Resp(self._status_code, self._payload)
+
+
+def test_create_asaas_customer_live_uses_tutor_cpf():
+    """No modo live, create_asaas_customer usa o CPF passado em tutor_cpf."""
+    fake = _FakeHttpxClient(status_code=200, payload={"id": "cust-live-1"})
+    cust_id = asyncio.run(create_asaas_customer(
+        fake,
+        User(id="u1", email="a@b.com", full_name="Tutor"),
+        is_live=True,
+        tutor_cpf=VALID_CPF_11,
+    ))
+    assert cust_id == "cust-live-1"
+    assert fake.posted_payload is not None
+    assert fake.posted_payload["cpfCnpj"] == VALID_CPF_11
+
+
+def test_create_asaas_customer_live_without_cpf_raises_400():
+    """No modo live sem CPF válido, create_asaas_customer levanta HTTPException 400."""
+    from fastapi import HTTPException as FastAPIHTTPException
+
+    fake = _FakeHttpxClient()
+    with pytest.raises(FastAPIHTTPException) as exc_info:
+        asyncio.run(create_asaas_customer(
+            fake,
+            User(id="u1", email="a@b.com", full_name="Tutor"),
+            is_live=True,
+            tutor_cpf=None,
+        ))
+    assert exc_info.value.status_code == 400
+    assert "CPF" in exc_info.value.detail
+
+
+def test_create_asaas_customer_live_empty_cpf_raises_400():
+    """No modo live com CPF vazio (string), create_asaas_customer levanta 400."""
+    from fastapi import HTTPException as FastAPIHTTPException
+
+    fake = _FakeHttpxClient()
+    with pytest.raises(FastAPIHTTPException) as exc_info:
+        asyncio.run(create_asaas_customer(
+            fake,
+            User(id="u1", email="a@b.com", full_name="Tutor"),
+            is_live=True,
+            tutor_cpf="",
+        ))
+    assert exc_info.value.status_code == 400
+
+
+def test_create_asaas_customer_sandbox_uses_default_when_no_cpf():
+    """No sandbox sem CPF, usa ASAAS_SANDBOX_DEFAULT_CPF_CNPJ."""
+    fake = _FakeHttpxClient(status_code=200, payload={"id": "cust-sb-1"})
+    asyncio.run(create_asaas_customer(
+        fake,
+        User(id="u1", email="a@b.com", full_name="Tutor"),
+        is_live=False,
+        tutor_cpf=None,
+    ))
+    assert fake.posted_payload is not None
+    # Sandbox usa o default (não é o CPF do tutor)
+    from app.routes.payments import ASAAS_SANDBOX_DEFAULT_CPF_CNPJ
+    assert fake.posted_payload["cpfCnpj"] == ASAAS_SANDBOX_DEFAULT_CPF_CNPJ
+
+
+def test_create_asaas_customer_sandbox_uses_tutor_cpf_when_available():
+    """No sandbox com CPF real disponível, usa o CPF do tutor."""
+    fake = _FakeHttpxClient(status_code=200, payload={"id": "cust-sb-2"})
+    asyncio.run(create_asaas_customer(
+        fake,
+        User(id="u1", email="a@b.com", full_name="Tutor"),
+        is_live=False,
+        tutor_cpf=VALID_CPF_11,
+    ))
+    assert fake.posted_payload is not None
+    assert fake.posted_payload["cpfCnpj"] == VALID_CPF_11
+
+
+# ---------------------------------------------------------------------------
+# Testes de integração via endpoint POST /payments/create
+# ---------------------------------------------------------------------------
+
+def test_live_without_cpf_returns_400(monkeypatch):
+    """Modo live + tutor sem CPF no perfil → 400 com mensagem de CPF."""
+    monkeypatch.setattr(payments, "PAYMENT_MODE", "asaas_live")
+    monkeypatch.setattr(payments, "ASAAS_LIVE_API_KEY", "live-key-test")
+
+    # Não passa tutor_cpf → create_asaas_customer lança 400 antes de chegar ao Asaas
+    async def _asaas_raises(payload, user):
+        # Simula create_asaas_payment chegando até create_asaas_customer e levantando 400
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=400,
+            detail="Informe seu CPF no perfil para concluir o pagamento.",
+        )
+
+    monkeypatch.setattr(payments, "create_asaas_payment", _asaas_raises)
+
+    test_app, db = build_payments_app_with_cpf(tutor_cpf="")
+    client = as_user(test_app, db, TUTOR_ID)
+    r = client.post("/payments/create", json={"amount": 50.0, "method": "pix"})
+    assert r.status_code == 400, r.text
+    detail = r.json().get("detail", "")
+    assert "CPF" in detail
+
+
+def test_live_with_valid_cpf_proceeds(monkeypatch):
+    """Modo live + tutor com CPF → cria pagamento normalmente."""
+    monkeypatch.setattr(payments, "PAYMENT_MODE", "asaas_live")
+    monkeypatch.setattr(payments, "ASAAS_LIVE_API_KEY", "live-key-test")
+
+    async def _ok(payload, user):
+        return (
+            {"id": "live-pay-1", "status": "PENDING", "invoiceUrl": "https://inv", "bankSlipUrl": None},
+            {},
+            "PIX",
+        )
+
+    monkeypatch.setattr(payments, "create_asaas_payment", _ok)
+
+    test_app, db = build_payments_app_with_cpf(tutor_cpf=VALID_CPF_11)
+    client = as_user(test_app, db, TUTOR_ID)
+    r = client.post("/payments/create", json={"amount": 50.0, "method": "pix"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["provider"] == "asaas_live"
+
+
+def test_sandbox_without_cpf_proceeds_with_default(monkeypatch):
+    """Sandbox sem CPF → usa default, não levanta 400."""
+    # monkeypatch autouse já garante sandbox
+    async def _ok(payload, user):
+        return (
+            {"id": "sb-cpf-1", "status": "PENDING", "invoiceUrl": None, "bankSlipUrl": None},
+            {},
+            "PIX",
+        )
+
+    monkeypatch.setattr(payments, "create_asaas_payment", _ok)
+
+    test_app, db = build_payments_app_with_cpf(tutor_cpf="")
+    client = as_user(test_app, db, TUTOR_ID)
+    r = client.post("/payments/create", json={"amount": 50.0, "method": "pix"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["provider"] == "asaas_sandbox"

@@ -24,6 +24,7 @@ CRITICAL_NOTIFICATION_TYPES = {
     "walk_completion_review_rejected",
     "walk_completion_review_approved",
     "walk_payment_released",
+    "payment_confirmed",
 }
 CRITICAL_WALK_STATUS_ACTIONS = {"walker_accepted", "ride_in_progress"}
 

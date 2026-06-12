@@ -1,5 +1,6 @@
 ﻿import os
 import asyncio
+import json
 import secrets
 import logging
 from datetime import date, timedelta
@@ -13,8 +14,10 @@ from dotenv import load_dotenv
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
+from app.models.notification import Notification
 from app.models.payment import Payment
 from app.models.user import User
+from app.models.walk import Walk
 from app.schemas.payment import PaymentCreate, PaymentResponse
 from app.services.payment_split_service import build_payment_split
 
@@ -330,6 +333,54 @@ def get_payment(payment_id: str, user: User = Depends(get_current_user), db: Ses
     return payment_response(payment)
 
 
+_PAYMENT_CONFIRMED_STATUS = "pagamento_confirmado_sandbox"
+_PAYMENT_CONFIRMED_EVENTS = {"PAYMENT_CONFIRMED", "PAYMENT_RECEIVED", "PAYMENT_DUNNING_RECEIVED"}
+
+
+def _create_payment_confirmed_notification(db: Session, payment: Payment) -> None:
+    """Cria notificação de pagamento confirmado para o tutor — idempotente.
+
+    Não cria duplicata se já existe notificação do tipo payment_confirmed para este walk/payment.
+    """
+    if not payment.walk_id:
+        return
+
+    walk = db.get(Walk, payment.walk_id)
+    if not walk:
+        return
+
+    # Idempotência: checar se já existe notificação deste tipo para este payment
+    existing = (
+        db.query(Notification)
+        .filter(
+            Notification.user_id == walk.tutor_id,
+            Notification.type == "payment_confirmed",
+            Notification.related_entity_id == payment.id,
+            Notification.related_entity_type == "payment",
+        )
+        .first()
+    )
+    if existing:
+        logger.info("notificação payment_confirmed já existe para payment_id=%s, pulando", payment.id)
+        return
+
+    # Importa _create_notification localmente para evitar ciclo de imports
+    from app.routes.notifications import NotificationCreate, _create_notification
+
+    notif_payload = NotificationCreate(
+        user_id=walk.tutor_id,
+        user_role="tutor",
+        title="Pagamento confirmado!",
+        message="Seu passeio está garantido. 🐾",
+        type="payment_confirmed",
+        related_entity_type="payment",
+        related_entity_id=payment.id,
+        metadata={"walk_id": payment.walk_id, "amount": payment.amount},
+    )
+    _create_notification(db, notif_payload)
+    logger.info("notificação payment_confirmed criada para tutor_id=%s payment_id=%s", walk.tutor_id, payment.id)
+
+
 @router.post("/webhooks/asaas")
 def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_db)):
     expected = os.getenv("ASAAS_WEBHOOK_TOKEN")
@@ -340,10 +391,20 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_db)
 
     event = payload.get("event")
     provider_payment_id = (payload.get("payment") or {}).get("id")
+    payment = None
     if provider_payment_id:
         payment = db.query(Payment).filter(Payment.provider_payment_id == provider_payment_id).first()
         if payment:
-            payment.status = STATUS_BY_WEBHOOK_EVENT.get(event, normalize_payment_status((payload.get("payment") or {}).get("status")))
+            new_status = STATUS_BY_WEBHOOK_EVENT.get(event, normalize_payment_status((payload.get("payment") or {}).get("status")))
+            payment.status = new_status
             db.add(payment)
+
+            # F1.3: notificação de pagamento confirmado (idempotente)
+            if event in _PAYMENT_CONFIRMED_EVENTS or new_status == _PAYMENT_CONFIRMED_STATUS:
+                try:
+                    _create_payment_confirmed_notification(db, payment)
+                except Exception:
+                    logger.exception("falha ao criar notificação de pagamento confirmado payment_id=%s", payment.id)
+
             db.commit()
     return {"ok": True, "received": event}

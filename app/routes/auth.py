@@ -1,26 +1,50 @@
 ﻿import base64
 import json
+import secrets
+import threading
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.dependencies.auth import get_current_user
+from app.models.password_reset_code import PasswordResetCode
 from app.models.user import User
 from app.models.tutor_profile import TutorProfile
 from app.models.walker_profile import WalkerProfile
 from app.schemas.auth import LoginRequest, SocialLoginPayload, TokenResponse
 from app.schemas.user import UserCreate, UserResponse
 from app.services.identity_uniqueness import ensure_unique_identity
-from app.services.login_rate_limiter import login_rate_limiter
+from app.services.login_rate_limiter import InMemoryLoginRateLimiter, login_rate_limiter
 from app.services.tenant_seed_service import default_tenant_id
+from app.services.transactional_email_service import send_password_reset_email, send_welcome_email
 from app.services.walker_referrals import link_referral_to_user, validate_referral_code
 from app.utils.registration_validation import normalize_cpf_or_raise, normalize_email_or_raise, normalize_phone_or_raise
 
+# Rate limiter dedicado para forgot-password: 3 tentativas por 15 min (por e-mail).
+# Compartilhado com IP embedado na chave quando disponível.
+_forgot_password_limiter = InMemoryLoginRateLimiter(max_failures=3, window_seconds=900)
+
+_PASSWORD_RESET_TTL_MINUTES = 15
+_PASSWORD_RESET_MAX_ATTEMPTS = 5
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    email: str
+    code: str
+    new_password: str
+
 router = APIRouter(prefix="/auth", tags=["auth"])
+api_router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 def build_session(user: User) -> TokenResponse:
     token = create_access_token(user.id, {"role": user.role})
@@ -115,6 +139,12 @@ def register(payload: UserCreate, request: Request, db: Session = Depends(get_db
     db.refresh(user)
     if payload.referral_code and role in {"walker", "passeador"}:
         link_referral_to_user(payload.referral_code, user, db)
+    # F1.2: boas-vindas fire-and-forget — nunca falha o registro
+    threading.Thread(
+        target=send_welcome_email,
+        args=(user.email, user.full_name or ""),
+        daemon=True,
+    ).start()
     return build_session(user)
 
 @router.post("/login", response_model=TokenResponse)
@@ -203,5 +233,155 @@ async def social_login(payload: SocialLoginPayload, request: Request, db: Sessio
         db.add(user)
         db.commit()
         db.refresh(user)
+        # F1.2: boas-vindas para contas novas criadas via social login
+        threading.Thread(
+            target=send_welcome_email,
+            args=(user.email, user.full_name or ""),
+            daemon=True,
+        ).start()
 
     return build_session(user)
+
+
+# --------------------------------------------------------- forgot-password ----
+
+def _hash_reset_code(code: str) -> str:
+    """Retorna hash pbkdf2_sha256 de um código de reset (mesma função de security.py)."""
+    from os import urandom
+    from hashlib import pbkdf2_hmac
+    salt = urandom(16)
+    digest = pbkdf2_hmac("sha256", code.encode("utf-8"), salt, 120_000)
+    return f"pbkdf2_sha256${salt.hex()}${digest.hex()}"
+
+
+def _verify_reset_code(code: str, code_hash: str) -> bool:
+    from hashlib import pbkdf2_hmac
+    from hmac import compare_digest
+    try:
+        algorithm, salt_hex, digest_hex = code_hash.split("$", 2)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        digest = pbkdf2_hmac("sha256", code.encode("utf-8"), bytes.fromhex(salt_hex), 120_000)
+        return compare_digest(digest.hex(), digest_hex)
+    except Exception:
+        return False
+
+
+def _validate_password_strength(password: str) -> None:
+    """Valida força da senha com o mesmo critério do /auth/register."""
+    if len(password or "") < 8 or not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
+        raise HTTPException(
+            status_code=400,
+            detail="A senha deve ter pelo menos 8 caracteres, incluindo 1 letra e 1 numero.",
+        )
+
+
+@router.post("/forgot-password")
+def forgot_password(payload: ForgotPasswordRequest, request: Request, db: Session = Depends(get_db)):
+    """Solicita código de 6 dígitos para reset de senha.
+
+    SEMPRE retorna 200 com mensagem neutra (não revela se o e-mail existe).
+    Rate limit: 3 tentativas por 15 min por e-mail+IP.
+    """
+    try:
+        email = normalize_email_or_raise(payload.email)
+    except ValueError:
+        # e-mail inválido → retorno neutro (não vazar informação)
+        return {"message": "Se o e-mail estiver cadastrado, você receberá um código em breve."}
+
+    # Rate limit: chave = email:ip
+    client_ip = (request.headers.get("X-Forwarded-For") or request.client.host or "unknown").split(",")[0].strip()
+    limiter_key = f"{email}:{client_ip}"
+    if _forgot_password_limiter.is_blocked(limiter_key):
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Tente novamente em 15 minutos.")
+
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        # Registra falha para rate limit mesmo sem usuário (evita enumeração via timing)
+        _forgot_password_limiter.record_failure(limiter_key)
+        return {"message": "Se o e-mail estiver cadastrado, você receberá um código em breve."}
+
+    _forgot_password_limiter.record_failure(limiter_key)
+
+    # Invalida códigos anteriores do usuário (marca como usados)
+    db.query(PasswordResetCode).filter(
+        PasswordResetCode.user_id == user.id,
+        PasswordResetCode.used_at.is_(None),
+    ).update({"used_at": datetime.utcnow()})
+
+    # Gera código de 6 dígitos
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    expires_at = datetime.utcnow() + timedelta(minutes=_PASSWORD_RESET_TTL_MINUTES)
+    reset_code = PasswordResetCode(
+        id=str(uuid4()),
+        user_id=user.id,
+        code_hash=_hash_reset_code(code),
+        expires_at=expires_at,
+        attempts=0,
+    )
+    db.add(reset_code)
+    db.commit()
+
+    # Envia e-mail de forma fire-and-forget
+    threading.Thread(
+        target=send_password_reset_email,
+        args=(user.email, code, user.full_name or ""),
+        daemon=True,
+    ).start()
+
+    return {"message": "Se o e-mail estiver cadastrado, você receberá um código em breve."}
+
+
+@router.post("/reset-password")
+def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """Valida código de 6 dígitos e redefine a senha.
+
+    Incrementa attempts a cada tentativa; após 5 erros invalida o código.
+    """
+    try:
+        email = normalize_email_or_raise(payload.email)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="E-mail inválido.")
+
+    _validate_password_strength(payload.new_password)
+
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Código inválido ou expirado.")
+
+    now = datetime.utcnow()
+    # Busca o código ativo mais recente
+    reset_code = (
+        db.query(PasswordResetCode)
+        .filter(
+            PasswordResetCode.user_id == user.id,
+            PasswordResetCode.used_at.is_(None),
+            PasswordResetCode.expires_at > now,
+        )
+        .order_by(PasswordResetCode.created_at.desc())
+        .first()
+    )
+
+    if not reset_code:
+        raise HTTPException(status_code=400, detail="Código inválido ou expirado.")
+
+    # Incrementa tentativas antes de validar (conta independente de acerto)
+    reset_code.attempts += 1
+
+    if reset_code.attempts > _PASSWORD_RESET_MAX_ATTEMPTS:
+        reset_code.used_at = now  # invalida
+        db.commit()
+        raise HTTPException(status_code=400, detail="Número máximo de tentativas atingido. Solicite um novo código.")
+
+    if not _verify_reset_code(str(payload.code).strip(), reset_code.code_hash):
+        if reset_code.attempts >= _PASSWORD_RESET_MAX_ATTEMPTS:
+            reset_code.used_at = now  # invalida após 5a falha
+        db.commit()
+        raise HTTPException(status_code=400, detail="Código inválido ou expirado.")
+
+    # Código correto: atualiza senha e marca como usado
+    user.password_hash = get_password_hash(payload.new_password)
+    reset_code.used_at = now
+    db.commit()
+
+    return {"message": "Senha redefinida com sucesso."}

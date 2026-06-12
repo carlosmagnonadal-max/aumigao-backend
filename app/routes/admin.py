@@ -19,7 +19,7 @@ from app.services.audit_service import record_audit_log
 from app.services.payment_split_service import get_or_create_payment_config, update_payment_config
 from app.services.tenant_context import resolve_current_tenant_id
 from app.schemas.tenant_payment_config import TenantPaymentConfigResponse, TenantPaymentConfigUpdate
-from app.dependencies.tenant_scope import apply_tenant_filter, get_admin_tenant_scope
+from app.dependencies.tenant_scope import apply_tenant_filter, ensure_tenant_access, get_admin_tenant_scope
 from app.models.payment import Payment
 from app.models.pet import Pet
 from app.models.user import User
@@ -854,6 +854,7 @@ def _serialize_admin_payment(payment: Payment, db: Session) -> dict:
         "provider_payment_id": payment.provider_payment_id,
         "plan_type": "Passeio avulso",
         "tipoPlano": "Passeio avulso",
+        "invoice_url": payment.invoice_url,
         "created_at": payment.created_at,
     }
 
@@ -1151,6 +1152,21 @@ def users(
     # super_admin enxerga todos os tenants; admin regular fica restrito ao seu.
     query = apply_tenant_filter(db.query(User), User, get_admin_tenant_scope(admin))
     return query.order_by(User.created_at.desc()).offset(offset).limit(limit).all()
+
+
+@router.get("/users/{user_id}")
+@api_router.get("/users/{user_id}")
+def get_admin_user(
+    user_id: str,
+    admin: User = Depends(require_permission("users.read")),
+    db: Session = Depends(get_db),
+):
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario nao encontrado")
+    scope = get_admin_tenant_scope(admin)
+    ensure_tenant_access(user.tenant_id, scope)
+    return user
 
 
 @router.get("/audit-logs")
@@ -1470,6 +1486,21 @@ def walks(
     ]
     return rows
 
+@router.get("/walks/{walk_id}")
+@api_router.get("/walks/{walk_id}")
+def get_admin_walk(
+    walk_id: str,
+    admin: User = Depends(require_permission("walks.read")),
+    db: Session = Depends(get_db),
+):
+    walk = db.get(Walk, walk_id)
+    if not walk:
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado")
+    scope = get_admin_tenant_scope(admin)
+    ensure_tenant_access(walk.tenant_id, scope)
+    return _serialize_admin_walk(walk, db)
+
+
 @router.patch("/walks/{walk_id}/status")
 @api_router.patch("/walks/{walk_id}/status")
 def update_admin_walk_status(walk_id: str, payload: dict, admin: User = Depends(require_permission("walks.update_status")), db: Session = Depends(get_db)):
@@ -1766,6 +1797,21 @@ def payments(
     query = apply_tenant_filter(db.query(Payment), Payment, get_admin_tenant_scope(admin))
     rows = query.order_by(Payment.created_at.desc()).offset(offset).limit(limit).all()
     return [_serialize_admin_payment(payment, db) for payment in rows]
+
+
+@router.get("/payments/{payment_id}")
+@api_router.get("/payments/{payment_id}")
+def get_admin_payment(
+    payment_id: str,
+    admin: User = Depends(require_permission("finance.read")),
+    db: Session = Depends(get_db),
+):
+    payment = db.get(Payment, payment_id)
+    if not payment:
+        raise HTTPException(status_code=404, detail="Pagamento nao encontrado")
+    scope = get_admin_tenant_scope(admin)
+    ensure_tenant_access(payment.tenant_id, scope)
+    return _serialize_admin_payment(payment, db)
 
 
 @router.get("/walk-completions/pending")

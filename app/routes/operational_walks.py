@@ -52,7 +52,14 @@ def start_walk_matching(walk_id: str, user: User = Depends(get_current_user), db
 def accept_walk_request(walk_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role != "walker":
         raise HTTPException(status_code=403, detail="Apenas passeadores podem aceitar.")
-    walk = _get_walk(walk_id, db)
+    # with_for_update() garante exclusao mutua em Postgres (no-op em SQLite nos testes).
+    walk = db.query(Walk).filter(Walk.id == walk_id).with_for_update().first()
+    if not walk:
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado")
+    # Re-valida disponibilidade apos obter o lock: rejeita apenas se outro passeador
+    # ja aceitou. O servico de matching ainda aplica sua propria verificacao atomica.
+    if walk.walker_id is not None and walk.walker_id != user.id:
+        raise HTTPException(status_code=409, detail="Este passeio ja foi aceito por outro passeador.")
     accept_walk(walk, user, db)
     db.commit()
     db.refresh(walk)

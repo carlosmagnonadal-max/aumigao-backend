@@ -904,12 +904,13 @@ def update_partner_application_status(
     _apply_profile_status(profile, payload.status, payload.reason, db)
     if payload.resubmission_requested_documents:
         profile.resubmission_requested_documents = _document_key_list(payload.resubmission_requested_documents)
+    # Marca referral antes do commit para que tudo persista em uma unica transacao.
+    if profile.status == "active":
+        mark_referral_approved(profile.user_id, db, commit=False)
+    elif profile.status == "rejected":
+        mark_referral_rejected(profile.user_id, profile.rejection_reason, db, commit=False)
     db.commit()
     db.refresh(profile)
-    if profile.status == "active":
-        mark_referral_approved(profile.user_id, db)
-    elif profile.status == "rejected":
-        mark_referral_rejected(profile.user_id, profile.rejection_reason, db)
     return _serialize_partner_application(profile, db, include_internal=True)
 
 
@@ -942,7 +943,8 @@ def update_partner_application_admin_fields(
             user = db.get(User, profile.user_id)
             if user:
                 user.role = "walker"
-            mark_referral_approved(profile.user_id, db)
+            # Marca referral antes do commit para que tudo persista em uma unica transacao.
+            mark_referral_approved(profile.user_id, db, commit=False)
     profile.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(profile)
@@ -1599,9 +1601,14 @@ def walker_walks(user: User = Depends(get_current_user), db: Session = Depends(g
 @router.post("/walks/{walk_id}/accept")
 def accept_walk(walk_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
-    walk = db.get(Walk, walk_id)
+    # with_for_update() garante exclusao mutua em Postgres (no-op em SQLite nos testes).
+    walk = db.query(Walk).filter(Walk.id == walk_id).with_for_update().first()
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
+    # Re-valida disponibilidade apos obter o lock: rejeita apenas se outro passeador
+    # ja aceitou. O servico de matching ainda aplica sua propria verificacao atomica.
+    if walk.walker_id is not None and walk.walker_id != user.id:
+        raise HTTPException(status_code=409, detail="Este passeio ja foi aceito por outro passeador.")
     accepted = db.query(Walk).filter(Walk.walker_id == user.id, Walk.status.in_(["Agendado", "Indo buscar o pet", "Passeando agora"])).all()
     if _has_schedule_conflict(walk, accepted, 15):
         raise HTTPException(status_code=409, detail="Este passeio conflita com sua agenda. Mantenha ao menos 15 min entre passeios.")

@@ -37,6 +37,7 @@ from app.services.operational_matching_service import (
 )
 from app.services.operational_reliability_service import detect_reliability_events, record_late_cancellation_if_applicable
 from app.services.tenant_seed_service import default_tenant_id
+from app.models.tenant_walker_access import TenantWalkerAccess
 
 router = APIRouter(prefix="/walks", tags=["walks"])
 logger = logging.getLogger(__name__)
@@ -238,6 +239,20 @@ def _refresh_reliability_events(walks: list[Walk], db: Session) -> None:
     if created:
         db.commit()
 
+def _walker_allowed_tenant_ids(user_id: str, db: Session) -> list[str]:
+    """Retorna os tenant_ids que o passeador tem acesso via TenantWalkerAccess."""
+    rows = (
+        db.query(TenantWalkerAccess.tenant_id)
+        .filter(
+            TenantWalkerAccess.walker_user_id == user_id,
+            TenantWalkerAccess.status == "active",
+        )
+        .distinct()
+        .all()
+    )
+    return [row[0] for row in rows]
+
+
 @router.get("", response_model=list[WalkResponse])
 def list_walks(
     user: User = Depends(get_current_user),
@@ -249,7 +264,19 @@ def list_walks(
         process_expired_attempts(db)
         query = db.query(Walk)
         if user.role == "walker":
-            query = query.filter((Walk.walker_id == user.id) | (Walk.walker_id.is_(None)))
+            allowed_tenant_ids = _walker_allowed_tenant_ids(user.id, db)
+            # Walker ve seus proprios passeios + passeios sem walker atribuido
+            # restritos aos tenants que ele atende (ou passeios sem tenant).
+            query = query.filter(
+                (Walk.walker_id == user.id)
+                | (
+                    Walk.walker_id.is_(None)
+                    & (
+                        Walk.tenant_id.is_(None)
+                        | Walk.tenant_id.in_(allowed_tenant_ids)
+                    )
+                )
+            )
         elif user.role in {"admin", "super_admin"}:
             query = apply_tenant_filter(query, Walk, get_admin_tenant_scope(user))
         elif user.role not in {"admin", "super_admin"}:
@@ -260,7 +287,19 @@ def list_walks(
 
     query = _walk_list_query(db)
     if user.role == "walker":
-        query = query.filter((Walk.walker_id == user.id) | (Walk.walker_id.is_(None)))
+        allowed_tenant_ids = _walker_allowed_tenant_ids(user.id, db)
+        # Walker ve seus proprios passeios + passeios sem walker atribuido
+        # restritos aos tenants que ele atende (ou passeios sem tenant).
+        query = query.filter(
+            (Walk.walker_id == user.id)
+            | (
+                Walk.walker_id.is_(None)
+                & (
+                    Walk.tenant_id.is_(None)
+                    | Walk.tenant_id.in_(allowed_tenant_ids)
+                )
+            )
+        )
     elif user.role in {"admin", "super_admin"}:
         query = apply_tenant_filter(query, Walk, get_admin_tenant_scope(user))
     elif user.role not in {"admin", "super_admin"}:

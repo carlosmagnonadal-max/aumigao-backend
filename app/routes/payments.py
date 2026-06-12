@@ -243,10 +243,39 @@ async def create_asaas_payment(payload: PaymentCreate, user: User):
         return payment_data, pix_data, billing_type
 
 
+PAYMENT_PENDING_STATUSES = {
+    "pagamento_sandbox_criado",
+    "aguardando_pagamento",
+}
+
 @router.post("/create", response_model=PaymentResponse)
 async def create_payment(payload: PaymentCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if PAYMENT_MODE != "asaas_sandbox":
         raise HTTPException(status_code=400, detail="PAYMENT_MODE deve ser asaas_sandbox no beta fechado.")
+
+    # Idempotencia: se ja existe um pagamento em aberto para este walk_id,
+    # devolve o existente sem criar novo no Asaas.
+    if payload.walk_id:
+        existing = (
+            db.query(Payment)
+            .filter(
+                Payment.walk_id == payload.walk_id,
+                Payment.status.in_(PAYMENT_PENDING_STATUSES),
+            )
+            .first()
+        )
+        if existing:
+            logger.warning(
+                "create_payment.idempotente walk_id=%s payment_id=%s status=%s",
+                payload.walk_id,
+                existing.id,
+                existing.status,
+            )
+            return payment_response(
+                existing,
+                method=payload.method,
+                sandbox_message="Pagamento ja existente devolvido (idempotencia). Nenhuma nova cobranca foi criada.",
+            )
 
     try:
       provider_data, pix_data, _billing_type = await create_asaas_payment(payload, user)

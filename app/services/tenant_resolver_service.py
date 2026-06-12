@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import Request
@@ -7,6 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.models.tenant import Tenant
 from app.services.tenant_context import get_default_tenant
+
+logger = logging.getLogger(__name__)
 
 
 def _clean_header(value: str | None) -> str | None:
@@ -71,4 +74,11 @@ def resolve_tenant_from_request(request: Request, db: Session) -> Tenant | None:
     # o tenant padrão para não quebrar requisições sem contexto de tenant.
     if _strict_tenant_resolution():
         return None
+    path = getattr(request, "url", None)
+    path_str = str(path.path) if path and hasattr(path, "path") else "<desconhecido>"
+    logger.warning(
+        "tenant_resolver.fallback_para_default path=%s host=%s",
+        path_str,
+        request.headers.get("host", "<sem-host>"),
+    )
     return get_default_tenant(db)

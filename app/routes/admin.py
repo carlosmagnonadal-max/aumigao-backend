@@ -919,12 +919,13 @@ def _walker_program_metrics(rows: list[dict]) -> dict:
     }
 @router.get("/operational-alerts")
 @api_router.get("/operational-alerts")
-def operational_alerts(db: Session = Depends(get_db)):
+def operational_alerts(admin: User = Depends(require_permission("walks.read")), db: Session = Depends(get_db)):
     process_expired_attempts(db)
+    scope = get_admin_tenant_scope(admin)
 
     real_walks = [
         walk
-        for walk in db.query(Walk).order_by(Walk.created_at.desc()).all()
+        for walk in apply_tenant_filter(db.query(Walk), Walk, scope).order_by(Walk.created_at.desc()).all()
         if _is_real_admin_walk(walk, db)
     ]
     _refresh_reliability_events(real_walks, db)
@@ -1216,12 +1217,15 @@ def admin_pets(admin: User = Depends(require_permission("tutors.read")), db: Ses
 
 @router.get("/walkers")
 @api_router.get("/walkers")
-def walkers(db: Session = Depends(get_db)):
+def walkers(_admin: User = Depends(require_permission("walkers.read")), db: Session = Depends(get_db)):
+    # WalkerProfile nao possui tenant_id (walkers sao globais da plataforma).
+    # A autenticacao/permissao acima e suficiente para proteger o endpoint.
     return _unique_walker_profiles(db)
 
 @router.get("/partner-applications")
 @api_router.get("/partner-applications")
-def partner_applications(db: Session = Depends(get_db)):
+def partner_applications(_admin: User = Depends(require_permission("walkers.read")), db: Session = Depends(get_db)):
+    # WalkerProfile nao possui tenant_id (walkers sao globais da plataforma).
     return _unique_walker_profiles(db, include_internal=False)
 
 
@@ -1258,7 +1262,8 @@ def update_partner_application_admin_fields(candidate_id: str, payload: dict | N
         if active_as_walker and user:
             user.role = "walker"
         if active_as_walker:
-            mark_referral_approved(profile.user_id, db)
+            # Marca referral antes do commit para que tudo persista em uma unica transacao.
+            mark_referral_approved(profile.user_id, db, commit=False)
     if any(key in payload for key in ("internal_notes", "status", "active_as_walker")):
         event_type = "admin_note_added" if "internal_notes" in payload else "status_changed"
         if payload.get("active_as_walker"):
@@ -1324,8 +1329,9 @@ def reject_walker(walker_id: str, request: Request, payload: dict | None = None,
         metadata={"candidate_id": profile.id},
         request=request,
     )
+    # Marca referral antes do commit para que tudo persista em uma unica transacao.
+    mark_referral_rejected(profile.user_id, profile.rejection_reason, db, commit=False)
     db.commit()
-    mark_referral_rejected(profile.user_id, profile.rejection_reason, db)
     db.refresh(profile)
     return _serialize_walker_profile(profile, db)
 
@@ -1928,11 +1934,12 @@ def reject_walker_kit(submission_id: str, payload: dict | None = None, admin: Us
 
 
 @router.get("/walker-operations")
-def walker_operations(db: Session = Depends(get_db)):
+def walker_operations(admin: User = Depends(require_permission("walkers.read")), db: Session = Depends(get_db)):
+    scope = get_admin_tenant_scope(admin)
     walkers = db.query(WalkerProfile).all()
-    pending_walks = db.query(Walk).filter(Walk.walker_id.is_(None), Walk.status == "Agendado").all()
-    active_walks = db.query(Walk).filter(Walk.status.in_(["Indo buscar o pet", "Passeando agora"])).all()
-    withdrawals = db.query(Payment).filter(Payment.provider == "pix").all()
+    pending_walks = apply_tenant_filter(db.query(Walk), Walk, scope).filter(Walk.walker_id.is_(None), Walk.status == "Agendado").all()
+    active_walks = apply_tenant_filter(db.query(Walk), Walk, scope).filter(Walk.status.in_(["Indo buscar o pet", "Passeando agora"])).all()
+    withdrawals = apply_tenant_filter(db.query(Payment), Payment, scope).filter(Payment.provider == "pix").all()
     return {
         "walkers": walkers,
         "pending_requests": pending_walks,

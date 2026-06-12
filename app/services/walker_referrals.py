@@ -127,7 +127,13 @@ def mark_referral_under_review(user_id: str, db: Session) -> None:
         db.commit()
 
 
-def mark_referral_approved(user_id: str, db: Session) -> None:
+def mark_referral_approved(user_id: str, db: Session, *, commit: bool = True) -> None:
+    """Marca referral como aprovado.
+
+    Parâmetro `commit=False` permite incluir a operacao numa transacao maior;
+    o chamador fica responsavel por fazer db.commit(). Default True para nao
+    quebrar call sites externos.
+    """
     referral = db.query(WalkerReferral).filter(WalkerReferral.referred_user_id == user_id).first()
     if referral and referral.status in {"registered", "under_review"}:
         referral.status = "approved"
@@ -135,10 +141,17 @@ def mark_referral_approved(user_id: str, db: Session) -> None:
         referral.reward_amount = referral.reward_amount or DEFAULT_REWARD_AMOUNT
         referral.approved_at = datetime.utcnow()
         referral.updated_at = datetime.utcnow()
-        db.commit()
+        if commit:
+            db.commit()
 
 
-def mark_referral_rejected(user_id: str, reason: str | None, db: Session) -> None:
+def mark_referral_rejected(user_id: str, reason: str | None, db: Session, *, commit: bool = True) -> None:
+    """Marca referral como rejeitado.
+
+    Parâmetro `commit=False` permite incluir a operacao numa transacao maior;
+    o chamador fica responsavel por fazer db.commit(). Default True para nao
+    quebrar call sites externos.
+    """
     referral = db.query(WalkerReferral).filter(WalkerReferral.referred_user_id == user_id).first()
     if referral and referral.status in {"registered", "under_review", "approved"}:
         referral.status = "rejected"
@@ -146,7 +159,8 @@ def mark_referral_rejected(user_id: str, reason: str | None, db: Session) -> Non
         referral.rejection_reason = reason
         referral.rejected_at = datetime.utcnow()
         referral.updated_at = datetime.utcnow()
-        db.commit()
+        if commit:
+            db.commit()
 
 
 def update_referral_status(referral: WalkerReferral, payload: AdminWalkerReferralStatusUpdate, db: Session) -> WalkerReferral:

@@ -672,6 +672,185 @@ def _create_payment_confirmed_notification(db: Session, payment: Payment) -> Non
     logger.info("notificação payment_confirmed criada para tutor_id=%s payment_id=%s", walk.tutor_id, payment.id)
 
 
+def _handle_tip_webhook(db, event: str, payment_data: dict) -> bool:
+    """Processa webhooks cujo externalReference começa com 'tip:'.
+
+    Retorna True se tratou um tip, False caso contrário.
+    Idempotente: não duplica notificação ao walker.
+    """
+    from app.models.walk_tip import WalkTip
+
+    external_ref = payment_data.get("externalReference") or ""
+    provider_payment_id = payment_data.get("id")
+
+    tip: WalkTip | None = None
+
+    # Resolução primária: por externalReference
+    if external_ref.startswith("tip:"):
+        tip_id = external_ref[4:]
+        tip = db.get(WalkTip, tip_id)
+
+    # Fallback: por provider_payment_id
+    if tip is None and provider_payment_id:
+        tip = (
+            db.query(WalkTip)
+            .filter(WalkTip.provider_payment_id == provider_payment_id)
+            .first()
+        )
+
+    if tip is None:
+        return False
+
+    # Atualiza status da gorjeta
+    new_status = STATUS_BY_WEBHOOK_EVENT.get(event, normalize_payment_status(payment_data.get("status")))
+    if new_status in (_PAYMENT_CONFIRMED_STATUS,):
+        tip.status = "paid"
+        tip.paid_at = datetime.utcnow()
+    elif new_status == "falha_pagamento":
+        tip.status = "failed"
+    else:
+        # pending/waiting — mantém como pending
+        tip.status = "pending"
+
+    if provider_payment_id and not tip.provider_payment_id:
+        tip.provider_payment_id = provider_payment_id
+
+    db.add(tip)
+
+    # Notificação crítica para o walker ao confirmar gorjeta (idempotente)
+    if tip.status == "paid":
+        from app.models.notification import Notification
+        from app.routes.notifications import NotificationCreate, _create_notification
+
+        existing = (
+            db.query(Notification)
+            .filter(
+                Notification.user_id == tip.walker_id,
+                Notification.type == "tip_received",
+                Notification.related_entity_id == tip.id,
+            )
+            .first()
+        )
+        if not existing:
+            try:
+                notif_payload = NotificationCreate(
+                    user_id=tip.walker_id,
+                    user_role="walker",
+                    title="Você recebeu uma gorjeta! 🎉",
+                    message=f"O tutor enviou R$ {tip.amount:.2f} como agradecimento pelo passeio.",
+                    type="tip_received",
+                    related_entity_type="walk_tip",
+                    related_entity_id=tip.id,
+                    metadata={"walk_id": tip.walk_id, "amount": tip.amount},
+                )
+                _create_notification(db, notif_payload)
+                logger.info(
+                    "notificação tip_received criada para walker_id=%s tip_id=%s",
+                    tip.walker_id, tip.id,
+                )
+            except Exception:
+                logger.exception("falha ao criar notificação tip_received tip_id=%s", tip.id)
+
+    db.commit()
+    return True
+
+
+def _handle_subscription_webhook(db, event: str, payment_data: dict) -> bool:
+    """Processa webhooks de cobranças geradas por subscriptions Asaas.
+
+    Cria/atualiza Payment local vinculado ao tutor para aparecer no financeiro
+    e notifica o tutor na confirmação.
+    Retorna True se tratou, False caso contrário.
+    """
+    external_ref = payment_data.get("externalReference") or ""
+    if not external_ref.startswith("sub:"):
+        return False
+
+    # Cobranças geradas pela subscription têm subscription_id no payload
+    subscription_id_asaas = payment_data.get("subscription")
+    if not subscription_id_asaas:
+        # Evento de subscription sem campo subscription — não é uma cobrança de assinatura
+        return False
+
+    from app.models.recurring_plan import TutorSubscription
+    from app.routes.notifications import NotificationCreate, _create_notification
+
+    sub_local_id = external_ref[4:]
+    sub = db.get(TutorSubscription, sub_local_id)
+    if sub is None:
+        # Tenta buscar por asaas_subscription_id
+        sub = (
+            db.query(TutorSubscription)
+            .filter(TutorSubscription.asaas_subscription_id == subscription_id_asaas)
+            .first()
+        )
+    if sub is None:
+        logger.warning("webhook sub: assinatura local não encontrada external_ref=%s", external_ref)
+        return True  # consumiu o evento, nada a fazer
+
+    provider_payment_id = payment_data.get("id")
+    amount = float(payment_data.get("value") or 0)
+    new_status = STATUS_BY_WEBHOOK_EVENT.get(event, normalize_payment_status(payment_data.get("status")))
+
+    # Idempotência: reutiliza Payment existente se provider_payment_id já existe
+    existing_payment = None
+    if provider_payment_id:
+        existing_payment = (
+            db.query(Payment)
+            .filter(Payment.provider_payment_id == provider_payment_id)
+            .first()
+        )
+
+    if existing_payment:
+        existing_payment.status = new_status
+        db.add(existing_payment)
+    else:
+        local_payment = Payment(
+            id=str(uuid4()),
+            tenant_id=sub.tenant_id,
+            tutor_id=sub.tutor_id,
+            walk_id=None,
+            amount=amount,
+            status=new_status,
+            provider="asaas_subscription",
+            provider_payment_id=provider_payment_id,
+            invoice_url=payment_data.get("invoiceUrl"),
+        )
+        db.add(local_payment)
+        existing_payment = local_payment
+
+    # Notificação ao tutor na confirmação (idempotente)
+    if new_status == _PAYMENT_CONFIRMED_STATUS:
+        from app.models.notification import Notification
+        notif_check = (
+            db.query(Notification)
+            .filter(
+                Notification.user_id == sub.tutor_id,
+                Notification.type == "payment_confirmed",
+                Notification.related_entity_id == existing_payment.id,
+            )
+            .first()
+        )
+        if not notif_check:
+            try:
+                notif_payload = NotificationCreate(
+                    user_id=sub.tutor_id,
+                    user_role="tutor",
+                    title="Pagamento da assinatura confirmado!",
+                    message=f"Sua mensalidade de R$ {amount:.2f} foi confirmada.",
+                    type="payment_confirmed",
+                    related_entity_type="payment",
+                    related_entity_id=existing_payment.id,
+                    metadata={"subscription_id": sub.id, "amount": amount},
+                )
+                _create_notification(db, notif_payload)
+            except Exception:
+                logger.exception("falha ao notificar tutor subscription payment tutor_id=%s", sub.tutor_id)
+
+    db.commit()
+    return True
+
+
 @router.post("/webhooks/asaas")
 def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_db)):
     expected = os.getenv("ASAAS_WEBHOOK_TOKEN")
@@ -681,12 +860,30 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_db)
         raise HTTPException(status_code=401, detail="Webhook não autorizado")
 
     event = payload.get("event")
-    provider_payment_id = (payload.get("payment") or {}).get("id")
+    payment_data = payload.get("payment") or {}
+    provider_payment_id = payment_data.get("id")
+    external_ref = payment_data.get("externalReference") or ""
+
+    # --- Gorjeta ---
+    if external_ref.startswith("tip:") or (
+        provider_payment_id
+        and not external_ref.startswith("sub:")
+        and _is_tip_payment(db, provider_payment_id, external_ref)
+    ):
+        _handle_tip_webhook(db, event, payment_data)
+        return {"ok": True, "received": event}
+
+    # --- Cobrança de assinatura recorrente ---
+    if external_ref.startswith("sub:") or payment_data.get("subscription"):
+        if _handle_subscription_webhook(db, event, payment_data):
+            return {"ok": True, "received": event}
+
+    # --- Pagamento regular de passeio ---
     payment = None
     if provider_payment_id:
         payment = db.query(Payment).filter(Payment.provider_payment_id == provider_payment_id).first()
         if payment:
-            new_status = STATUS_BY_WEBHOOK_EVENT.get(event, normalize_payment_status((payload.get("payment") or {}).get("status")))
+            new_status = STATUS_BY_WEBHOOK_EVENT.get(event, normalize_payment_status(payment_data.get("status")))
             payment.status = new_status
             db.add(payment)
 
@@ -699,3 +896,13 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_db)
 
             db.commit()
     return {"ok": True, "received": event}
+
+
+def _is_tip_payment(db, provider_payment_id: str, external_ref: str) -> bool:
+    """Verifica se um provider_payment_id pertence a uma WalkTip (fallback sem externalReference)."""
+    from app.models.walk_tip import WalkTip
+    return (
+        db.query(WalkTip)
+        .filter(WalkTip.provider_payment_id == provider_payment_id)
+        .first()
+    ) is not None

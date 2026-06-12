@@ -28,6 +28,8 @@ CRITICAL_NOTIFICATION_TYPES = {
     "payment_confirmed",
     "support_reply",
     "protected_chat_message",
+    # Fase 7 $-2: gorjeta confirmada — notificação crítica para o walker.
+    "tip_received",
 }
 CRITICAL_WALK_STATUS_ACTIONS = {"walker_accepted", "ride_in_progress"}
 

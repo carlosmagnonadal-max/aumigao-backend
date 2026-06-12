@@ -18,6 +18,9 @@ class WalkTip(Base):
     status: Mapped[str] = mapped_column(String, default="pending", index=True)
     provider: Mapped[str] = mapped_column(String, default="internal_mock")
     checkout_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Campos preenchidos quando o pagamento é criado no Asaas (Fase 7 $-2).
+    provider_payment_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    invoice_url: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

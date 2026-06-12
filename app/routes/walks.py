@@ -1,8 +1,9 @@
 ﻿import logging
 import traceback
 from uuid import uuid4
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import json
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func
@@ -207,6 +208,8 @@ def _serialize_walk_tip(tip: WalkTip) -> dict:
         "status": tip.status,
         "provider": tip.provider,
         "checkout_url": tip.checkout_url,
+        "invoice_url": getattr(tip, "invoice_url", None),
+        "provider_payment_id": getattr(tip, "provider_payment_id", None),
         "created_at": tip.created_at,
         "paid_at": tip.paid_at,
     }
@@ -552,7 +555,7 @@ def create_walk_review(walk_id: str, payload: WalkReviewCreate, user: User = Dep
 
 
 @router.post("/{walk_id}/tip-checkout")
-def create_walk_tip_checkout(walk_id: str, payload: WalkTipCheckoutCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def create_walk_tip_checkout(walk_id: str, payload: WalkTipCheckoutCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     walk = _get_walk_for_user(walk_id, user, db)
     if walk.tutor_id != user.id:
         raise HTTPException(status_code=403, detail="Apenas o tutor dono do passeio pode enviar gorjeta.")
@@ -587,8 +590,9 @@ def create_walk_tip_checkout(walk_id: str, payload: WalkTipCheckoutCreate, user:
     if duplicate_paid:
         raise HTTPException(status_code=409, detail="Gorjeta idêntica já confirmada recentemente.")
 
+    tip_id = str(uuid4())
     tip = WalkTip(
-        id=str(uuid4()),
+        id=tip_id,
         walk_id=walk.id,
         tutor_id=user.id,
         walker_id=walker_id,
@@ -596,13 +600,98 @@ def create_walk_tip_checkout(walk_id: str, payload: WalkTipCheckoutCreate, user:
         status="pending",
         provider=TIP_PROVIDER,
     )
-    tip.checkout_url = f"aumigao://tip-checkout/{tip.id}?status=pending"
+
+    # --- Pagamento real via Asaas quando o modo não é internal_mock ---
+    # Importações locais para evitar ciclo de imports
+    from app.routes.payments import (
+        _get_asaas_config,
+        asaas_headers,
+        create_asaas_customer,
+        normalize_method,
+        raise_asaas_error,
+    )
+    from app.models.tutor_profile import TutorProfile
+
+    try:
+        cfg = _get_asaas_config()
+    except Exception:
+        cfg = None
+
+    checkout_url: str | None = None
+    invoice_url: str | None = None
+    provider_payment_id: str | None = None
+    provider_name = TIP_PROVIDER
+
+    if cfg is not None:
+        is_live = cfg["is_live"]
+        base_url = cfg["base_url"]
+        api_key = cfg["api_key"]
+        provider_name = "asaas_live" if is_live else "asaas_sandbox"
+
+        _tp = db.query(TutorProfile).filter(TutorProfile.user_id == user.id).first()
+        tutor_cpf_raw = (_tp.cpf or "").strip() if _tp else ""
+        tutor_cpf = tutor_cpf_raw if len(tutor_cpf_raw) == 11 else None
+
+        billing_type = normalize_method("pix", is_live=is_live)
+
+        # Split para gorjeta: 100% para o walker em modo live
+        split_payload: list[dict] | None = None
+        if is_live:
+            from app.models.walker_profile import WalkerProfile
+            wp = db.query(WalkerProfile).filter(WalkerProfile.user_id == walker_id).first()
+            if wp and wp.asaas_wallet_id:
+                split_payload = [{"walletId": wp.asaas_wallet_id, "percentualValue": 100}]
+                logger.info("tip split_applied=true walker_id=%s wallet_id=%s", walker_id, wp.asaas_wallet_id)
+            else:
+                logger.info("tip split_applied=false walker_id=%s (sem asaas_wallet_id)", walker_id)
+
+        try:
+            async with httpx.AsyncClient(
+                base_url=base_url,
+                headers=asaas_headers(api_key, mode="live" if is_live else "sandbox"),
+                timeout=20,
+            ) as client:
+                customer_id = await create_asaas_customer(client, user, is_live=is_live, tutor_cpf=tutor_cpf)
+                tip_payment_payload: dict = {
+                    "customer": customer_id,
+                    "billingType": billing_type,
+                    "value": float(payload.amount),
+                    "dueDate": str(date.today() + timedelta(days=1)),
+                    "description": f"Gorjeta passeio {walk.id}",
+                    "externalReference": f"tip:{tip_id}",
+                }
+                if split_payload:
+                    tip_payment_payload["split"] = split_payload
+
+                response = await client.post("/payments", json=tip_payment_payload)
+                if response.status_code >= 400:
+                    raise_asaas_error("tip.payments.create", response, tip_payment_payload)
+
+                payment_data = response.json()
+                provider_payment_id = payment_data.get("id")
+                invoice_url = payment_data.get("invoiceUrl") or payment_data.get("bankSlipUrl")
+                checkout_url = invoice_url
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning("Asaas indisponivel para gorjeta, usando fallback. error=%s", exc)
+            provider_name = TIP_PROVIDER
+            checkout_url = f"aumigao://tip-checkout/{tip_id}?status=pending"
+    else:
+        checkout_url = f"aumigao://tip-checkout/{tip_id}?status=pending"
+
+    tip.provider = provider_name
+    tip.checkout_url = checkout_url
+    tip.provider_payment_id = provider_payment_id
+    tip.invoice_url = invoice_url
+
     db.add(tip)
     db.commit()
     db.refresh(tip)
     return {
         **_serialize_walk_tip(tip),
         "checkout_url": tip.checkout_url,
+        "invoice_url": tip.invoice_url,
         "status": tip.status,
         "tip_id": tip.id,
     }

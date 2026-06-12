@@ -63,5 +63,8 @@ class TutorSubscription(Base):
     current_period_start: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     current_period_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # ID da subscription nativa no Asaas — preenchido quando o pagamento recorrente
+    # é criado via API nativa do Asaas (Fase 7 $-2). Nullable: sem Asaas fica None.
+    asaas_subscription_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

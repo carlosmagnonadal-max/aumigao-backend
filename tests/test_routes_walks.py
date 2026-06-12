@@ -228,7 +228,10 @@ def test_tip_checkout_happy_path_after_approved_completion():
     body = r.json()
     assert body["status"] == "pending"
     assert body["tip_id"]
-    assert body["checkout_url"].startswith("aumigao://tip-checkout/")
+    # checkout_url pode ser deep-link interno (mock) ou URL real do Asaas (sandbox/live)
+    checkout_url = body.get("checkout_url") or ""
+    assert checkout_url  # não pode ser vazio
+    assert checkout_url.startswith("aumigao://tip-checkout/") or checkout_url.startswith("http")
 
 
 def test_tip_checkout_blocked_without_completed_status():

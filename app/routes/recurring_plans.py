@@ -79,22 +79,22 @@ def list_recurring_plans(request: Request, user: User = Depends(get_current_user
 
 @router.post("/{plan_id}/subscribe", response_model=TutorSubscriptionResponse)
 @api_router.post("/{plan_id}/subscribe", response_model=TutorSubscriptionResponse)
-def subscribe_to_plan(
+async def subscribe_to_plan(
     plan_id: str,
     request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     tenant = _resolve_user_tenant(user, db, request)
-    subscription = svc.subscribe(db, tenant, user.id, plan_id)
+    subscription = await svc.subscribe_async(db, tenant, user.id, plan_id, tutor_user=user)
     return _subscription_response(db, subscription)
 
 
 @router.post("/cancel", response_model=TutorSubscriptionResponse)
 @api_router.post("/cancel", response_model=TutorSubscriptionResponse)
-def cancel_my_subscription(request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def cancel_my_subscription(request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     tenant = _resolve_user_tenant(user, db, request)
-    subscription = svc.cancel_subscription(db, tenant.id, user.id)
+    subscription = await svc.cancel_subscription_async(db, tenant.id, user.id)
     return _subscription_response(db, subscription)
 
 

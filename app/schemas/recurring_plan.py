@@ -48,6 +48,8 @@ class TutorSubscriptionResponse(ORMModel):
     current_period_start: datetime
     current_period_end: datetime | None = None
     cancelled_at: datetime | None = None
+    # ID da subscription nativa no Asaas (Fase 7 $-2) — exposto para debug/admin.
+    asaas_subscription_id: str | None = None
     created_at: datetime
     # Conveniência para o app não precisar cruzar com o catálogo.
     plan_name: str | None = None

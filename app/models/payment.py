@@ -14,6 +14,9 @@ class Payment(Base):
     status: Mapped[str] = mapped_column(String, default="pending")
     provider: Mapped[str] = mapped_column(String, default="asaas")
     provider_payment_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # URL da fatura/checkout hospedado retornada pelo Asaas (invoiceUrl).
+    # Persiste para exibição posterior sem nova chamada ao gateway.
+    invoice_url: Mapped[str | None] = mapped_column(String, nullable=True)
     # Split de receita (Sprint 16): como o valor se divide entre plataforma e walker.
     commission_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     platform_amount: Mapped[float | None] = mapped_column(Float, nullable=True)

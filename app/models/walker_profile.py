@@ -34,5 +34,8 @@ class WalkerProfile(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
     reviewed_by_admin_id: Mapped[str | None] = mapped_column(String, nullable=True)
     resubmission_requested_documents: Mapped[str] = mapped_column(Text, default="")
+    # ID da carteira Asaas do walker para split real (Fase B — dormente até PAYMENT_MODE=asaas_live).
+    # Configurável via PATCH /admin/walkers/{user_id}/wallet com permissão finance.manage.
+    asaas_wallet_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     user = relationship("User", back_populates="walker_profile")

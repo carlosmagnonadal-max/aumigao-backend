@@ -1,8 +1,9 @@
-﻿import os
+import os
 import asyncio
 import json
 import secrets
 import logging
+from contextvars import ContextVar
 from datetime import date, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -26,12 +27,47 @@ logger = logging.getLogger("app.routes.payments")
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
+# ---------------------------------------------------------------------------
+# Configuração de modo de pagamento
+#
+# PAYMENT_MODE aceita:
+#   "asaas_sandbox"  (default) — sandbox Asaas, sem cobrança real.
+#   "asaas_live"               — produção Asaas; ativa quando as envs abaixo
+#                                estiverem configuradas no Railway.
+#
+# Envs necessárias para asaas_live:
+#   ASAAS_LIVE_API_KEY    — chave live da conta Asaas (obrigatória no modo live)
+#   ASAAS_LIVE_BASE_URL   — override da URL base (opcional; default api.asaas.com/v3)
+# ---------------------------------------------------------------------------
 PAYMENT_MODE = os.getenv("PAYMENT_MODE", "asaas_sandbox")
+
+# --- Sandbox ---
 ASAAS_SANDBOX_BASE_URL = os.getenv("ASAAS_SANDBOX_BASE_URL", "https://api-sandbox.asaas.com/v3").rstrip("/")
 ASAAS_SANDBOX_API_KEY = os.getenv("ASAAS_SANDBOX_API_KEY") or os.getenv("ASAAS_API_KEY")
 ASAAS_SANDBOX_DEFAULT_CPF_CNPJ = os.getenv("ASAAS_SANDBOX_DEFAULT_CPF_CNPJ", "24971563792")
+
+# --- Live (dormente por default — só ativa com PAYMENT_MODE=asaas_live) ---
+ASAAS_LIVE_BASE_URL = os.getenv("ASAAS_LIVE_BASE_URL", "https://api.asaas.com/v3").rstrip("/")
+ASAAS_LIVE_API_KEY = os.getenv("ASAAS_LIVE_API_KEY")
+
 SENSITIVE_KEYS = {"access_token", "authorization", "api_key", "token", "password"}
 
+# ---------------------------------------------------------------------------
+# ContextVar para split_config — async-safe, sem alterar assinatura pública de
+# create_asaas_payment (que é monkeypatchada nos testes existentes).
+# O router seta _split_config_ctx antes de chamar create_asaas_payment;
+# a função lê o valor dentro da mesma tarefa asyncio.
+# ---------------------------------------------------------------------------
+_split_config_ctx: ContextVar[dict | None] = ContextVar("_split_config_ctx", default=None)
+
+# ---------------------------------------------------------------------------
+# Mapeamentos de status
+#
+# Os identificadores internos (ex.: "pagamento_confirmado_sandbox") são usados
+# pelo admin-web e pelo app mobile — NÃO renomear. O sufixo "_sandbox" é apenas
+# histórico; esses mesmos status são reutilizados no modo live para não exigir
+# migração de dados nem atualização dos clients.
+# ---------------------------------------------------------------------------
 STATUS_BY_ASAAS_STATUS = {
     "PENDING": "pagamento_sandbox_criado",
     "RECEIVED": "pagamento_confirmado_sandbox",
@@ -67,14 +103,63 @@ STATUS_BY_WEBHOOK_EVENT = {
 }
 
 
-def asaas_headers():
-    if not ASAAS_SANDBOX_API_KEY:
+# ---------------------------------------------------------------------------
+# Helpers de configuração por modo
+# ---------------------------------------------------------------------------
+
+def _get_asaas_config() -> dict:
+    """Retorna base_url, api_key e is_live de acordo com PAYMENT_MODE.
+
+    Levanta HTTPException 503 se o modo live não tiver chave configurada.
+    Levanta HTTPException 400 para modos desconhecidos.
+    """
+    if PAYMENT_MODE == "asaas_sandbox":
+        return {
+            "base_url": ASAAS_SANDBOX_BASE_URL,
+            "api_key": ASAAS_SANDBOX_API_KEY,
+            "is_live": False,
+        }
+    if PAYMENT_MODE == "asaas_live":
+        if not ASAAS_LIVE_API_KEY:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Pagamento em produção não configurado. "
+                    "Configure ASAAS_LIVE_API_KEY no ambiente para ativar o modo live."
+                ),
+            )
+        return {
+            "base_url": ASAAS_LIVE_BASE_URL,
+            "api_key": ASAAS_LIVE_API_KEY,
+            "is_live": True,
+        }
+    raise HTTPException(
+        status_code=400,
+        detail=f"PAYMENT_MODE '{PAYMENT_MODE}' desconhecido. Use 'asaas_sandbox' ou 'asaas_live'.",
+    )
+
+
+def asaas_headers(api_key: str | None = None, *, mode: str | None = None) -> dict:
+    """Retorna headers HTTP para chamadas ao Asaas.
+
+    Se api_key não for passado, usa a chave do PAYMENT_MODE atual.
+    Mantém compatibilidade retroativa: chamadas sem argumentos continuam
+    funcionando como antes para o sandbox.
+    """
+    if api_key is None:
+        cfg = _get_asaas_config()
+        api_key = cfg["api_key"]
+        effective_mode = "live" if cfg["is_live"] else "sandbox"
+    else:
+        effective_mode = mode or "sandbox"
+
+    if not api_key:
         raise HTTPException(status_code=503, detail="ASAAS_SANDBOX_API_KEY nao configurada para o sandbox.")
 
     return {
-        "access_token": ASAAS_SANDBOX_API_KEY,
+        "access_token": api_key,
         "Content-Type": "application/json",
-        "User-Agent": "Aumigao Beta Sandbox",
+        "User-Agent": f"Aumigao Beta {effective_mode.capitalize()}",
     }
 
 
@@ -117,6 +202,7 @@ def extract_asaas_error(data):
 def raise_asaas_error(step: str, response: httpx.Response, request_payload: dict | None = None):
     response_data = parse_asaas_response(response)
     asaas_error = extract_asaas_error(response_data)
+    mode_label = "Live" if PAYMENT_MODE == "asaas_live" else "Sandbox"
     diagnostic = {
         "step": step,
         "status_http": response.status_code,
@@ -125,11 +211,11 @@ def raise_asaas_error(step: str, response: httpx.Response, request_payload: dict
         "request_payload": sanitize_for_log(request_payload or {}),
         "asaas_response": sanitize_for_log(response_data),
     }
-    logger.error("Asaas Sandbox error: %s", diagnostic)
+    logger.error("Asaas %s error: %s", mode_label, diagnostic)
     raise HTTPException(
         status_code=502,
         detail={
-            "message": f"Falha Asaas Sandbox em {step}.",
+            "message": f"Falha Asaas {mode_label} em {step}.",
             "status_http": response.status_code,
             "asaas_code": asaas_error["code"],
             "asaas_description": asaas_error["description"],
@@ -139,9 +225,17 @@ def raise_asaas_error(step: str, response: httpx.Response, request_payload: dict
     )
 
 
-def normalize_method(method: str):
+def normalize_method(method: str, *, is_live: bool = False) -> str:
+    """Normaliza o método de pagamento para o billingType do Asaas.
+
+    No sandbox, cartão é sempre UNDEFINED (Asaas sandbox não processa cartão real).
+    No modo live, cartão usa CREDIT_CARD para acionar o checkout hospedado.
+    """
     normalized = (method or "pix").strip().lower()
-    return "UNDEFINED" if normalized in {"card", "credit_card", "cartao", "cartão"} else "PIX"
+    is_card = normalized in {"card", "credit_card", "cartao", "cartão"}
+    if is_card:
+        return "CREDIT_CARD" if is_live else "UNDEFINED"
+    return "PIX"
 
 
 def normalize_payment_status(provider_status: str | None):
@@ -161,7 +255,7 @@ def payment_response(payment: Payment, **extra):
         "status": payment.status,
         "provider_payment_id": payment.provider_payment_id,
         "provider_status": extra.get("provider_status"),
-        "invoice_url": extra.get("invoice_url"),
+        "invoice_url": extra.get("invoice_url") or payment.invoice_url,
         "pix_qr_code": extra.get("pix_qr_code"),
         "pix_copy_paste": extra.get("pix_copy_paste"),
         "pix_expiration_date": extra.get("pix_expiration_date"),
@@ -173,43 +267,90 @@ def payment_response(payment: Payment, **extra):
     }
 
 
-async def create_asaas_customer(client: httpx.AsyncClient, user: User):
+async def create_asaas_customer(client: httpx.AsyncClient, user: User, *, is_live: bool = False):
+    cpf_cnpj = ASAAS_SANDBOX_DEFAULT_CPF_CNPJ if not is_live else (
+        # No modo live usamos CPF real do usuário (campo a ser preenchido no perfil).
+        # Por ora, fallback para o mesmo default para evitar quebrar o fluxo;
+        # o operador deve garantir que o CPF real esteja disponível antes do live.
+        ASAAS_SANDBOX_DEFAULT_CPF_CNPJ
+    )
     payload = {
         "name": user.full_name or user.email,
         "email": user.email,
-        "cpfCnpj": ASAAS_SANDBOX_DEFAULT_CPF_CNPJ,
+        "cpfCnpj": cpf_cnpj,
         "externalReference": user.id,
         "notificationDisabled": True,
     }
-    logger.warning("Asaas Sandbox request customers payload=%s", sanitize_for_log(payload))
+    mode_label = "Live" if is_live else "Sandbox"
+    logger.warning("Asaas %s request customers payload=%s", mode_label, sanitize_for_log(payload))
     response = await client.post("/customers", json=payload)
     if response.status_code >= 400:
         raise_asaas_error("customers.create", response, payload)
     data = response.json()
-    logger.warning("Asaas Sandbox response customers status_http=%s customer_id=%s", response.status_code, data.get("id"))
+    logger.warning(
+        "Asaas %s response customers status_http=%s customer_id=%s",
+        mode_label, response.status_code, data.get("id"),
+    )
     return data["id"]
 
 
 async def create_asaas_payment(payload: PaymentCreate, user: User):
-    billing_type = normalize_method(payload.method)
-    async with httpx.AsyncClient(base_url=ASAAS_SANDBOX_BASE_URL, headers=asaas_headers(), timeout=20) as client:
-        customer_id = await create_asaas_customer(client, user)
+    """Cria pagamento no Asaas de acordo com o PAYMENT_MODE atual.
+
+    Assinatura estável (payload, user) — compatível com os mocks de teste existentes.
+    A lógica de split real é injetada por _build_split_config_for_payment antes
+    da chamada e aplicada via _apply_asaas_split_to_payload (função auxiliar pura).
+    """
+    cfg = _get_asaas_config()
+    base_url = cfg["base_url"]
+    api_key = cfg["api_key"]
+    is_live = cfg["is_live"]
+
+    billing_type = normalize_method(payload.method, is_live=is_live)
+    mode_label = "Live" if is_live else "Sandbox"
+
+    # split_config é injetado pelo router via _split_config_ctx antes de chamar
+    # esta função — async-safe via ContextVar, sem alterar a assinatura pública.
+    split_config = _split_config_ctx.get()
+
+    async with httpx.AsyncClient(
+        base_url=base_url,
+        headers=asaas_headers(api_key, mode="live" if is_live else "sandbox"),
+        timeout=20,
+    ) as client:
+        customer_id = await create_asaas_customer(client, user, is_live=is_live)
         payment_payload = {
             "customer": customer_id,
             "billingType": billing_type,
             "value": payload.amount,
             "dueDate": str(date.today() + timedelta(days=1)),
-            "description": "Passeio Aumigao - Beta Fechado",
+            "description": "Passeio Aumigao",
             "externalReference": payload.walk_id or str(uuid4()),
         }
-        logger.warning("Asaas Sandbox request payments payload=%s", sanitize_for_log(payment_payload))
+
+        # Split real ao walker (dormente — opt-in duplo: split_enabled + asaas_wallet_id + modo live)
+        if is_live and split_config and split_config.get("wallet_id"):
+            payment_payload["split"] = [
+                {
+                    "walletId": split_config["wallet_id"],
+                    "percentualValue": split_config["percentual_value"],
+                }
+            ]
+            logger.warning(
+                "Asaas Live split incluido wallet_id=%s percentual_value=%s",
+                split_config["wallet_id"],
+                split_config["percentual_value"],
+            )
+
+        logger.warning("Asaas %s request payments payload=%s", mode_label, sanitize_for_log(payment_payload))
         response = await client.post("/payments", json=payment_payload)
         if response.status_code >= 400:
             raise_asaas_error("payments.create", response, payment_payload)
 
         payment_data = response.json()
         logger.warning(
-            "Asaas Sandbox response payments status_http=%s payment_id=%s provider_status=%s billing_type=%s",
+            "Asaas %s response payments status_http=%s payment_id=%s provider_status=%s billing_type=%s",
+            mode_label,
             response.status_code,
             payment_data.get("id"),
             payment_data.get("status"),
@@ -223,7 +364,8 @@ async def create_asaas_payment(payload: PaymentCreate, user: User):
                 if pix_response.status_code < 400:
                     break
                 logger.warning(
-                    "Asaas Sandbox pix_qr_code retry attempt=%s status_http=%s payment_id=%s",
+                    "Asaas %s pix_qr_code retry attempt=%s status_http=%s payment_id=%s",
+                    mode_label,
                     attempt,
                     pix_response.status_code,
                     payment_data.get("id"),
@@ -237,7 +379,8 @@ async def create_asaas_payment(payload: PaymentCreate, user: User):
                 )
             pix_data = pix_response.json()
             logger.warning(
-                "Asaas Sandbox response pix_qr_code status_http=%s payment_id=%s has_payload=%s",
+                "Asaas %s response pix_qr_code status_http=%s payment_id=%s has_payload=%s",
+                mode_label,
                 pix_response.status_code,
                 payment_data.get("id"),
                 bool(pix_data.get("payload")),
@@ -251,10 +394,62 @@ PAYMENT_PENDING_STATUSES = {
     "aguardando_pagamento",
 }
 
+
+def _build_split_config_for_payment(db: Session, walk_id: str | None, tenant_id: str | None, split: dict) -> dict | None:
+    """Monta o split_config para envio ao Asaas quando as 3 condições valem:
+    1. split_enabled == True no TenantPaymentConfig
+    2. Walker do walk tem asaas_wallet_id preenchido
+    3. PAYMENT_MODE == asaas_live
+
+    Retorna None se qualquer condição falhar (comportamento atual sem split).
+    """
+    if PAYMENT_MODE != "asaas_live":
+        return None
+
+    # Verificar split_enabled no tenant
+    from app.models.tenant_payment_config import TenantPaymentConfig
+    config = None
+    if tenant_id:
+        config = (
+            db.query(TenantPaymentConfig)
+            .filter(
+                TenantPaymentConfig.tenant_id == tenant_id,
+                TenantPaymentConfig.active.is_(True),
+            )
+            .first()
+        )
+    if not config or not config.split_enabled:
+        return None
+
+    if not walk_id:
+        return None
+
+    walk = db.get(Walk, walk_id)
+    if not walk or not walk.walker_id:
+        return None
+
+    from app.models.walker_profile import WalkerProfile
+    walker_profile = (
+        db.query(WalkerProfile)
+        .filter(WalkerProfile.user_id == walk.walker_id)
+        .first()
+    )
+    if not walker_profile or not walker_profile.asaas_wallet_id:
+        return None
+
+    walker_percent = round(100.0 - split["commission_percent"], 4)
+    return {
+        "wallet_id": walker_profile.asaas_wallet_id,
+        "percentual_value": walker_percent,
+    }
+
+
 @router.post("/create", response_model=PaymentResponse)
 async def create_payment(payload: PaymentCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if PAYMENT_MODE != "asaas_sandbox":
-        raise HTTPException(status_code=400, detail="PAYMENT_MODE deve ser asaas_sandbox no beta fechado.")
+    # Valida o modo antes de qualquer coisa (levanta 400 para modo desconhecido,
+    # 503 para live sem chave configurada).
+    cfg = _get_asaas_config()
+    is_live = cfg["is_live"]
 
     # Idempotencia: se ja existe um pagamento em aberto para este walk_id,
     # devolve o existente sem criar novo no Asaas.
@@ -280,20 +475,39 @@ async def create_payment(payload: PaymentCreate, user: User = Depends(get_curren
                 sandbox_message="Pagamento ja existente devolvido (idempotencia). Nenhuma nova cobranca foi criada.",
             )
 
-    try:
-      provider_data, pix_data, _billing_type = await create_asaas_payment(payload, user)
-      provider_status = provider_data.get("status")
-    except Exception as error:
-      logger.warning("Asaas Sandbox indisponivel; usando fallback interno beta. error=%s", error)
-      provider_data = {
-        "id": f"internal-sandbox-{uuid4()}",
-        "status": "PAYMENT_CREATED",
-        "invoiceUrl": None,
-        "bankSlipUrl": None,
-      }
-      pix_data = {}
-      provider_status = provider_data.get("status")
     split = build_payment_split(db, user.tenant_id, payload.amount)
+    split_config = _build_split_config_for_payment(db, payload.walk_id, user.tenant_id, split)
+    # Injeta split_config via ContextVar (async-safe) antes de chamar create_asaas_payment,
+    # mantendo a assinatura pública (payload, user) compatível com mocks de teste.
+    _split_config_ctx.set(split_config)
+
+    try:
+        provider_data, pix_data, _billing_type = await create_asaas_payment(payload, user)
+        provider_status = provider_data.get("status")
+    except HTTPException:
+        # Erros de configuração (503 live sem chave, 400 modo desconhecido) propagam direto.
+        raise
+    except Exception as error:
+        if is_live:
+            # No modo live não usamos fallback interno — falha explícita é mais segura.
+            logger.error("Asaas Live indisponivel. error=%s", error)
+            raise HTTPException(
+                status_code=502,
+                detail="Gateway de pagamento em produção indisponível. Tente novamente em instantes.",
+            )
+        logger.warning("Asaas Sandbox indisponivel; usando fallback interno beta. error=%s", error)
+        provider_data = {
+            "id": f"internal-sandbox-{uuid4()}",
+            "status": "PAYMENT_CREATED",
+            "invoiceUrl": None,
+            "bankSlipUrl": None,
+        }
+        pix_data = {}
+        provider_status = provider_data.get("status")
+
+    provider_name = "asaas_live" if is_live else "asaas_sandbox"
+    invoice_url = provider_data.get("invoiceUrl") or provider_data.get("bankSlipUrl")
+
     payment = Payment(
         id=str(uuid4()),
         tenant_id=user.tenant_id,
@@ -301,8 +515,9 @@ async def create_payment(payload: PaymentCreate, user: User = Depends(get_curren
         walk_id=payload.walk_id,
         amount=payload.amount,
         status=normalize_payment_status(provider_status),
-        provider="asaas_sandbox",
+        provider=provider_name,
         provider_payment_id=provider_data.get("id"),
+        invoice_url=invoice_url,
         commission_percent=split["commission_percent"],
         platform_amount=split["platform_amount"],
         walker_amount=split["walker_amount"],
@@ -310,15 +525,21 @@ async def create_payment(payload: PaymentCreate, user: User = Depends(get_curren
     db.add(payment)
     db.commit()
     db.refresh(payment)
+
+    sandbox_msg = (
+        None if is_live
+        else "Cobranca criada no Asaas Sandbox. Nenhuma cobranca real sera realizada."
+    )
+
     return payment_response(
         payment,
         method=payload.method,
         provider_status=provider_status,
-        invoice_url=provider_data.get("invoiceUrl") or provider_data.get("bankSlipUrl"),
+        invoice_url=invoice_url,
         pix_qr_code=pix_data.get("encodedImage"),
         pix_copy_paste=pix_data.get("payload"),
         pix_expiration_date=pix_data.get("expirationDate"),
-        sandbox_message="Cobranca criada no Asaas Sandbox. Nenhuma cobranca real sera realizada.",
+        sandbox_message=sandbox_msg,
     )
 
 

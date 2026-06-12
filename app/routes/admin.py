@@ -2225,3 +2225,60 @@ def reject_withdrawal(payment_id: str, admin: User = Depends(require_permission(
         )
         db.commit()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Configuração de carteira Asaas por walker (split real — dormente no sandbox)
+# ---------------------------------------------------------------------------
+
+@router.patch("/walkers/{user_id}/wallet")
+@api_router.patch("/walkers/{user_id}/wallet")
+def set_walker_wallet(
+    user_id: str,
+    payload: dict,
+    admin: User = Depends(require_permission("finance.manage")),
+    db: Session = Depends(get_db),
+):
+    """Configura o asaas_wallet_id de um walker para split real no modo live.
+
+    Body: {"asaas_wallet_id": "<id>"} para configurar, ou {"asaas_wallet_id": null} para limpar.
+    Requer permissão finance.manage.
+    """
+    profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == user_id).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Perfil de walker nao encontrado para este user_id.")
+
+    if "asaas_wallet_id" not in payload:
+        raise HTTPException(status_code=422, detail="Campo 'asaas_wallet_id' obrigatorio no body.")
+
+    new_wallet_id = payload.get("asaas_wallet_id")
+    if new_wallet_id is not None:
+        new_wallet_id = str(new_wallet_id).strip()
+        if not new_wallet_id:
+            raise HTTPException(status_code=422, detail="'asaas_wallet_id' nao pode ser string vazia. Use null para limpar.")
+
+    old_wallet_id = profile.asaas_wallet_id
+    profile.asaas_wallet_id = new_wallet_id or None
+    db.add(profile)
+
+    try:
+        record_audit_log(
+            db,
+            action="walker_profile.wallet_updated",
+            entity_type="walker_profile",
+            entity_id=profile.id,
+            actor=admin,
+            before={"asaas_wallet_id": old_wallet_id},
+            after={"asaas_wallet_id": profile.asaas_wallet_id},
+            tenant_id=None,
+        )
+    except Exception:
+        pass
+
+    db.commit()
+    db.refresh(profile)
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "asaas_wallet_id": profile.asaas_wallet_id,
+    }

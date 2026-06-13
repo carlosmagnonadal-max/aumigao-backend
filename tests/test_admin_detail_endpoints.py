@@ -248,6 +248,8 @@ def test_get_user_detail_happy_path():
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["id"] == TUTOR_ID
+    # Nao vazar credenciais: o detalhe deve usar o serializer enxuto, nunca o ORM cru.
+    assert "password_hash" not in body
 
 
 def test_get_user_detail_not_found_returns_404():

@@ -1181,7 +1181,7 @@ def get_admin_user(
         raise HTTPException(status_code=404, detail="Usuario nao encontrado")
     scope = get_admin_tenant_scope(admin)
     ensure_tenant_access(user.tenant_id, scope)
-    return user
+    return _serialize_admin_user(user)
 
 
 @router.get("/audit-logs")

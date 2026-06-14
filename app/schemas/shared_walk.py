@@ -9,6 +9,9 @@ from app.schemas.common import ORMModel
 class SharedWalkConfigResponse(BaseModel):
     tenant_id: str
     price_per_pet: float
+    price_30: float
+    price_45: float
+    price_60: float
     max_pets_same_tutor: int
     max_tutors: int
     pool_enabled: bool
@@ -19,6 +22,9 @@ class SharedWalkConfigResponse(BaseModel):
 
 class SharedWalkConfigUpdate(BaseModel):
     price_per_pet: float | None = Field(default=None, ge=0)
+    price_30: float | None = Field(default=None, ge=0)
+    price_45: float | None = Field(default=None, ge=0)
+    price_60: float | None = Field(default=None, ge=0)
     max_pets_same_tutor: int | None = Field(default=None, ge=1, le=3)
     max_tutors: int | None = Field(default=None, ge=2, le=3)
     pool_enabled: bool | None = None
@@ -73,6 +79,9 @@ class SharedWalkView(BaseModel):
 
     available: bool
     price_per_pet: float | None = None
+    price_30: float | None = None
+    price_45: float | None = None
+    price_60: float | None = None
     max_tutors: int | None = None
     max_pets_same_tutor: int | None = None
     pool_enabled: bool = False

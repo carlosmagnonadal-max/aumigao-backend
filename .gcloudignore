@@ -1,0 +1,26 @@
+# Não subir segredos/lixo para o Cloud Build (upload do `gcloud run deploy --source`).
+.env
+.env.*
+*.db
+ci.db
+ci_check.db
+
+.git
+.gitignore
+
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+tests
+tests_legacy
+
+*.md
+*.log
+.vscode
+.idea

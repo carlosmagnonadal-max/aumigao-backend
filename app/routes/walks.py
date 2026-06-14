@@ -352,6 +352,13 @@ def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db:
                 duration_minutes=data.get("duration_minutes", 0),
             )
             data["price"] = config.base_price
+        elif data.get("duration_minutes") in (30, 45, 60):
+            # Passeio individual: preço é AUTORITATIVO do servidor, pela config do tenant
+            # (white label). Ignora qualquer preço que o app envie — não dá pra burlar.
+            from app.services import individual_walk_pricing_service as individual_pricing_svc
+
+            _iwp = individual_pricing_svc.get_or_create_config(db, tenant_id)
+            data["price"] = {30: _iwp.price_30, 45: _iwp.price_45, 60: _iwp.price_60}[data["duration_minutes"]]
 
         walker_selection_mode = (
             "only_selected"

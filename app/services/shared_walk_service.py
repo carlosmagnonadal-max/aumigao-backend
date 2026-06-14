@@ -106,6 +106,13 @@ def create_session(
     for pet_id in unique_pets:
         _pet_owned(db, pet_id, host_tutor_id)
 
+    # Preço por pet varia com a duração (white label). Fallback = price_per_pet.
+    price = {
+        30: config.price_30,
+        45: config.price_45,
+        60: config.price_60,
+    }.get(duration_minutes, config.price_per_pet)
+
     # Pool só quando o tenant habilitou; senão a sessão é por convite.
     pool = bool(open_to_pool and config.pool_enabled)
     session = SharedWalk(
@@ -115,7 +122,7 @@ def create_session(
         origin=ORIGIN_POOL if pool else ORIGIN_INVITE,
         scheduled_date=scheduled_date,
         duration_minutes=duration_minutes,
-        price_per_pet=config.price_per_pet,
+        price_per_pet=price,
         max_tutors=config.max_tutors,
         open_to_pool=pool,
     )
@@ -128,7 +135,7 @@ def create_session(
             pet_id=pet_id,
             role="host",
             status=PARTICIPANT_ACCEPTED,
-            price=config.price_per_pet,
+            price=price,
         ))
     db.commit()
     db.refresh(session)

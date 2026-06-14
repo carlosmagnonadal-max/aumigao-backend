@@ -1,0 +1,28 @@
+# NUNCA mandar segredos nem lixo para a imagem.
+.env
+.env.*
+*.db
+ci.db
+ci_check.db
+
+.git
+.gitignore
+.github
+
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+tests
+tests_legacy
+
+# Docs/artefatos locais que não fazem parte do runtime.
+*.md
+*.log
+.vscode
+.idea

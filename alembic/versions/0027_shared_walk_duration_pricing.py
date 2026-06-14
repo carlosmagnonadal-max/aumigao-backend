@@ -3,7 +3,7 @@
 Aditivo e reversível. Adiciona price_30/45/60 em tenant_shared_walk_configs.
 Mantém price_per_pet para compatibilidade.
 
-Revision ID: 0027_shared_walk_duration_pricing
+Revision ID: 0027_shared_duration_pricing
 Revises: 0026_individual_walk_pricing
 Create Date: 2026-06-14
 """
@@ -13,7 +13,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0027_shared_walk_duration_pricing"
+revision: str = "0027_shared_duration_pricing"
 down_revision: Union[str, None] = "0026_individual_walk_pricing"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

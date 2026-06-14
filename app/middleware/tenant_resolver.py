@@ -6,8 +6,7 @@ from collections.abc import Callable
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-from app.models.tenant import Tenant
-from app.services.tenant_resolver_service import resolve_tenant_from_request
+from app.services.tenant_resolver_service import resolve_tenant_identity
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +18,12 @@ class TenantResolverMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         try:
-            with self.session_factory() as db:
-                tenant: Tenant | None = resolve_tenant_from_request(request, db)
-                request.state.tenant = tenant
-                request.state.tenant_id = tenant.id if tenant else None
-                request.state.tenant_slug = tenant.slug if tenant else None
+            # resolve_tenant_identity usa cache (chaveado pelo session_factory): só
+            # toca o banco no cache-miss, evitando 2-4 queries por requisição.
+            identity = resolve_tenant_identity(request, self.session_factory)
+            request.state.tenant = None
+            request.state.tenant_id = identity[0] if identity else None
+            request.state.tenant_slug = identity[1] if identity else None
         except Exception as exc:
             logger.warning("tenant_resolver_middleware_fallback_failed error=%s", exc)
             request.state.tenant = None

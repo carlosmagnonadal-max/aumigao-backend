@@ -290,6 +290,43 @@ def _record_skipped_cycle(session_factory) -> None:
         db.close()
 
 
+# Chave estável do advisory lock do Postgres que garante UM único scheduler
+# rodando o ciclo entre todos os workers/réplicas (o _CYCLE_LOCK asyncio só
+# coordena dentro de um processo). Valor arbitrário, fixo p/ o scheduler operacional.
+_SCHEDULER_ADVISORY_LOCK_KEY = 905_712_001
+
+
+def _is_postgres(db: Session) -> bool:
+    bind = db.get_bind()
+    return bind is not None and bind.dialect.name == "postgresql"
+
+
+def _try_acquire_cross_process_lock(db: Session) -> bool | None:
+    """Tenta o advisory lock do Postgres (1 scheduler entre workers).
+    Retorna True/False no Postgres; None quando o backend não suporta (ex.: sqlite em teste)."""
+    if not _is_postgres(db):
+        return None
+    from sqlalchemy import text
+
+    return bool(
+        db.execute(
+            text("SELECT pg_try_advisory_lock(:k)"),
+            {"k": _SCHEDULER_ADVISORY_LOCK_KEY},
+        ).scalar()
+    )
+
+
+def _release_cross_process_lock(db: Session) -> None:
+    if not _is_postgres(db):
+        return
+    from sqlalchemy import text
+
+    db.execute(
+        text("SELECT pg_advisory_unlock(:k)"),
+        {"k": _SCHEDULER_ADVISORY_LOCK_KEY},
+    )
+
+
 async def run_operational_scheduler_cycle(session_factory) -> dict:
     if _CYCLE_LOCK.locked():
         SCHEDULER_STATE["scheduler_running"] = True
@@ -300,7 +337,24 @@ async def run_operational_scheduler_cycle(session_factory) -> dict:
 
     async with _CYCLE_LOCK:
         await asyncio.sleep(0)
-        return _run_operational_scheduler_cycle_locked(session_factory)
+        # Trava entre processos: com vários workers, só quem pegar o advisory lock
+        # roda o ciclo; os demais pulam (evita push/sinais duplicados). Em sqlite
+        # (testes) acquired=None → roda normalmente, pois é processo único.
+        lock_db = session_factory()
+        acquired = _try_acquire_cross_process_lock(lock_db)
+        if acquired is False:
+            lock_db.close()
+            SCHEDULER_STATE["scheduler_running"] = True
+            SCHEDULER_STATE["tasks_executed"] = {"cycle_skipped_other_worker": 1}
+            SCHEDULER_STATE["last_scheduler_error"] = None
+            _record_skipped_cycle(session_factory)
+            return get_operational_scheduler_status()
+        try:
+            return _run_operational_scheduler_cycle_locked(session_factory)
+        finally:
+            if acquired is True:
+                _release_cross_process_lock(lock_db)
+            lock_db.close()
 
 
 def _run_operational_scheduler_cycle_locked(session_factory) -> dict:

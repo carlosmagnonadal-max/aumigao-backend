@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
+from collections.abc import Callable
+from weakref import WeakKeyDictionary
 
 from fastapi import Request
 from sqlalchemy.orm import Session
@@ -82,3 +86,71 @@ def resolve_tenant_from_request(request: Request, db: Session) -> Tenant | None:
         request.headers.get("host", "<sem-host>"),
     )
     return get_default_tenant(db)
+
+
+# ---------------------------------------------------------------------------
+# Cache de resolução de tenant
+#
+# Sem cache, TODA requisição abria uma sessão de banco e fazia 2-4 queries só
+# para descobrir o tenant (quase sempre o default). Com o banco remoto, isso
+# somava segundos de latência por requisição — inclusive em /health.
+#
+# O cache é chaveado pelo `session_factory` (via WeakKeyDictionary): em produção
+# há um único SessionLocal, então o cache vale de verdade; em testes cada app
+# cria o seu sessionmaker, garantindo isolamento entre testes (sem vazamento).
+# Só cacheamos resoluções POSITIVAS, para não fixar um "tenant inexistente"
+# logo antes de ele ser criado (ex.: onboarding de white-label).
+# ---------------------------------------------------------------------------
+
+_TENANT_CACHE_TTL_SECONDS = float(os.getenv("TENANT_CACHE_TTL_SECONDS", "300"))
+_tenant_cache: "WeakKeyDictionary[object, dict[str, tuple[float, tuple[str, str]]]]" = (
+    WeakKeyDictionary()
+)
+_tenant_cache_lock = threading.Lock()
+
+
+def _tenant_cache_key(request: Request) -> str:
+    tid = _clean_header(request.headers.get("X-Tenant-Id")) or ""
+    tslug = (_clean_header(request.headers.get("X-Tenant-Slug")) or "").lower()
+    host = (request.headers.get("host") or "").split(":", 1)[0].strip().lower()
+    return f"{tid}|{tslug}|{host}"
+
+
+def clear_tenant_cache() -> None:
+    """Limpa o cache de resolução de tenant (chamar após criar/alterar tenant)."""
+    with _tenant_cache_lock:
+        _tenant_cache.clear()
+
+
+def resolve_tenant_identity(
+    request: Request, session_factory: Callable[[], Session]
+) -> tuple[str, str] | None:
+    """Retorna (tenant_id, tenant_slug) do request, com cache para evitar hit no banco
+    a cada requisição. Só abre sessão de banco no cache-miss. Retorna None quando nenhum
+    tenant é resolvido (modo estrito). O objeto Tenant não é exposto porque nada downstream
+    o consome — apenas tenant_id/tenant_slug em request.state.
+    """
+    key = _tenant_cache_key(request)
+    now = time.monotonic()
+
+    if _TENANT_CACHE_TTL_SECONDS > 0:
+        with _tenant_cache_lock:
+            bucket = _tenant_cache.get(session_factory)
+            if bucket is not None:
+                hit = bucket.get(key)
+                if hit is not None and (now - hit[0]) < _TENANT_CACHE_TTL_SECONDS:
+                    return hit[1]
+
+    with session_factory() as db:
+        tenant = resolve_tenant_from_request(request, db)
+        identity = (tenant.id, tenant.slug) if tenant else None
+
+    if identity is not None and _TENANT_CACHE_TTL_SECONDS > 0:
+        with _tenant_cache_lock:
+            bucket = _tenant_cache.get(session_factory)
+            if bucket is None:
+                bucket = {}
+                _tenant_cache[session_factory] = bucket
+            bucket[key] = (now, identity)
+
+    return identity

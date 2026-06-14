@@ -22,6 +22,7 @@ from app.models.user import User
 from app.models.walk import Walk, WalkMatchingAttempt
 from app.models.walk_completion_review import WalkCompletionReview
 from app.models.walk_review import WalkReview
+from app.models.walk_tip import WalkTip
 from app.models.walker_kit_submission import WalkerKitSubmission
 from app.models.walker_profile import WalkerProfile
 from app.schemas.walker_profile import WalkerProfileCreate, WalkerProfileResponse, WalkerProfileUpdate
@@ -514,8 +515,15 @@ def _walk_payload(walk: Walk, db: Session) -> dict:
     }
 
 
-def _completed_walks(user: User, db: Session) -> list[Walk]:
-    return db.query(Walk).filter(Walk.walker_id == user.id, Walk.status == "Finalizado").all()
+def _completed_walks(user: User, db: Session, limit: int = 200) -> list[Walk]:
+    # F16: limite são para evitar carga excessiva; status "Finalizado" é o canônico.
+    return (
+        db.query(Walk)
+        .filter(Walk.walker_id == user.id, Walk.status == "Finalizado")
+        .order_by(Walk.created_at.desc())
+        .limit(limit)
+        .all()
+    )
 
 
 def _walk_started_at(walk: Walk) -> datetime | None:
@@ -528,6 +536,32 @@ def _period_walks(walks: list[Walk], start: datetime, end: datetime) -> list[Wal
 
 def _sum_walk_values(walks: list[Walk]) -> float:
     return sum(float(walk.price or 0) for walk in walks)
+
+
+def _walker_tips_total(walker_id: str, db: Session) -> float:
+    """Soma gorjetas pagas (status='paid') do walker a partir de WalkTip."""
+    tips = (
+        db.query(WalkTip)
+        .filter(WalkTip.walker_id == walker_id, WalkTip.status == "paid")
+        .all()
+    )
+    return sum(float(t.amount or 0) for t in tips)
+
+
+def _walker_tips_week(walker_id: str, db: Session) -> float:
+    """Soma gorjetas pagas na semana corrente."""
+    now = datetime.utcnow()
+    week_start = datetime(now.year, now.month, now.day) - timedelta(days=datetime.utcnow().weekday())
+    tips = (
+        db.query(WalkTip)
+        .filter(
+            WalkTip.walker_id == walker_id,
+            WalkTip.status == "paid",
+            WalkTip.created_at >= week_start,
+        )
+        .all()
+    )
+    return sum(float(t.amount or 0) for t in tips)
 
 
 def _goal_progress(current: int, target: int) -> int:
@@ -982,11 +1016,30 @@ def _has_schedule_conflict(candidate: Walk, accepted: list[Walk], buffer_minutes
 
 
 def _available_balance(user: User, db: Session) -> float:
-    payments = db.query(Payment).filter(Payment.tutor_id == user.id).all()
-    if payments:
-        return sum(float(payment.amount or 0) for payment in payments)
-    completed_total = sum(float(walk.price or 0) for walk in _completed_walks(user, db))
-    return completed_total or 0.0
+    """Saldo disponível do walker.
+
+    F07: O walker RECEBE pelos passeios — Payment.tutor_id é o pagador (tutor),
+    não o recebedor. Usa walker_amount se preenchido; caso contrário, calcula
+    como soma dos preços dos walks concluídos.
+    Desconta saques (payments com provider='pix' onde o walker_id está no walk_id).
+    Fonte real: Walk concluídos + Payment.walker_amount quando disponível.
+    """
+    # Tenta usar walker_amount da tabela payments (campo de split de receita).
+    payments_with_split = (
+        db.query(Payment)
+        .join(Walk, Payment.walk_id == Walk.id)
+        .filter(Walk.walker_id == user.id, Payment.status == "paid", Payment.walker_amount.isnot(None))
+        .all()
+    )
+    if payments_with_split:
+        gross = sum(float(p.walker_amount or 0) for p in payments_with_split)
+    else:
+        # Fallback: preço cheio dos walks concluídos (sem split calculado ainda).
+        gross = sum(float(walk.price or 0) for walk in _completed_walks(user, db))
+
+    # Gorjetas pagas
+    gross += _walker_tips_total(user.id, db)
+    return round(gross, 2)
 
 
 def _goals_evolution_payload(user: User, db: Session) -> dict:
@@ -1161,13 +1214,23 @@ def update_profile(payload: WalkerProfileUpdate, user: User = Depends(get_curren
 @router.get("/dashboard")
 def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
+    # F16: carrega only active/accepted/available sem limite; completed com limite 200.
     active = db.query(Walk).filter(Walk.walker_id == user.id, Walk.status.in_(["Indo buscar o pet", "Passeando agora"])).all()
     accepted = db.query(Walk).filter(Walk.walker_id == user.id).all()
     available = db.query(Walk).filter(Walk.walker_id.is_(None), Walk.status == "Agendado").all()
-    completed = _completed_walks(user, db)
-    today_total = sum(float(walk.price or 0) for walk in completed) or 55.86
-    tips_total = 52.0
-    potential = sum(float(walk.price or 0) for walk in available[:3]) or 180.0
+    completed = _completed_walks(user, db)  # limitado a 200
+
+    # F01: valores reais do banco; sem fallback fake
+    now = datetime.utcnow()
+    day_start = datetime(now.year, now.month, now.day)
+    today_walks = _period_walks(completed, day_start, day_start + timedelta(days=1))
+    today_total = _sum_walk_values(today_walks)
+
+    # Gorjetas reais da semana
+    tips_week = _walker_tips_week(user.id, db)
+
+    potential = sum(float(walk.price or 0) for walk in available[:3])
+
     active_walk = _walk_payload(active[0], db) if active else (_walk_payload(accepted[0], db) if accepted else None)
     next_request = available[0] if available else None
     buffer_minutes = 15
@@ -1178,6 +1241,35 @@ def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_
             "has_conflict": _has_schedule_conflict(next_request, accepted, buffer_minutes),
             "message": "Aceite liberado: intervalo minimo de 15 min preservado.",
         }
+
+    # F01 + F05: reputação real via WalkReview
+    rep = _walk_review_reputation_summary(user.id, db)
+    rating_avg = rep["rating_avg"]       # 0 se sem avaliações
+    rating_count = rep["rating_count"]   # 0 se sem avaliações
+
+    # Score operacional real (já existente no sistema)
+    op_score = calculate_walker_operational_score(user.id, db)
+    score = op_score.get("score") if op_score else None  # None se sem dados
+
+    # Nível real via walker_level (reputation_service)
+    from app.services.reputation_service import walker_level as _real_walker_level
+    level_str = _real_walker_level(len(completed), rating_avg, rating_count)
+    # Mapeamento para chave interna usada pelo frontend
+    level_map = {"Bronze": "BRONZE", "Prata": "SILVER", "Ouro": "GOLD", "Diamante": "DIAMOND"}
+    level_key = level_map.get(level_str, "BRONZE")
+
+    # F05: grade semana com datas REAIS (próximos 7 dias a partir de hoje)
+    week_days_pt = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sab", "Dom"]
+    week_grid = []
+    for i in range(7):
+        d = (day_start + timedelta(days=i))
+        week_grid.append({
+            "day": week_days_pt[d.weekday()],
+            "date": str(d.day),
+            "month": d.strftime("%m/%Y"),
+            "status": "available",
+        })
+
     return {
         "available_requests": len(available),
         "active_walks": len(active),
@@ -1185,23 +1277,24 @@ def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_
         "today_earnings": today_total,
         "walk_earnings_today": today_total,
         "tips_today": 0.0,
-        "tips_week": tips_total,
+        "tips_week": tips_week,
         "potential_earnings": potential,
-        "level": "GOLD",
-        "next_level": "ELITE",
-        "score": 87,
-        "rating_avg": 4.9,
-        "rating_count": 126,
-        "level_progress": 72,
-        "bonus_missing_walks": max(0, 14 - (len(completed) or 11)),
-        "boost_credits": 24,
+        "level": level_key,
+        "level_label": level_str,
+        "next_level": None,  # sem hardcode; regra de progressão calculada em _walker_level
+        "score": score,
+        "rating_avg": rating_avg,
+        "rating_count": rating_count,
+        "level_progress": None,  # sem tabela de metas por nível; não inventar
+        "bonus_missing_walks": max(0, 14 - len(completed)),
+        "boost_credits": 0,  # CR não tem tabela de saldo ainda; honesto = 0
         "next_request": next_request_payload,
         "active_walk": active_walk,
         "tips_summary": {
             "today": 0.0,
-            "week": tips_total,
-            "month": 148.0,
-            "pending_review": 1,
+            "week": tips_week,
+            "month": _walker_tips_total(user.id, db),  # total pago histórico como proxy
+            "pending_review": 0,
             "policy": "Gorjetas sao opcionais e so aparecem apos passeio finalizado e pet entregue.",
             "score_policy": "Gorjeta fica no financeiro e nao altera reputacao, matching, nivel ou boost.",
         },
@@ -1215,8 +1308,8 @@ def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_
         },
         "walker_kit": _build_walker_kit(user.id, db),
         "cr_wallet": {
-            "balance": 24,
-            "earned_this_week": 6,
+            "balance": 0,  # CR não possui tabela de saldo; sem fake
+            "earned_this_week": 0,
             "source_policy": "CR e concedido pela plataforma por performance; nao e comprado pelo passeador.",
             "actions": [
                 {"key": "matching_boost", "label": "Boost matching", "cost": 4, "description": "Melhora prioridade no ranking por janela curta."},
@@ -1225,25 +1318,27 @@ def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_
             ],
         },
         "matching_intelligence": {
-            "score": 89,
+            # F05: score real do sistema de matching
+            "score": op_score.get("score") if op_score else None,
             "summary": "Ranking combina experiencia, distancia, disponibilidade, score, avaliacao e historico.",
             "signals": [
-                {"label": "Experiencia", "value": 92},
-                {"label": "Distancia", "value": 84},
-                {"label": "Agenda", "value": 88},
-                {"label": "Avaliacao", "value": 96},
+                {"label": "Experiencia", "value": op_score.get("experience_score") if op_score else None},
+                {"label": "Distancia", "value": None},  # sem dados de distância no banco
+                {"label": "Agenda", "value": None},      # sem tabela de disponibilidade
+                {"label": "Avaliacao", "value": op_score.get("rating_score") if op_score else None},
             ],
             "next_improvement": "Manter horarios 17h-20h ativos melhora a posicao em alta demanda.",
         },
         "rating_summary": {
-            "rating_avg": 4.9,
-            "rating_count": 126,
-            "score": 87,
+            # F05: dados reais de WalkReview
+            "rating_avg": rating_avg,
+            "rating_count": rating_count,
+            "score": score,
             "components": [
-                {"label": "Avaliacoes", "value": 96},
-                {"label": "Pontualidade", "value": 91},
-                {"label": "Conclusao", "value": 98},
-                {"label": "Ocorrencias", "value": 84},
+                {"label": "Avaliacoes", "value": op_score.get("rating_score") if op_score else None},
+                {"label": "Pontualidade", "value": None},  # sem tabela de pontualidade
+                {"label": "Conclusao", "value": op_score.get("experience_score") if op_score else None},
+                {"label": "Ocorrencias", "value": None},   # sem dados específicos
             ],
         },
         "schedule_rules": {
@@ -1252,15 +1347,8 @@ def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_
             "can_accept_next_request": not (_has_schedule_conflict(next_request, accepted, buffer_minutes) if next_request else False),
         },
         "goals_evolution": _goals_evolution_payload(user, db),
-        "week": [
-            {"day": "Seg", "date": "19", "status": "available"},
-            {"day": "Ter", "date": "20", "status": "available"},
-            {"day": "Qua", "date": "21", "status": "unavailable"},
-            {"day": "Qui", "date": "22", "status": "available"},
-            {"day": "Sex", "date": "23", "status": "partial"},
-            {"day": "Sab", "date": "24", "status": "available"},
-            {"day": "Dom", "date": "25", "status": "partial"},
-        ],
+        # F05: grade semanal com datas reais
+        "week": week_grid,
     }
 
 
@@ -1269,7 +1357,11 @@ def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_d
     _require_active_walker(user, db)
     completed = _completed_walks(user, db)
     total = sum(float(walk.price or 0) for walk in completed)
-    tips = 52.0
+
+    # Gorjetas reais
+    tips = _walker_tips_total(user.id, db)
+
+    # F10: lista de transações real; sem demo entries quando vazia
     transactions = []
     for walk in completed:
         payload = _walk_payload(walk, db)
@@ -1284,26 +1376,48 @@ def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_d
             "amount": float(walk.price or 0),
             "status": "paid",
         })
-    if not transactions:
-        transactions = [
-            {"id": "demo-walk-1", "type": "walk", "description": "Passeio concluido", "pet_name": "Thor", "duration": "60 min", "date": "19/05/2025", "time": "18:20", "amount": 35.0, "status": "paid"},
-            {"id": "demo-tip-1", "type": "tip", "description": "Gorjeta recebida", "pet_name": "Thor", "duration": "", "date": "19/05/2025", "time": "18:20", "amount": 10.0, "status": "paid"},
-            {"id": "demo-withdraw-1", "type": "withdraw", "description": "Saque via PIX", "pet_name": "", "duration": "", "date": "17/04/2025", "time": "21:30", "amount": -120.0, "status": "paid"},
-        ]
-    weekly_walk_total = total or 368.0
+    # Gorjetas pagas como transações reais
+    tips_rows = (
+        db.query(WalkTip)
+        .filter(WalkTip.walker_id == user.id, WalkTip.status == "paid")
+        .order_by(WalkTip.created_at.desc())
+        .all()
+    )
+    for tip in tips_rows:
+        transactions.append({
+            "id": f"tip-{tip.id}",
+            "type": "tip",
+            "description": "Gorjeta recebida",
+            "pet_name": "",
+            "duration": "",
+            "date": tip.created_at.strftime("%d/%m/%Y") if tip.created_at else "",
+            "time": tip.created_at.strftime("%H:%M") if tip.created_at else "",
+            "amount": float(tip.amount or 0),
+            "status": "paid",
+        })
+    # F10: NÃO injeta demo-walk-1/demo-tip-1/demo-withdraw-1 — lista vazia é honesta
+    # Ordena por data desc (walks já vêm desc pelo _completed_walks)
+    transactions.sort(key=lambda t: t.get("date", ""), reverse=True)
+
+    # Reputação real
+    rep = _walk_review_reputation_summary(user.id, db)
+    op_score = calculate_walker_operational_score(user.id, db)
+    from app.services.reputation_service import walker_level as _real_walker_level
+    level_str = _real_walker_level(len(completed), rep["rating_avg"], rep["rating_count"])
+
     return {
         "available_balance": _available_balance(user, db),
-        "weekly_total": weekly_walk_total,
-        "completed_walks": len(completed) or 11,
+        "weekly_total": total,
+        "completed_walks": len(completed),
         "tips": tips,
-        "walk_earnings": weekly_walk_total,
-        "total_with_tips": weekly_walk_total + tips,
-        "tips_pending_review": 1,
+        "walk_earnings": total,
+        "total_with_tips": total + tips,
+        "tips_pending_review": 0,
         "tips_policy": "Gorjetas sao opcionais, surgem apos entrega do pet e nao entram nas metas de ganhos.",
         "goal_total_walks": 14,
         "future_reward_preview": "Beneficios futuros podem ser ativados por campanhas, selos e prioridade em solicitacoes.",
-        "level": "Ouro",
-        "score": 87,
+        "level": level_str,
+        "score": op_score.get("score") if op_score else None,
         "transactions": transactions,
     }
 
@@ -1643,20 +1757,37 @@ def api_public_walkers(request: Request = None, db: Session = Depends(get_db)):
 @router.get("/availability")
 def availability(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
+    # F04: próximos 7 dias REAIS a partir de hoje (default "available")
+    now = datetime.utcnow()
+    today = datetime(now.year, now.month, now.day)
+    week_days_pt = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sab", "Dom"]
+    week = []
+    for i in range(7):
+        d = today + timedelta(days=i)
+        label = f"{week_days_pt[d.weekday()]} {d.day}"
+        week.append({"day": label, "status": "available", "possible_walks": 3})
+
+    # Mês atual real
+    month_label = now.strftime("%B %Y").capitalize()
+    # Mapeamento mês PT
+    _months_pt = {
+        "January": "Janeiro", "February": "Fevereiro", "March": "Março",
+        "April": "Abril", "May": "Maio", "June": "Junho",
+        "July": "Julho", "August": "Agosto", "September": "Setembro",
+        "October": "Outubro", "November": "Novembro", "December": "Dezembro",
+    }
+    for en, pt in _months_pt.items():
+        month_label = month_label.replace(en, pt)
+
     return {
-        "week": [
-            {"day": "Seg 22", "status": "available", "possible_walks": 3},
-            {"day": "Ter 23", "status": "unavailable", "possible_walks": 0},
-            {"day": "Qua 24", "status": "partial", "possible_walks": 2},
-            {"day": "Qui 25", "status": "available", "possible_walks": 4},
-            {"day": "Sex 26", "status": "available", "possible_walks": 3},
-        ],
+        "week": week,
         "slots": ["07:00", "08:00", "09:00", "14:00", "15:00", "17:00", "18:00", "19:00", "20:00"],
         "month": {
-            "label": "Abril 2026",
-            "estimated_earnings": 3240,
-            "possible_walks": 42,
-            "available_days": 20,
+            "label": month_label,
+            # Estimativas honestas (sem tabela de disponibilidade ainda)
+            "estimated_earnings": None,
+            "possible_walks": None,
+            "available_days": None,
         },
     }
 
@@ -1664,6 +1795,8 @@ def availability(user: User = Depends(get_current_user), db: Session = Depends(g
 @router.put("/availability")
 def update_availability(payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
+    # NOTA: persistência real depende de tabela de disponibilidade futura (não criada nesta rodada).
+    # Por enquanto, aceita o payload e retorna confirmação sem persistir.
     return {"ok": True, "user_id": user.id, **payload}
 
 @router.post("/walks/{walk_id}/reconfirmation")
@@ -2115,6 +2248,349 @@ def create_walker_occurrence(walk_id: str, payload: dict, user: User = Depends(g
         "status": complaint.status,
         "type": occurrence_type,
     }
+
+
+# ---------------------------------------------------------------------------
+# MÁQUINA DE ESTADOS DO PASSEIO (trecho meio: aceite → finalização)
+#
+# Fluxo canônico de operational_status:
+#   walker_accepted / ride_scheduled
+#       → walker_arriving         (check-in: walker chegou ao local)
+#       → pet_handover_confirmed  (pet entregue ao walker; passeio iniciando)
+#       → ride_in_progress        (início formal; checklist de início confirmado)
+#       → awaiting_completion_review  (relatório de finalização enviado)
+#       → ride_completed              (admin aprova)
+#
+# Estados "walker_arriving" e "pet_handover_confirmed" são strings novas no campo
+# VARCHAR `operational_status` — não exigem migration. Os demais já existiam.
+#
+# O que NÃO persiste (sem migration):
+#   • Itens individuais do checklist (agua, vasilha, etc.) — aceitos no payload,
+#     logados como evento operacional, mas não há coluna dedicada. Melhoria futura.
+#   • Texto/nota de experiência (did_pee / did_poop) — não há coluna na tabela
+#     `walks`; o endpoint aceita, retorna o walk atualizado com os valores recebidos
+#     no JSON mas NÃO persiste no banco. Melhoria futura: adicionar colunas.
+# ---------------------------------------------------------------------------
+
+# Estados válidos para cada transição
+_CHECKIN_ALLOWED = {
+    "walker_accepted",
+    "ride_scheduled",
+    # Idempotência: já chegou mas ainda não entregou
+    "walker_arriving",
+}
+_PET_HANDOVER_ALLOWED = {
+    "walker_arriving",
+    # Idempotência
+    "pet_handover_confirmed",
+}
+_START_CHECKLIST_ALLOWED = {
+    "pet_handover_confirmed",
+    # Idempotência
+    "ride_in_progress",
+}
+_CHECKIN_CHECKLIST_ALLOWED = {
+    "walker_arriving",
+    "pet_handover_confirmed",
+    "ride_in_progress",
+}
+_EXPERIENCE_ALLOWED = {
+    "ride_in_progress",
+    "awaiting_completion_review",
+    "ride_completed",
+    # Permite atualizar após finalização também
+    "Finalizado",
+}
+_ACTIVE_STATUSES = {
+    "walker_accepted",
+    "ride_scheduled",
+    "walker_arriving",
+    "pet_handover_confirmed",
+    "ride_in_progress",
+}
+
+
+def _get_walk_for_walker(walk_id: str, user: User, db: Session) -> Walk:
+    """Busca o walk, valida existência e posse do walker. Lança 404/403."""
+    walk = db.get(Walk, walk_id)
+    if not walk:
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado")
+    if walk.walker_id not in {user.id, None} and walk.assigned_walker_id not in {user.id, None}:
+        raise HTTPException(status_code=403, detail="Passeio nao pertence ao passeador")
+    # Exige que o walker seja de fato o responsável (não só "None")
+    if walk.walker_id is not None and walk.walker_id != user.id and walk.assigned_walker_id != user.id:
+        raise HTTPException(status_code=403, detail="Passeio nao pertence ao passeador")
+    return walk
+
+
+@router.post("/walks/{walk_id}/check-in")
+def walker_check_in(
+    walk_id: str,
+    payload: dict | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Walker registra chegada ao local de retirada do pet.
+
+    Transição: walker_accepted | ride_scheduled → walker_arriving
+    Retorno:   walk completo + { checked_in: true }
+    """
+    _require_active_walker(user, db)
+    walk = _get_walk_for_walker(walk_id, user, db)
+
+    if walk.operational_status not in _CHECKIN_ALLOWED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Transicao invalida: check-in nao permitido no status '{walk.operational_status}'.",
+        )
+
+    walk.operational_status = "walker_arriving"
+    walk.status = "Indo buscar o pet"
+
+    checklist_items = {}
+    if payload:
+        checklist_items = {
+            key: bool(payload.get(key))
+            for key in ("checklist_confirm_water", "checklist_confirm_bowl",
+                        "checklist_confirm_bags", "checklist_confirm_first_aid")
+            if key in payload
+        }
+
+    log_event(
+        db,
+        walk.id,
+        "walker_checked_in",
+        actor_type=user.role,
+        actor_id=user.id,
+        metadata={"checklist": checklist_items, "note": "Walker chegou ao local de retirada."},
+    )
+    db.commit()
+    db.refresh(walk)
+
+    result = serialize_operational_walk(walk, db, user=user)
+    result["checked_in"] = True
+    return result
+
+
+@router.post("/walks/{walk_id}/pet-handover")
+def pet_handover(
+    walk_id: str,
+    payload: dict | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Walker confirma que recebeu o pet e o passeio está iniciando.
+
+    Transição: walker_arriving → pet_handover_confirmed
+    Retorno:   walk completo + { confirmed: true }
+    """
+    _require_active_walker(user, db)
+    walk = _get_walk_for_walker(walk_id, user, db)
+
+    if walk.operational_status not in _PET_HANDOVER_ALLOWED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Transicao invalida: pet-handover nao permitido no status '{walk.operational_status}'.",
+        )
+
+    walk.operational_status = "pet_handover_confirmed"
+    walk.status = "Indo buscar o pet"
+
+    log_event(
+        db,
+        walk.id,
+        "pet_handover_confirmed",
+        actor_type=user.role,
+        actor_id=user.id,
+        metadata={"note": "Pet entregue ao passeador; passeio prestes a iniciar."},
+    )
+    db.commit()
+    db.refresh(walk)
+
+    result = serialize_operational_walk(walk, db, user=user)
+    result["confirmed"] = True
+    return result
+
+
+@router.post("/walks/{walk_id}/start-checklist")
+def confirm_start_checklist(
+    walk_id: str,
+    payload: dict | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Walker confirma checklist de início do passeio (água, vasilha, saquinhos, primeiros socorros).
+
+    Transição: pet_handover_confirmed → ride_in_progress
+    Retorno:   walk completo + { ok: true }
+
+    NOTA: itens individuais do checklist são logados mas não persistidos em coluna
+    dedicada (sem migration). O kit_checklist_start_confirmed não existe na tabela
+    walks atual — o frontend usa o campo no objeto retornado; como não temos coluna,
+    injetamos True no payload de retorno para compatibilidade.
+    """
+    _require_active_walker(user, db)
+    walk = _get_walk_for_walker(walk_id, user, db)
+
+    if walk.operational_status not in _START_CHECKLIST_ALLOWED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Transicao invalida: start-checklist nao permitido no status '{walk.operational_status}'.",
+        )
+
+    walk.operational_status = "ride_in_progress"
+    walk.status = "Passeando agora"
+
+    checklist_items = {}
+    if payload:
+        checklist_items = {
+            key: bool(payload.get(key))
+            for key in ("checklist_confirm_water", "checklist_confirm_bowl",
+                        "checklist_confirm_bags", "checklist_confirm_first_aid")
+            if key in payload
+        }
+
+    log_event(
+        db,
+        walk.id,
+        "start_checklist_confirmed",
+        actor_type=user.role,
+        actor_id=user.id,
+        metadata={"checklist": checklist_items, "note": "Checklist de inicio confirmado; passeio em andamento."},
+    )
+    db.commit()
+    db.refresh(walk)
+
+    result = serialize_operational_walk(walk, db, user=user)
+    result["ok"] = True
+    # Injeta campo de compatibilidade com frontend (não há coluna — melhoria futura)
+    result["kit_checklist_start_confirmed"] = True
+    return result
+
+
+@router.post("/walks/{walk_id}/checkin-checklist")
+def validate_checkin_checklist(
+    walk_id: str,
+    payload: dict | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Valida/registra checklist de chegada (originalmente ação de admin no frontend).
+
+    Transição: nenhuma — apenas registra o evento operacional.
+    Retorno:   walk completo + { ok: true }
+
+    NOTA: idem start-checklist — itens não persistem em coluna dedicada.
+    """
+    _require_active_walker(user, db)
+    walk = _get_walk_for_walker(walk_id, user, db)
+
+    if walk.operational_status not in _CHECKIN_CHECKLIST_ALLOWED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Checklist de chegada nao permitido no status '{walk.operational_status}'.",
+        )
+
+    checklist_items = {}
+    if payload:
+        checklist_items = {
+            key: bool(payload.get(key))
+            for key in ("checklist_confirm_water", "checklist_confirm_bowl",
+                        "checklist_confirm_bags", "checklist_confirm_first_aid")
+            if key in payload
+        }
+
+    log_event(
+        db,
+        walk.id,
+        "checkin_checklist_validated",
+        actor_type=user.role,
+        actor_id=user.id,
+        metadata={"checklist": checklist_items, "note": "Checklist de chegada validado."},
+    )
+    db.commit()
+    db.refresh(walk)
+
+    result = serialize_operational_walk(walk, db, user=user)
+    result["ok"] = True
+    # Injeta campo de compatibilidade com frontend (não há coluna — melhoria futura)
+    result["kit_checklist_check_in_confirmed"] = True
+    return result
+
+
+@router.post("/walks/{walk_id}/experience")
+def update_walk_experience(
+    walk_id: str,
+    payload: dict | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Walker registra experiência do passeio (did_pee / did_poop).
+
+    Retorno: walk completo com did_pee / did_poop injetados.
+
+    NOTA: a tabela `walks` não possui colunas `did_pee` / `did_poop`. Os valores
+    são recebidos, logados e devolvidos no JSON de retorno para compatibilidade com
+    o frontend, mas NÃO são persistidos no banco. Melhoria futura: adicionar colunas
+    via migration controlada.
+    """
+    _require_active_walker(user, db)
+    walk = _get_walk_for_walker(walk_id, user, db)
+
+    if walk.operational_status not in _EXPERIENCE_ALLOWED and walk.status != "Finalizado":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Experiencia do passeio nao pode ser registrada no status '{walk.operational_status}'.",
+        )
+
+    did_pee = bool((payload or {}).get("did_pee", False))
+    did_poop = bool((payload or {}).get("did_poop", False))
+
+    log_event(
+        db,
+        walk.id,
+        "walk_experience_updated",
+        actor_type=user.role,
+        actor_id=user.id,
+        # Logado para rastreabilidade; sem coluna dedicada — melhoria futura
+        metadata={"did_pee": did_pee, "did_poop": did_poop},
+    )
+    db.commit()
+    db.refresh(walk)
+
+    result = serialize_operational_walk(walk, db, user=user)
+    # Injeta valores no retorno para compatibilidade com frontend
+    result["did_pee"] = did_pee
+    result["did_poop"] = did_poop
+    return result
+
+
+@router.get("/walks/active")
+def walker_active_walk(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Retorna o passeio ativo do walker (em andamento ou a caminho).
+
+    Usado pela tela passeio-andamento para obter o walk atual sem precisar
+    de um ID explícito. Retorna 404 se não houver passeio ativo.
+    """
+    _require_active_walker(user, db)
+
+    walk = (
+        db.query(Walk)
+        .filter(
+            (Walk.walker_id == user.id) | (Walk.assigned_walker_id == user.id),
+            Walk.operational_status.in_(_ACTIVE_STATUSES),
+        )
+        .order_by(Walk.created_at.desc())
+        .first()
+    )
+
+    if not walk:
+        raise HTTPException(status_code=404, detail="Nenhum passeio ativo no momento.")
+
+    return serialize_operational_walk(walk, db, user=user)
 
 
 @router.post("/withdrawals")

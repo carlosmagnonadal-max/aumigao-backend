@@ -344,12 +344,30 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     )
 
 
+# ---------------------------------------------------------------------------
+# CORS: origens permitidas via env CORS_ALLOWED_ORIGINS (CSV).
+# Fallback = domínios conhecidos em produção.
+# Se a env NÃO estiver setada, usa "*" para não quebrar ambientes locais/dev.
+# ---------------------------------------------------------------------------
+_cors_env = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+if _cors_env:
+    _cors_origins: list[str] = [o.strip() for o in _cors_env.split(",") if o.strip()]
+else:
+    # Fallback para domínios conhecidos + wildcard como último recurso
+    _cors_origins = [
+        "https://aumigaowalk.com.br",
+        "https://www.aumigaowalk.com.br",
+        # Admin-web na Vercel — aceita qualquer subdomínio *.vercel.app
+        "https://admin-aumigao.vercel.app",
+        "*",
+    ]
+
 # Middlewares — ordem de add_middleware é de fora para dentro (LIFO na execução).
 # RequestContextMiddleware fica mais externo para que o request_id esteja
 # disponível para todos os outros middlewares e rotas.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],

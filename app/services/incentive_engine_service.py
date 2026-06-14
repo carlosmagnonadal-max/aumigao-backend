@@ -1,8 +1,11 @@
+import logging
 from datetime import datetime, timedelta
 from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
+
+_logger = logging.getLogger("aumigao.incentive_engine")
 
 from app.models.incentive_rule import (
     INCENTIVES_FEATURE_KEY,
@@ -189,7 +192,8 @@ def resolve_walker_tenant(walker_id: str, db: Session) -> Tenant | None:
 
     try:
         return get_default_tenant(db)
-    except Exception:
+    except Exception as _exc:  # F17: loga em vez de silenciar
+        _logger.warning("Falha ao resolver tenant padrão para walker %s: %s", walker_id, _exc)
         return None
 
 

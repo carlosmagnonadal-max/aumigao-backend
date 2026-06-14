@@ -1,9 +1,12 @@
 ﻿import json
+import logging
 from app.models.tutor_profile import TutorProfile
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi import HTTPException
 from datetime import datetime, timedelta
 from uuid import uuid4
+
+_logger = logging.getLogger("aumigao.admin")
 
 from sqlalchemy import and_, exists, func, inspect, not_, or_
 from sqlalchemy.orm import Session
@@ -712,7 +715,8 @@ def _table_exists(db: Session, table_name: str) -> bool:
     try:
         bind = db.get_bind()
         return inspect(bind).has_table(table_name)
-    except Exception:
+    except Exception as _exc:  # F17: loga em vez de silenciar
+        _logger.warning("Erro ao verificar existência da tabela '%s': %s", table_name, _exc)
         return False
 
 
@@ -862,53 +866,65 @@ def _serialize_admin_payment(payment: Payment, db: Session) -> dict:
 
 
 def _walker_program_rows(db: Session) -> list[dict]:
+    """F02: dados reais do banco; sem index%2 nem demo rows."""
+    from datetime import timedelta
+    from app.services.walker_operational_score_service import calculate_walker_operational_score
+
+    now = datetime.utcnow()
+    week_start = datetime(now.year, now.month, now.day) - timedelta(days=now.weekday())
+
     rows = []
     profiles = db.query(WalkerProfile).all()
-    for index, profile in enumerate(profiles or []):
+    for profile in (profiles or []):
         user = _profile_user(profile, db)
         if _is_fake_walker_profile(profile, user):
             continue
+
         completed = db.query(Walk).filter(Walk.walker_id == profile.user_id, Walk.status == "Finalizado").count()
+
+        # Avaliações reais via WalkReview
+        reviews = db.query(WalkReview).filter(WalkReview.walker_id == profile.user_id).all()
+        rating_count = len(reviews)
+        rating_avg = round(sum(r.rating for r in reviews) / rating_count, 2) if rating_count else None
+
+        # Score operacional real
+        op_score = calculate_walker_operational_score(profile.user_id, db)
+        score = op_score.get("score") if op_score else None
+        matching_score = op_score.get("score") if op_score else None  # mesmo score como proxy
+
+        # Kit real
+        kit_sub = db.query(WalkerKitSubmission).filter(WalkerKitSubmission.walker_user_id == profile.user_id).first()
+        kit_audit_status = kit_sub.audit_status if kit_sub else "sem_kit"
+        kit_level = None  # sem tabela de nível de kit calculado; kit_sub tem items_json mas não nível numérico
+
+        # Gorjetas da semana
+        tips_week_rows = db.query(WalkTip).filter(
+            WalkTip.walker_id == profile.user_id,
+            WalkTip.status == "paid",
+            WalkTip.created_at >= week_start,
+        ).all()
+        tips_week = sum(float(t.amount or 0) for t in tips_week_rows)
+
         rows.append({
             "walker_id": profile.id,
             "user_id": profile.user_id,
             "name": _walker_name(profile, db),
             "status": profile.status,
-            "kit_level": 2 if index % 2 == 0 else 1,
-            "kit_audit_status": "aprovado" if index % 2 == 0 else "pendente",
-            "cr_balance": 24 + index,
-            "cr_earned_this_week": 6,
-            "rating_avg": 4.9 if index % 2 == 0 else 4.6,
-            "rating_count": 126 if index % 2 == 0 else 38,
-            "score": 87 if index % 2 == 0 else 74,
-            "matching_score": 89 if index % 2 == 0 else 76,
-            "tips_week": 52 if index % 2 == 0 else 18,
-            "tips_pending_review": 1 if index % 2 == 0 else 0,
-            "completed_walks": completed or (11 if index % 2 == 0 else 4),
-            "schedule_conflicts_blocked": index,
+            "kit_level": kit_level,
+            "kit_audit_status": kit_audit_status,
+            "cr_balance": 0,          # sem tabela de saldo CR; honesto = 0
+            "cr_earned_this_week": 0,
+            "rating_avg": rating_avg,
+            "rating_count": rating_count,
+            "score": score,
+            "matching_score": matching_score,
+            "tips_week": tips_week,
+            "tips_pending_review": 0,  # sem fila de revisão real implementada
+            "completed_walks": completed,
+            "schedule_conflicts_blocked": 0,  # sem tabela; honesto = 0
         })
-    if rows:
-        return rows
-    return [
-        {
-            "walker_id": "walker-demo-1",
-            "user_id": "walker-demo-user-1",
-            "name": "Carlos Oliveira",
-            "status": "approved",
-            "kit_level": 2,
-            "kit_audit_status": "aprovado",
-            "cr_balance": 24,
-            "cr_earned_this_week": 6,
-            "rating_avg": 4.9,
-            "rating_count": 126,
-            "score": 87,
-            "matching_score": 89,
-            "tips_week": 52,
-            "tips_pending_review": 1,
-            "completed_walks": 11,
-            "schedule_conflicts_blocked": 2,
-        }
-    ]
+    # F02: sem demo row de fallback — lista vazia é honesta
+    return rows
 
 
 def _walker_program_metrics(rows: list[dict]) -> dict:
@@ -2166,6 +2182,9 @@ def reject_walker_kit(submission_id: str, payload: dict | None = None, admin: Us
 @router.get("/walker-operations")
 def walker_operations(admin: User = Depends(require_permission("walkers.read")), db: Session = Depends(get_db)):
     scope = get_admin_tenant_scope(admin)
+    # F09: WalkerProfile não possui tenant_id — walkers são globais da plataforma
+    # (conforme comentário em _sql_count_real_active_walkers e endpoint /walkers).
+    # Coerente com todos os outros endpoints que listam walkers sem filtro de tenant.
     walkers = db.query(WalkerProfile).all()
     pending_walks = apply_tenant_filter(db.query(Walk), Walk, scope).filter(Walk.walker_id.is_(None), Walk.status == "Agendado").all()
     active_walks = apply_tenant_filter(db.query(Walk), Walk, scope).filter(Walk.status.in_(["Indo buscar o pet", "Passeando agora"])).all()
@@ -2236,16 +2255,21 @@ def walker_programs(admin: User = Depends(require_permission("admin.access")), d
         "settings": get_setting(db, "walker_program", DEFAULT_WALKER_PROGRAM_SETTINGS, tenant_id=tenant_id),
         "metrics": _walker_program_metrics(rows),
         "walkers": rows,
+        # F02: fila real de gorjetas sob revisão — WalkTip com status "pending_review".
+        # Sem registros reais → lista vazia (honesto).
         "tips_review_queue": [
             {
-                "id": "tip-review-1",
-                "walker_id": rows[0]["walker_id"],
-                "walker_name": rows[0]["name"],
-                "amount": 52,
-                "reason": "Concentracao recente de gorjetas acima da media.",
-                "status": "pending",
+                "id": tip.id,
+                "walker_id": tip.walker_id,
+                "walker_name": next(
+                    (r["name"] for r in rows if r["user_id"] == tip.walker_id), "—"
+                ),
+                "amount": float(tip.amount or 0),
+                "reason": "Gorjeta aguardando revisao.",
+                "status": tip.status,
             }
-        ] if rows else [],
+            for tip in db.query(WalkTip).filter(WalkTip.status == "pending_review").all()
+        ],
         "actions": recent_walker_program_actions(db, limit=20),
     }
 
@@ -2390,8 +2414,8 @@ def set_walker_wallet(
             after={"asaas_wallet_id": profile.asaas_wallet_id},
             tenant_id=None,
         )
-    except Exception:
-        pass
+    except Exception as _audit_exc:  # F17: loga em vez de silenciar
+        _logger.warning("Falha ao registrar audit log de wallet update: %s", _audit_exc)
 
     db.commit()
     db.refresh(profile)

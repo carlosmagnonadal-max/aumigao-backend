@@ -1,14 +1,63 @@
 ﻿import base64
 import json
+import logging
 import secrets
 import threading
+import time
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import uuid4
 
 import httpx
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+
+_apple_logger = logging.getLogger("aumigao.apple_auth")
+
+# ---------------------------------------------------------------------------
+# Apple JWKS cache (in-memory, refreshed after TTL or on key-miss)
+# ---------------------------------------------------------------------------
+_APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
+_APPLE_JWKS_TTL = 3600  # segundos — chaves Apple mudam raramente
+
+_apple_jwks_lock = threading.Lock()
+_apple_jwks_cache: dict[str, Any] = {}          # kid -> JWK dict
+_apple_jwks_fetched_at: float = 0.0
+
+
+def _fetch_apple_jwks(force: bool = False) -> dict[str, Any]:
+    """Retorna dicionário kid->JWK buscado de Apple JWKS, com cache TTL."""
+    global _apple_jwks_cache, _apple_jwks_fetched_at
+    now = time.monotonic()
+    with _apple_jwks_lock:
+        if not force and _apple_jwks_cache and (now - _apple_jwks_fetched_at) < _APPLE_JWKS_TTL:
+            return _apple_jwks_cache
+        try:
+            resp = httpx.get(_APPLE_JWKS_URL, timeout=5)
+            resp.raise_for_status()
+            keys = resp.json().get("keys", [])
+            _apple_jwks_cache = {k["kid"]: k for k in keys if k.get("kid")}
+            _apple_jwks_fetched_at = now
+        except Exception as exc:
+            _apple_logger.warning("Falha ao buscar Apple JWKS: %s", exc)
+            # Se já temos cache (mesmo expirado), usa-o; caso contrário propaga vazio.
+            if not _apple_jwks_cache:
+                return {}
+        return _apple_jwks_cache
+
+
+# Bundle IDs aceitos como audience do token Apple.
+# Env APPLE_CLIENT_ID pode ser CSV para suportar múltiplos targets.
+def _apple_allowed_audiences() -> list[str]:
+    env_val = (
+        __import__("os").getenv("APPLE_CLIENT_ID", "").strip()
+    )
+    bases = [a.strip() for a in env_val.split(",") if a.strip()]
+    if not bases:
+        bases = ["com.aumigao.tutor", "com.aumigao.walker"]
+    return bases
 
 from app.core.database import get_db
 from app.core.security import create_access_token, get_password_hash, verify_password
@@ -195,15 +244,76 @@ async def _google_user_info(access_token: str) -> dict:
 
 
 def _decode_apple_jwt_payload(identity_token: str) -> dict:
-    """Decodifica o payload do JWT da Apple sem verificar assinatura."""
-    parts = identity_token.split(".")
-    if len(parts) != 3:
-        raise HTTPException(status_code=400, detail="Token Apple malformado.")
-    padded = parts[1] + "=" * (4 - len(parts[1]) % 4)
+    """Valida e decodifica o JWT da Apple com verificação completa de assinatura RS256.
+
+    Passos:
+    1. Extrai o header para descobrir o kid.
+    2. Busca/usa cache do JWKS da Apple; tenta refresh se kid não encontrado.
+    3. Verifica assinatura RS256, iss, aud e exp.
+    4. Em ausência de rede (JWKS vazio e sem cache), REJEITA — nunca aceita cego.
+    """
+    # --- 1. Decode header sem verificação para obter kid/alg ---
     try:
-        return json.loads(base64.b64decode(padded).decode())
+        header = jwt.get_unverified_header(identity_token)
     except Exception:
-        raise HTTPException(status_code=400, detail="Não foi possível decodificar o token Apple.")
+        raise HTTPException(status_code=400, detail="Token Apple malformado.")
+
+    kid = header.get("kid")
+    alg = header.get("alg", "RS256")
+    if alg != "RS256":
+        raise HTTPException(status_code=401, detail="Algoritmo de token Apple inválido.")
+
+    # --- 2. Buscar chave pública ---
+    jwks = _fetch_apple_jwks()
+    if kid and kid not in jwks:
+        # Key-miss: tenta refresh forçado (chaves podem ter rotacionado).
+        jwks = _fetch_apple_jwks(force=True)
+
+    if not jwks:
+        # Sem rede e sem cache: rejeitar — NÃO aceitar cegamente.
+        _apple_logger.warning("Apple JWKS indisponível; token Apple rejeitado por segurança.")
+        raise HTTPException(status_code=503, detail="Serviço Apple temporariamente indisponível. Tente novamente.")
+
+    jwk_data = jwks.get(kid) if kid else next(iter(jwks.values()), None)
+    if not jwk_data:
+        raise HTTPException(status_code=401, detail="Chave pública Apple não encontrada para este token.")
+
+    try:
+        from jwt.algorithms import RSAAlgorithm
+        public_key = RSAAlgorithm.from_jwk(json.dumps(jwk_data))
+    except Exception as exc:
+        _apple_logger.warning("Erro ao construir chave RSA Apple: %s", exc)
+        raise HTTPException(status_code=401, detail="Erro ao processar chave pública Apple.")
+
+    # --- 3. Verificar assinatura, iss, aud e exp ---
+    allowed_audiences = _apple_allowed_audiences()
+    last_exc: Exception | None = None
+    for aud in allowed_audiences:
+        try:
+            payload = jwt.decode(
+                identity_token,
+                public_key,
+                algorithms=["RS256"],
+                audience=aud,
+                issuer="https://appleid.apple.com",
+                options={"require": ["exp", "iss", "aud", "sub"]},
+            )
+            return payload
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Token Apple expirado.")
+        except jwt.InvalidAudienceError:
+            last_exc = jwt.InvalidAudienceError(aud)
+            continue
+        except jwt.InvalidIssuerError:
+            raise HTTPException(status_code=401, detail="Token Apple com issuer inválido.")
+        except jwt.DecodeError as exc:
+            raise HTTPException(status_code=401, detail=f"Token Apple com assinatura inválida: {exc}")
+        except Exception as exc:
+            raise HTTPException(status_code=401, detail=f"Token Apple inválido: {exc}")
+
+    # Nenhum audience bateu
+    _apple_logger.warning("Token Apple rejeitado: audience não corresponde a %s", allowed_audiences)
+    raise HTTPException(status_code=401, detail="Token Apple com audience inválido.")
 
 
 @router.post("/social", response_model=TokenResponse)

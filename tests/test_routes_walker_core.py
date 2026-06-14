@@ -186,14 +186,16 @@ def test_dashboard_403_when_under_review():
 
 # ---------------------------------------------------------------- earnings ----
 def test_earnings_happy_path_demo_transactions():
+    # F10: demo transactions removidas — sem passeios reais a lista é vazia (honesto).
     client, _ = build()
     r = client.get("/walker/earnings")
     assert r.status_code == 200, r.text
     body = r.json()
-    # sem passeios reais -> usa transacoes demo
-    assert len(body["transactions"]) == 3
-    assert body["completed_walks"] == 11
-    assert body["level"] == "Ouro"
+    assert isinstance(body["transactions"], list)
+    # sem passeios reais -> lista vazia
+    assert len(body["transactions"]) == 0
+    assert body["completed_walks"] == 0
+    assert "level" in body
     assert "available_balance" in body
 
 

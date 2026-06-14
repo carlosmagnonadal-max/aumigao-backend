@@ -14,6 +14,7 @@ from app.core.security import get_password_hash, verify_password
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_permission
 from app.services.upload_validation import enforce_upload_rate_limit, read_image_upload_safely
+from app.services import object_storage
 from app.services.signed_uploads import UPLOAD_ROOT as UPLOADS_BASE
 from app.services.upload_registry import record_upload
 from app.models.payment import Payment
@@ -799,7 +800,7 @@ async def upload_partner_application_document(
     extension = _safe_upload_extension(file.filename, file.content_type)
     destination = destination_dir / f"{normalized_type}-{uuid4().hex}{extension}"
 
-    destination.write_bytes(validated_bytes)
+    object_storage.save(destination, validated_bytes, file.content_type)
     await file.close()
 
     record_upload(
@@ -2114,7 +2115,7 @@ async def upload_walk_completion_photo(
     extension = _safe_upload_extension(file.filename, file.content_type)
     destination = destination_dir / f"completion-{uuid4().hex}{extension}"
 
-    destination.write_bytes(validated_bytes)
+    object_storage.save(destination, validated_bytes, file.content_type)
     await file.close()
 
     record_upload(

@@ -37,6 +37,7 @@ from app.models.upload_file import UploadFile
 from app.models.recurring_plan import RecurringPlan, TutorSubscription
 from app.models.pet_tour import TenantPetTourConfig
 from app.models.shared_walk import SharedWalk, SharedWalkParticipant, TenantSharedWalkConfig
+from app.models.individual_walk_pricing import TenantIndividualWalkPricing
 from app.models.coupon import Coupon, CouponRedemption
 from app.models.contact_message import ContactMessage
 from app.models.app_setting import AppSetting

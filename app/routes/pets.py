@@ -16,6 +16,7 @@ from app.models.walk import Walk
 from app.models.user import User
 from app.schemas.pet import PetCreate, PetResponse, PetUpdate
 from app.services.tenant_context import resolve_current_tenant_id
+from app.services import object_storage
 from app.services.signed_uploads import UPLOAD_ROOT as UPLOADS_BASE
 
 router = APIRouter(prefix="/pets", tags=["pets"])
@@ -120,7 +121,7 @@ async def upload_pet_photo(
 
     content = await read_image_upload_safely(file)
 
-    destination.write_bytes(content)
+    object_storage.save(destination, content, file.content_type)
 
     record_upload(
         db, context="pet", owner_id=user.id,

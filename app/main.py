@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlalchemy import inspect, text
 
 # O3 — logging estruturado: deve ser configurado o mais cedo possível, antes de
@@ -71,7 +71,7 @@ from app.models import (
 )
 from app.models.support_ticket import SupportTicket  # noqa: F401 — garante tabela no metadata
 from app.models.walk_location_ping import WalkLocationPing  # noqa: F401 — garante tabela no metadata
-from app.routes import admin, admin_accounts, auth, complaints, contact, coupons, incentives, legal, matching, notifications, operational_walks, payments, pet_routine, pet_tour, pets, protected_chat, recurring_plans, referrals, reviews, shared_walks, support_tickets, tenant_app_config, tenant_branding, tenant_commercial, tenant_dedicated_app_readiness, tenant_features_runtime, tenant_launch_readiness, tenant_units_runtime, tenants, tutor, tutor_gamification, walker, walker_network, walker_quality, walker_trust, walk_locations, walks, weekly_missions
+from app.routes import admin, admin_accounts, auth, complaints, contact, coupons, incentives, individual_walk_pricing, legal, matching, notifications, operational_walks, payments, pet_routine, pet_tour, pets, protected_chat, recurring_plans, referrals, reviews, shared_walks, support_tickets, tenant_app_config, tenant_branding, tenant_commercial, tenant_dedicated_app_readiness, tenant_features_runtime, tenant_launch_readiness, tenant_units_runtime, tenants, tutor, tutor_gamification, walker, walker_network, walker_quality, walker_trust, walk_locations, walks, weekly_missions
 from app.services.admin_seed_service import ensure_configured_admin_users
 from app.services.tenant_seed_service import ensure_default_tenant_links, ensure_network_profiles
 from app.services.operational_matching_service import ensure_operational_schema
@@ -81,6 +81,7 @@ from app.services.operational_scheduler_service import (
     run_operational_scheduler_cycle,
     scheduler_interval_seconds,
 )
+from app.services import object_storage
 from app.services.signed_uploads import UPLOAD_ROOT, has_valid_upload_signature, is_sensitive_upload_path, upload_file_path
 
 logger = logging.getLogger(__name__)
@@ -420,6 +421,16 @@ except Exception:
 
 @app.api_route("/uploads/{upload_path:path}", methods=["GET", "HEAD"])
 def serve_upload(upload_path: str, request: Request):
+    # Com R2 ligado (Cloud Run), serve do bucket; senão, do disco local (Railway/dev).
+    if object_storage.r2_enabled():
+        fetched = object_storage.fetch(upload_path)
+        if fetched is None:
+            raise HTTPException(status_code=404, detail="Arquivo nao encontrado")
+        if is_sensitive_upload_path(upload_path) and not has_valid_upload_signature(upload_path, request.url.query):
+            raise HTTPException(status_code=403, detail="Assinatura invalida ou expirada")
+        body, content_type = fetched
+        return Response(content=body, media_type=content_type)
+
     file_path = upload_file_path(upload_path)
     if not file_path or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Arquivo nao encontrado")
@@ -490,6 +501,10 @@ app.include_router(shared_walks.router)
 app.include_router(shared_walks.api_router)
 app.include_router(shared_walks.admin_router)
 app.include_router(shared_walks.api_admin_router)
+app.include_router(individual_walk_pricing.router)
+app.include_router(individual_walk_pricing.api_router)
+app.include_router(individual_walk_pricing.admin_router)
+app.include_router(individual_walk_pricing.api_admin_router)
 app.include_router(coupons.router)
 app.include_router(coupons.api_router)
 app.include_router(coupons.admin_router)
@@ -565,6 +580,13 @@ async def _operational_scheduler_loop():
 @app.on_event("startup")
 async def start_operational_scheduler():
     global _operational_scheduler_task
+    # No Cloud Run (CPU throttled fora de requests), o loop in-process não roda
+    # confiável. Setando DISABLE_INPROCESS_SCHEDULER=true, o ciclo é disparado
+    # externamente pelo Cloud Scheduler em POST /internal/scheduler/run-cycle.
+    # No Railway (sem essa env), o loop in-process roda como antes.
+    if get_bool_env("DISABLE_INPROCESS_SCHEDULER", default=False):
+        logger.info("Scheduler in-process desativado; usando trigger externo (Cloud Scheduler).")
+        return
     if _operational_scheduler_task and not _operational_scheduler_task.done():
         mark_operational_scheduler_started()
         return
@@ -585,6 +607,19 @@ async def stop_operational_scheduler():
             pass
     _operational_scheduler_task = None
     mark_operational_scheduler_stopped()
+
+
+@app.post("/internal/scheduler/run-cycle")
+async def internal_run_scheduler_cycle(request: Request):
+    """Dispara UM ciclo do scheduler operacional. Protegido por token (X-Scheduler-Token).
+    Usado pelo Cloud Scheduler no Cloud Run (onde o loop in-process é desativado)."""
+    import hmac
+
+    expected = (os.getenv("SCHEDULER_TRIGGER_TOKEN") or "").strip()
+    provided = (request.headers.get("X-Scheduler-Token") or "").strip()
+    if not expected or not provided or not hmac.compare_digest(expected, provided):
+        raise HTTPException(status_code=403, detail="forbidden")
+    return await run_operational_scheduler_cycle(SessionLocal)
 
 
 @app.get("/")

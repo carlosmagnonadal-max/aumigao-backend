@@ -5,6 +5,7 @@ class TenantPaymentConfigResponse(BaseModel):
     tenant_id: str
     provider: str
     commission_percent: float
+    commission_is_custom: bool = False
     tenant_margin_percent: float = 0.0
     split_enabled: bool
     active: bool

@@ -153,6 +153,15 @@ def update_tenant(tenant_id: str, payload: TenantUpdate, admin: User = Depends(g
     for field, value in values.items():
         setattr(tenant, field, value.strip() if isinstance(value, str) else value)
     tenant.updated_at = datetime.utcnow()
+    # Mudança de plano atualiza a comissão para o default do novo tier — exceto quando
+    # a comissão foi negociada à mão (commission_is_custom), que prevalece.
+    if "plan" in values:
+        from app.models.tenant_payment_config import commission_default_for_plan
+        from app.services.payment_split_service import get_or_create_payment_config
+
+        pay_cfg = get_or_create_payment_config(db, tenant.id)
+        if not pay_cfg.commission_is_custom:
+            pay_cfg.commission_percent = commission_default_for_plan(tenant.plan)
     record_audit_log(
         db, action="tenant.updated", entity_type="tenant", entity_id=tenant.id, actor=admin,
         after=values, tenant_id=tenant.id,

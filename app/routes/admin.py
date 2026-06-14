@@ -1244,6 +1244,7 @@ def _serialize_payment_config(config) -> TenantPaymentConfigResponse:
         tenant_id=config.tenant_id,
         provider=config.provider,
         commission_percent=config.commission_percent,
+        commission_is_custom=getattr(config, "commission_is_custom", False),
         tenant_margin_percent=getattr(config, "tenant_margin_percent", 0.0) or 0.0,
         split_enabled=config.split_enabled,
         active=config.active,

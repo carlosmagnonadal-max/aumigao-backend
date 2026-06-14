@@ -74,7 +74,9 @@ def test_get_payment_config_happy_path_creates_default():
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["tenant_id"] == TENANT_ID
-    assert body["commission_percent"] == DEFAULT_COMMISSION_PERCENT
+    # Comissão default agora vem do TIER do plano (tenant é "business" -> 8%).
+    assert body["commission_percent"] == 8.0
+    assert body["commission_is_custom"] is False
     assert body["provider"] == "asaas"
     assert body["split_enabled"] is False
     assert body["active"] is True

@@ -9,7 +9,11 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.models.tenant_payment_config import DEFAULT_COMMISSION_PERCENT, TenantPaymentConfig
+from app.models.tenant_payment_config import (
+    DEFAULT_COMMISSION_PERCENT,
+    TenantPaymentConfig,
+    commission_default_for_plan,
+)
 
 
 def get_commission_percent(db: Session, tenant_id: str | None) -> float:
@@ -76,7 +80,21 @@ def get_or_create_payment_config(db: Session, tenant_id: str) -> TenantPaymentCo
         .first()
     )
     if not config:
-        config = TenantPaymentConfig(tenant_id=tenant_id)
+        # Comissão inicial vem do TIER do plano do tenant (white label).
+        # Defensivo: se a tabela/registro de tenant não existir (ex.: testes isolados),
+        # cai no fallback de plano desconhecido.
+        plan = None
+        try:
+            from app.models.tenant import Tenant
+
+            tenant = db.get(Tenant, tenant_id)
+            plan = tenant.plan if tenant else None
+        except Exception:
+            plan = None
+        config = TenantPaymentConfig(
+            tenant_id=tenant_id,
+            commission_percent=commission_default_for_plan(plan),
+        )
         db.add(config)
         db.flush()
     return config
@@ -101,7 +119,11 @@ def update_payment_config(
     }
 
     if commission_percent is not None:
-        config.commission_percent = max(0.0, min(100.0, float(commission_percent)))
+        new_commission = max(0.0, min(100.0, float(commission_percent)))
+        # Edição manual da comissão = override negociado: protege do default do plano.
+        if new_commission != config.commission_percent:
+            config.commission_is_custom = True
+        config.commission_percent = new_commission
     if tenant_margin_percent is not None:
         config.tenant_margin_percent = max(0.0, float(tenant_margin_percent))
     if provider is not None and provider.strip():

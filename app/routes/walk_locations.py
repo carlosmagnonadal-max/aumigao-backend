@@ -189,8 +189,12 @@ def _get_locations(
     elif walk.walker_id == user.id:
         pass  # walker atribuído: acesso liberado
     elif _is_admin_or_super(user):
-        # Admin/super_admin: valida escopo de tenant (não bloqueia super_admin global).
-        get_admin_tenant_scope(user)  # lança 403 se não for admin/super_admin
+        # Admin/super_admin: valida escopo de tenant. super_admin global (tenant_id None)
+        # pode ver qualquer tenant; admin de tenant (ou super_admin operando-como) só vê
+        # passeios do PRÓPRIO tenant — senão vazaria localização entre tenants.
+        scope = get_admin_tenant_scope(user)  # lança 403 se não for admin/super_admin
+        if scope.tenant_id is not None and walk.tenant_id != scope.tenant_id:
+            raise HTTPException(status_code=403, detail="Sem permissao para visualizar localizacao deste passeio")
     else:
         raise HTTPException(status_code=403, detail="Sem permissao para visualizar localizacao deste passeio")
 

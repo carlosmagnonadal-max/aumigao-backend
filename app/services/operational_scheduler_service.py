@@ -12,6 +12,7 @@ from app.models.notification import Notification
 from app.models.operational_beta_log import OperationalBetaLog
 from app.models.walk import Walk
 from app.models.walk_completion_review import WalkCompletionReview
+from app.models.walk_location_ping import WalkLocationPing
 from app.services.operational_matching_service import process_expired_attempts
 from app.services.operational_observability_service import (
     record_operational_exception,
@@ -357,6 +358,19 @@ async def run_operational_scheduler_cycle(session_factory) -> dict:
             lock_db.close()
 
 
+def _task_purge_location_pings(db: Session) -> int:
+    """Limpa pings de GPS antigos (retenção configurável, default 7 dias) — evita a
+    tabela walk_location_pings crescer sem limite. Index em recorded_at torna o DELETE barato."""
+    retention_days = _int_env("LOCATION_PINGS_RETENTION_DAYS", 7)
+    cutoff = _utcnow() - timedelta(days=retention_days)
+    deleted = (
+        db.query(WalkLocationPing)
+        .filter(WalkLocationPing.recorded_at < cutoff)
+        .delete(synchronize_session=False)
+    )
+    return int(deleted or 0)
+
+
 def _run_operational_scheduler_cycle_locked(session_factory) -> dict:
     SCHEDULER_STATE["scheduler_running"] = True
     SCHEDULER_STATE["last_scheduler_cycle_at"] = _utcnow().isoformat()
@@ -368,6 +382,7 @@ def _run_operational_scheduler_cycle_locked(session_factory) -> dict:
         "no_show_checkin": _task_no_show_checkin,
         "stuck_completions": _task_stuck_completions,
         "push_retry": _task_push_retry,
+        "purge_location_pings": _task_purge_location_pings,
     }
     results = {name: _run_task(session_factory, name, task) for name, task in tasks.items()}
     SCHEDULER_STATE["tasks_executed"] = results

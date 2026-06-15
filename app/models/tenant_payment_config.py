@@ -17,7 +17,7 @@ DEFAULT_COMMISSION_PERCENT = 20.0
 
 # Comissão padrão da plataforma por TIER de plano (white label).
 # Override por tenant (commission_is_custom=True) prevalece sobre estes defaults.
-PLAN_COMMISSION_DEFAULTS = {"starter": 10.0, "business": 8.0, "enterprise": 5.0}
+PLAN_COMMISSION_DEFAULTS = {"starter": 12.0, "business": 8.0, "enterprise": 5.0}
 PLAN_COMMISSION_FALLBACK = 10.0
 
 

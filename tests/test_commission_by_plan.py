@@ -1,4 +1,4 @@
-"""Comissão por plano (10/8/5) + override manual (commission_is_custom)."""
+"""Comissão por plano (12/8/5) + override manual (commission_is_custom)."""
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -26,7 +26,7 @@ def _tenant(db, tid, plan):
 
 
 def test_commission_default_for_plan():
-    assert commission_default_for_plan("starter") == 10.0
+    assert commission_default_for_plan("starter") == 12.0
     assert commission_default_for_plan("business") == 8.0
     assert commission_default_for_plan("enterprise") == 5.0
     assert commission_default_for_plan("desconhecido") == 10.0
@@ -38,7 +38,7 @@ def test_new_config_uses_plan_default():
     _tenant(db, "t-st", "starter")
     _tenant(db, "t-bz", "business")
     _tenant(db, "t-ent", "enterprise")
-    assert get_or_create_payment_config(db, "t-st").commission_percent == 10.0
+    assert get_or_create_payment_config(db, "t-st").commission_percent == 12.0
     assert get_or_create_payment_config(db, "t-bz").commission_percent == 8.0
     assert get_or_create_payment_config(db, "t-ent").commission_percent == 5.0
 
@@ -67,8 +67,8 @@ def test_plan_change_updates_commission_when_not_custom():
     t = Tenant(id="t3", name="t3", slug="t3", status="active", plan="starter")
     db.add(t)
     db.commit()
-    cfg = get_or_create_payment_config(db, "t3")  # 10%
-    assert cfg.commission_percent == 10.0
+    cfg = get_or_create_payment_config(db, "t3")  # 12% (starter)
+    assert cfg.commission_percent == 12.0
     # upgrade starter -> business (lógica do route update_tenant)
     t.plan = "business"
     if not cfg.commission_is_custom:

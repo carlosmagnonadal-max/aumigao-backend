@@ -1,4 +1,4 @@
-"""Comissão por plano (10/8/5) + flag de override manual.
+"""Comissão por plano (12/8/5) + flag de override manual.
 
 Aditivo e reversível. Adiciona commission_is_custom em tenant_payment_configs,
 protege comissões negociadas (qualquer valor != default legado 20.0) marcando-as
@@ -52,7 +52,7 @@ def upgrade() -> None:
         f"""
         UPDATE {_TABLE} AS tpc
         SET commission_percent = CASE lower(t.plan)
-            WHEN 'starter' THEN 10
+            WHEN 'starter' THEN 12
             WHEN 'business' THEN 8
             WHEN 'enterprise' THEN 5
             ELSE 10

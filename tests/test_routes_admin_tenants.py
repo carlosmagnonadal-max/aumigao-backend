@@ -240,16 +240,38 @@ def test_patch_features_disable_commercial_not_gated():
     assert r.status_code == 200, r.text
 
 
-def test_patch_features_non_commercial_feature_not_gated():
-    # feature de produto (nao-comercial) pode ser habilitada em qualquer plano
+def test_patch_features_plan_gated_product_feature_blocked_on_starter():
+    # recurring_plans/shared_walks/pet_tour agora são gated por plano (Business+).
     client, _ = build()
     r = client.patch(
         f"/admin/tenants/{T_STARTER}/features",
         json=[{"feature_key": "recurring_plans", "enabled": True}],
     )
+    assert r.status_code == 403, r.text
+    assert "Business" in r.json()["detail"]
+
+
+def test_patch_features_plan_gated_product_feature_allowed_on_business():
+    client, _ = build()
+    r = client.patch(
+        f"/admin/tenants/{T_BUSINESS}/features",
+        json=[{"feature_key": "recurring_plans", "enabled": True}],
+    )
     assert r.status_code == 200, r.text
     keys = {f["feature_key"]: f["enabled"] for f in r.json()}
     assert keys.get("recurring_plans") is True
+
+
+def test_patch_features_non_gated_product_feature_allowed_on_any_plan():
+    # coupons NÃO é gated por plano -> habilitável em qualquer plano (inclusive Starter).
+    client, _ = build()
+    r = client.patch(
+        f"/admin/tenants/{T_STARTER}/features",
+        json=[{"feature_key": "coupons", "enabled": True}],
+    )
+    assert r.status_code == 200, r.text
+    keys = {f["feature_key"]: f["enabled"] for f in r.json()}
+    assert keys.get("coupons") is True
 
 
 def test_patch_features_empty_feature_key_400():

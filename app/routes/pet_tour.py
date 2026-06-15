@@ -13,12 +13,14 @@ from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_permission
 from app.dependencies.tenant_scope import get_admin_tenant_scope
+from app.models.pet_tour import PET_TOUR_FEATURE_KEY
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.pet_tour import PetTourConfigResponse, PetTourConfigUpdate, PetTourView
 from app.services import pet_tour_service as svc
 from app.services.audit_service import record_audit_log
 from app.services.tenant_context import resolve_current_tenant, resolve_current_tenant_id
+from app.services.tenant_plan_service import enforce_plan_allows_product_feature
 
 router = APIRouter(prefix="/pet-tour", tags=["pet-tour"])
 api_router = APIRouter(prefix="/api/pet-tour", tags=["pet-tour"])
@@ -98,6 +100,9 @@ def update_config(
     db: Session = Depends(get_db),
 ):
     tenant_id = _admin_tenant_id(admin, db)
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is not None:
+        enforce_plan_allows_product_feature(tenant, PET_TOUR_FEATURE_KEY, "Pet Tour")
     config = svc.get_or_create_config(db, tenant_id)
     values = payload.model_dump(exclude_unset=True)
     for field, value in values.items():

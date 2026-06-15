@@ -37,6 +37,7 @@ from app.dependencies.tenant_scope import get_admin_tenant_scope, is_super_admin
 from app.services.tenant_plan_service import (
     DEFAULT_ON_FEATURE_KEYS,
     enforce_can_add_tenant_unit,
+    enforce_plan_allows_product_feature,
     enforce_tenant_feature_allowed,
     get_tenant_capabilities,
 )
@@ -287,6 +288,7 @@ def update_tenant_features(tenant_id: str, payload: list[TenantFeatureUpdate], a
             raise HTTPException(status_code=400, detail="feature_key obrigatório.")
         if item.enabled:
             enforce_tenant_feature_allowed(tenant, db, feature_key)
+            enforce_plan_allows_product_feature(tenant, feature_key)
         feature = existing.get(feature_key) or TenantFeature(tenant_id=tenant_id, feature_key=feature_key)
         feature.enabled = item.enabled
         feature.limit_value = item.limit_value

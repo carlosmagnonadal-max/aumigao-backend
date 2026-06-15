@@ -11,7 +11,7 @@ from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_permission
 from app.dependencies.tenant_scope import get_admin_tenant_scope
 from app.models.pet import Pet
-from app.models.shared_walk import SharedWalk
+from app.models.shared_walk import SHARED_WALKS_FEATURE_KEY, SharedWalk
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.shared_walk import (
@@ -25,6 +25,7 @@ from app.schemas.shared_walk import (
 from app.services import shared_walk_service as svc
 from app.services.audit_service import record_audit_log
 from app.services.tenant_context import resolve_current_tenant, resolve_current_tenant_id
+from app.services.tenant_plan_service import enforce_plan_allows_product_feature
 
 router = APIRouter(prefix="/shared-walks", tags=["shared-walks"])
 api_router = APIRouter(prefix="/api/shared-walks", tags=["shared-walks"])
@@ -175,6 +176,9 @@ def get_config(admin: User = Depends(require_permission("finance.read")), db: Se
 @api_admin_router.put("", response_model=SharedWalkConfigResponse)
 def update_config(payload: SharedWalkConfigUpdate, admin: User = Depends(require_permission("finance.manage")), db: Session = Depends(get_db)):
     tenant_id = _admin_tenant_id(admin, db)
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is not None:
+        enforce_plan_allows_product_feature(tenant, SHARED_WALKS_FEATURE_KEY, "Passeios compartilhados")
     config = svc.get_or_create_config(db, tenant_id)
     values = payload.model_dump(exclude_unset=True)
     for field, value in values.items():

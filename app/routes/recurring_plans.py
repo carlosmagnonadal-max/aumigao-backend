@@ -10,7 +10,8 @@ from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_permission
 from app.dependencies.tenant_scope import get_admin_tenant_scope
-from app.models.recurring_plan import RecurringPlan
+from app.models.recurring_plan import RECURRING_PLANS_FEATURE_KEY, RecurringPlan
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.recurring_plan import (
     RecurringPlanCreate,
@@ -22,6 +23,7 @@ from app.schemas.recurring_plan import (
 from app.services import recurring_plan_service as svc
 from app.services.audit_service import record_audit_log
 from app.services.tenant_context import resolve_current_tenant, resolve_current_tenant_id
+from app.services.tenant_plan_service import enforce_plan_allows_product_feature
 
 # Cliente-final.
 router = APIRouter(prefix="/recurring-plans", tags=["recurring-plans"])
@@ -121,6 +123,9 @@ def admin_create_plan(
     db: Session = Depends(get_db),
 ):
     tenant_id = _admin_tenant_id(admin, db)
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is not None:
+        enforce_plan_allows_product_feature(tenant, RECURRING_PLANS_FEATURE_KEY, "Planos recorrentes")
     plan = RecurringPlan(tenant_id=tenant_id, **payload.model_dump())
     db.add(plan)
     record_audit_log(

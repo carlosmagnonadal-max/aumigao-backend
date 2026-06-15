@@ -101,6 +101,16 @@ ENFORCED_COMMERCIAL_FEATURES = {
     "custom_projects",
 }
 
+# Módulos de PRODUTO que só ficam disponíveis a partir de certo plano.
+# Diferente das features comerciais acima (gated via capability), estes continuam
+# sendo flags opt-in por tenant — mas o PLANO define se podem ser ligados/usados.
+# Ausência da chave aqui = disponível em todos os planos (ex.: coupons).
+PLAN_GATED_PRODUCT_FEATURES: dict[str, set[str]] = {
+    "recurring_plans": {TENANT_PLAN_BUSINESS, TENANT_PLAN_ENTERPRISE},
+    "shared_walks": {TENANT_PLAN_BUSINESS, TENANT_PLAN_ENTERPRISE},
+    "pet_tour": {TENANT_PLAN_BUSINESS, TENANT_PLAN_ENTERPRISE},
+}
+
 
 def get_plan_capabilities(plan: str) -> dict[str, Any]:
     return deepcopy(TENANT_PLAN_CAPABILITIES.get(plan or "", TENANT_PLAN_CAPABILITIES[TENANT_PLAN_STARTER]))
@@ -187,3 +197,31 @@ def enforce_tenant_product_feature(tenant: Tenant, db: Session, feature_key: str
     """
     if not tenant_has_feature(tenant, db, feature_key):
         raise HTTPException(status_code=403, detail=f"{label} não está habilitado para este tenant.")
+
+
+def plan_allows_product_feature(tenant: Tenant, feature_key: str) -> bool:
+    """Se o PLANO do tenant permite o módulo de produto plano-gated.
+
+    Módulos fora de PLAN_GATED_PRODUCT_FEATURES (ex.: coupons) ficam liberados em
+    todos os planos.
+    """
+    allowed_plans = PLAN_GATED_PRODUCT_FEATURES.get((feature_key or "").strip())
+    if allowed_plans is None:
+        return True
+    return (tenant.plan or "").strip().lower() in allowed_plans
+
+
+def enforce_plan_allows_product_feature(
+    tenant: Tenant, feature_key: str, label: str | None = None
+) -> None:
+    """Trava por PLANO de um módulo de produto (ex.: recorrência/Pet Tour = Business+).
+
+    Independe da flag do tenant: bloqueia mesmo que a TenantFeature esteja ligada
+    (protege contra flag-legado num plano que não deveria ter o módulo).
+    """
+    if not plan_allows_product_feature(tenant, feature_key):
+        name = label or (feature_key or "").strip()
+        raise HTTPException(
+            status_code=403,
+            detail=f"{name} está disponível a partir do plano Business.",
+        )

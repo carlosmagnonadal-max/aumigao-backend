@@ -326,6 +326,43 @@ def test_can_add_unit_isolated_per_tenant():
 
 
 # --------------------------------------------------------------------------
+# plan_allows_product_feature / enforce_plan_allows_product_feature (Business+)
+# --------------------------------------------------------------------------
+
+PLAN_GATED_KEYS = ("recurring_plans", "shared_walks", "pet_tour")
+
+
+def test_plan_gated_product_feature_blocked_on_starter():
+    db = _db()
+    starter = _tenant(db, plan="starter")
+    for key in PLAN_GATED_KEYS:
+        assert svc.plan_allows_product_feature(starter, key) is False
+        with pytest.raises(HTTPException) as exc:
+            svc.enforce_plan_allows_product_feature(starter, key, "Módulo")
+        assert exc.value.status_code == 403
+        assert "Business" in exc.value.detail
+
+
+def test_plan_gated_product_feature_allowed_on_business_and_enterprise():
+    db = _db()
+    business = _tenant(db, plan="business", tid="tb", slug="b")
+    enterprise = _tenant(db, plan="enterprise", tid="te", slug="e")
+    for key in PLAN_GATED_KEYS:
+        assert svc.plan_allows_product_feature(business, key) is True
+        assert svc.plan_allows_product_feature(enterprise, key) is True
+        assert svc.enforce_plan_allows_product_feature(business, key) is None
+        assert svc.enforce_plan_allows_product_feature(enterprise, key) is None
+
+
+def test_non_gated_product_feature_allowed_on_all_plans():
+    db = _db()
+    starter = _tenant(db, plan="starter")
+    # coupons NÃO está em PLAN_GATED_PRODUCT_FEATURES -> liberado em todos os planos.
+    assert svc.plan_allows_product_feature(starter, "coupons") is True
+    assert svc.enforce_plan_allows_product_feature(starter, "coupons") is None
+
+
+# --------------------------------------------------------------------------
 # enforce_can_add_tenant_unit
 # --------------------------------------------------------------------------
 

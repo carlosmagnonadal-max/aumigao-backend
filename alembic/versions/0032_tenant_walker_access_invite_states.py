@@ -18,7 +18,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0032_tenant_walker_access_invite_states"
+revision: str = "0032_walker_access_invites"
 down_revision: Union[str, None] = "0031_walker_presence"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

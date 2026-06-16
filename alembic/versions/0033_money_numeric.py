@@ -20,7 +20,7 @@ import sqlalchemy as sa
 
 
 revision: str = "0033_money_numeric"
-down_revision: Union[str, None] = "0032_tenant_walker_access_invite_states"
+down_revision: Union[str, None] = "0032_walker_access_invites"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -12,9 +12,10 @@ Plano starter -> nenhuma capability base liberada -> todas as features False.
 Plano business -> network_access/dedicated_app/custom_products base True;
 custom_projects base False. Plano enterprise -> todas base True.
 
-As rotas NAO exigem autenticacao (nao dependem de get_current_user), por isso
-nao ha cenario 401/403 aqui; o foco e o calculo de defaults e do AND base+tenant,
-a serializacao do response_model e a resolucao de tenant (id, slug, 'current').
+A rota /current NAO exige autenticacao (escopada pelo middleware). A rota
+/{tenant_id} EXIGE auth + escopo de tenant (Onda 1 / mt-MT2): super_admin ve
+qualquer tenant, admin so o proprio. O foco dos testes de calculo e o AND
+base+tenant e a resolucao de tenant; ha tambem testes de auth/isolamento.
 """
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -24,7 +25,9 @@ from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401 - registra todas as tabelas no Base.metadata
 from app.core.database import Base, get_db
+from app.dependencies.auth import get_current_user
 from app.models.tenant import Tenant, TenantFeature
+from app.models.user import User
 from app.routes import tenant_features_runtime
 from app.services.tenant_feature_runtime_service import PRODUCT_RUNTIME_FEATURE_KEYS, RUNTIME_FEATURE_KEYS
 from app.services.tenant_plan_service import DEFAULT_ON_FEATURE_KEYS
@@ -34,8 +37,12 @@ ALL_RUNTIME_KEYS = (*RUNTIME_FEATURE_KEYS, *PRODUCT_RUNTIME_FEATURE_KEYS)
 
 DEFAULT_TENANT_ID = "t-default"
 
+# Sentinela: por padrão os testes de cálculo rodam como super_admin (escopo global),
+# para acessar /{tenant_id} livremente. Os testes de auth passam auth_user explícito.
+_DEFAULT_SUPER_ADMIN = object()
 
-def build(*, tenants: list[dict] | None = None, features: list[dict] | None = None):
+
+def build(*, tenants: list[dict] | None = None, features: list[dict] | None = None, auth_user=_DEFAULT_SUPER_ADMIN):
     """Monta app minimo com os routers de features-runtime + SQLite em memoria.
 
     Sempre semeia um tenant default (slug = DEFAULT_TENANT_SLUG) para que
@@ -69,6 +76,10 @@ def build(*, tenants: list[dict] | None = None, features: list[dict] | None = No
     test_app.include_router(tenant_features_runtime.router)
     test_app.include_router(tenant_features_runtime.api_router)
     test_app.dependency_overrides[get_db] = lambda: db
+    if auth_user is _DEFAULT_SUPER_ADMIN:
+        auth_user = User(id="u-sa", role="super_admin", is_active=True)
+    if auth_user is not None:
+        test_app.dependency_overrides[get_current_user] = lambda: auth_user
     return TestClient(test_app), db
 
 
@@ -200,3 +211,48 @@ def test_api_prefixed_router_works():
     r = client.get(f"/api/tenants/{DEFAULT_TENANT_ID}/features-runtime")
     assert r.status_code == 200, r.text
     assert r.json()["tenant_id"] == DEFAULT_TENANT_ID
+
+
+# ---------------------------------------------- auth / isolamento (Onda 1) ----
+def test_features_runtime_by_id_requires_auth():
+    # Sem usuário autenticado, a rota por ID nega (401) — não vaza features de tenant.
+    client, _ = build(auth_user=None)
+    r = client.get(f"/tenants/{DEFAULT_TENANT_ID}/features-runtime")
+    assert r.status_code == 401, r.text
+
+
+def test_features_runtime_by_id_blocks_cross_tenant():
+    # Admin do tenant A NÃO pode ler as features do tenant B (404, sem vazamento).
+    admin_a = User(id="u-a", role="admin", tenant_id="t-A", is_active=True)
+    client, _ = build(
+        tenants=[
+            dict(id="t-A", name="A", slug=DEFAULT_TENANT_SLUG, status="active", plan="business"),
+            dict(id="t-B", name="B", slug="b-slug", status="active", plan="enterprise"),
+        ],
+        auth_user=admin_a,
+    )
+    r = client.get("/tenants/t-B/features-runtime")
+    assert r.status_code == 404, r.text
+
+
+def test_features_runtime_admin_reads_own_tenant():
+    # Controle positivo: admin do próprio tenant consegue ler.
+    admin_a = User(id="u-a", role="admin", tenant_id="t-A", is_active=True)
+    client, _ = build(
+        tenants=[dict(id="t-A", name="A", slug=DEFAULT_TENANT_SLUG, status="active", plan="business")],
+        auth_user=admin_a,
+    )
+    r = client.get("/tenants/t-A/features-runtime")
+    assert r.status_code == 200, r.text
+    assert r.json()["tenant_id"] == "t-A"
+
+
+def test_features_runtime_super_admin_sees_any_tenant():
+    # super_admin (escopo global) pode ler qualquer tenant por ID.
+    client, _ = build(tenants=[
+        dict(id="t-B", name="B", slug="b-slug", status="active", plan="enterprise"),
+        dict(id=DEFAULT_TENANT_ID, name="Aumigao", slug=DEFAULT_TENANT_SLUG, status="active", plan="business"),
+    ])  # auth padrão = super_admin
+    r = client.get("/tenants/t-B/features-runtime")
+    assert r.status_code == 200, r.text
+    assert r.json()["tenant_id"] == "t-B"

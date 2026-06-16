@@ -91,6 +91,7 @@ KIT_ITEM_DEFINITIONS = [
 LOGGER = logging.getLogger("aumigao.walker_applications")
 UPLOAD_ROOT = UPLOADS_BASE / "walker-documents"
 WALK_COMPLETION_UPLOAD_ROOT = UPLOADS_BASE / "walk-completions"
+WALKER_KIT_UPLOAD_ROOT = UPLOADS_BASE / "walker-kit"
 ALLOWED_UPLOAD_TYPES = {
     "profile_photo",
     "identity_front",
@@ -1480,6 +1481,51 @@ def update_kit(payload: dict, user: User = Depends(get_current_user), db: Sessio
     db.commit()
     db.refresh(row)
     return {"ok": True, "walker_kit": _build_walker_kit(user.id, db)}
+
+
+@router.post("/kit/photo")
+async def upload_kit_photo(
+    request: Request,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """WK-07: recebe uma foto do kit (multipart), hospeda e devolve a URL http.
+
+    O app envia a foto AQUI antes de submeter o kit; o submit (update_kit) passa a
+    receber URLs hospedadas (http), não file:// local (que o admin não abria — WK-05).
+    Espelha o pipeline de completion-photo (valida imagem + object_storage + registry).
+    Dono derivado do token.
+    """
+    _require_active_walker(user, db)
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Envie uma imagem valida.")
+
+    validated_bytes = await read_image_upload_safely(file)
+
+    safe_walker_id = "".join(char for char in user.id if char.isalnum() or char in {"-", "_"})[:80] or "walker"
+    destination_dir = WALKER_KIT_UPLOAD_ROOT / safe_walker_id
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    extension = _safe_upload_extension(file.filename, file.content_type)
+    destination = destination_dir / f"kit-{uuid4().hex}{extension}"
+
+    object_storage.save(destination, validated_bytes, file.content_type)
+    await file.close()
+
+    record_upload(
+        db, context="walker_kit", owner_id=user.id,
+        document_type="kit", storage_path=str(destination),
+        mime_type=file.content_type, size_bytes=len(validated_bytes),
+    )
+    db.commit()
+
+    photo_url = _public_upload_url(request, destination)
+    return {
+        "ok": True,
+        "photo_url": photo_url,
+        "url": photo_url,
+        "uploaded_at": datetime.utcnow().isoformat(),
+    }
 
 
 def _batch_walk_review_summaries(walker_ids: list[str], db: Session) -> dict[str, dict]:

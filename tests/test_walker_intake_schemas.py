@@ -7,8 +7,13 @@ foi preservada via _collect_checklist_items + model_fields_set.
 """
 from app.routes.walker import (
     CompletionReportRequest,
+    UpdateKitRequest,
     WalkerChecklistInput,
+    WalkerOccurrenceRequest,
+    WalkerStatusRequest,
     WalkExperienceInput,
+    WalkReconfirmationRequest,
+    WithdrawalRequest,
     _collect_checklist_items,
     _normalize_completion_checklist,
 )
@@ -86,3 +91,46 @@ def test_completion_report_normalize_checklist_roundtrip():
     d = CompletionReportRequest(photo_url="http://x", notes="ok", checklist=full_checklist).model_dump()
     normalized = _normalize_completion_checklist(d)
     assert normalized == {"pet_delivered": True, "leash_returned": True, "water_offered": False, "incident_reported": False}
+
+
+# --- demais endpoints do walker.py ---------------------------------------------
+
+def test_update_kit_defaults_empty_list_and_keeps_dict_items():
+    assert UpdateKitRequest().items == []
+    m = UpdateKitRequest(items=[{"key": "agua", "available": True, "photo_urls": ["http://x"]}])
+    # items continua list[dict] -> o loop com item.get(...) segue funcionando.
+    assert m.items[0]["key"] == "agua"
+
+
+def test_reconfirmation_decision_optional_and_ignores_extra():
+    assert WalkReconfirmationRequest().decision is None
+    m = WalkReconfirmationRequest(**{"decision": "cancel", "extra": 1})
+    assert m.decision == "cancel"
+
+
+def test_walker_status_fields_set_semantics():
+    # Ausente -> nao esta em model_fields_set (endpoint cai no walk.status).
+    assert "status" not in WalkerStatusRequest().model_fields_set
+    # Enviado -> presente.
+    m = WalkerStatusRequest(status="ride_in_progress")
+    assert "status" in m.model_fields_set
+    assert m.status == "ride_in_progress"
+
+
+def test_occurrence_defaults_and_ignores_extra():
+    m = WalkerOccurrenceRequest()
+    assert m.evidences == []
+    assert m.metadata is None
+    full = WalkerOccurrenceRequest(**{
+        "type": "delay", "message": "atrasou", "target_type": "tutor",
+        "evidences": [{"url": "http://x", "kind": "photo"}], "metadata": {"k": "v"}, "extra": 1,
+    })
+    assert full.type == "delay"
+    assert full.evidences[0]["url"] == "http://x"
+    assert full.metadata == {"k": "v"}
+
+
+def test_withdrawal_coerces_numeric_string():
+    assert WithdrawalRequest().amount is None
+    assert WithdrawalRequest(amount="50").amount == 50.0
+    assert WithdrawalRequest(amount=20.5).amount == 20.5

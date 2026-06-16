@@ -1446,10 +1446,17 @@ def my_walker_level(user: User = Depends(get_current_user), db: Session = Depend
     return _goals_evolution_payload(user, db)["level"]
 
 
+# api-T2: schema permissivo do envio do kit. `items` e uma lista de dicts (cada item
+# mantem o formato livre original {key, available, photo_urls}); Pydantic v2 ignora extras
+# no nivel raiz. Validacao de tipo no topo (items precisa ser lista) sem reescrever o loop.
+class UpdateKitRequest(BaseModel):
+    items: list[dict] = Field(default_factory=list)
+
+
 @router.put("/kit")
-def update_kit(payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_kit(payload: UpdateKitRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
-    items_payload = (payload or {}).get("items") or []
+    items_payload = payload.items or []
     # WK-05: só URLs HOSPEDADAS (http/https) podem ser persistidas. URIs locais do
     # dispositivo (file://, content://, blob:) não abrem no admin/tutor — rejeita.
     for item in items_payload:
@@ -1911,10 +1918,15 @@ def update_availability(payload: WalkerAvailabilityUpdate, user: User = Depends(
     db.commit()
     return {"ok": True, "user_id": user.id, "schedule": schedule_dict}
 
+# api-T2: schema permissivo da reconfirmacao do tutor (campo unico `decision`).
+class WalkReconfirmationRequest(BaseModel):
+    decision: str | None = None
+
+
 @router.post("/walks/{walk_id}/reconfirmation")
 def tutor_walk_reconfirmation(
     walk_id: str,
-    payload: dict,
+    payload: WalkReconfirmationRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1926,7 +1938,7 @@ def tutor_walk_reconfirmation(
     if str(walk.tutor_id) != str(user.id):
         raise HTTPException(status_code=403, detail="Passeio nao pertence ao tutor")
 
-    decision = str(payload.get("decision") or "").strip()
+    decision = str(payload.decision or "").strip()
 
     if walk.operational_status not in {"awaiting_tutor_reconfirmation", "no_walker_found"}:
         raise HTTPException(status_code=409, detail="Passeio nao aguarda confirmacao do tutor")
@@ -2089,8 +2101,13 @@ def decline_walk(walk_id: str, user: User = Depends(get_current_user), db: Sessi
     return {"ok": True, "walk_id": walk_id, "walk": serialize_operational_walk(walk, db, user=user)}
 
 
+# api-T2: schema permissivo da mudanca de status pelo passeador (campo unico `status`).
+class WalkerStatusRequest(BaseModel):
+    status: str | None = None
+
+
 @router.post("/walks/{walk_id}/status")
-def walker_status(walk_id: str, payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def walker_status(walk_id: str, payload: WalkerStatusRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
     walk = db.get(Walk, walk_id)
     if not walk:
@@ -2101,7 +2118,9 @@ def walker_status(walk_id: str, payload: dict, user: User = Depends(get_current_
         raise HTTPException(status_code=403, detail="Passeio nao pertence ao passeador")
     if walk.operational_status in {"pending_walker_confirmation", "auto_rematching"}:
         accept_operational_walk(walk, user, db)
-    requested_status = str(payload.get("status", walk.status))
+    # Preserva o default do .get("status", walk.status): so cai no walk.status se a chave
+    # nao foi enviada (model_fields_set), nao quando vem explicitamente nula.
+    requested_status = str(payload.status) if "status" in payload.model_fields_set else str(walk.status)
     if requested_status in {"ride_completed", "Finalizado", "finalizado", "completed", "finished"}:
         raise HTTPException(status_code=409, detail="Finalizacao exige envio de relatorio para revisao administrativa.")
     update_operational_status(walk, requested_status, db, actor=user)
@@ -2330,16 +2349,33 @@ def send_report(walk_id: str, payload: CompletionReportRequest | None = None, us
     return {"ok": True, "review": _completion_review_payload(review), "walk": serialize_operational_walk(walk, db, user=user)}
 
 
+# api-T2: schema permissivo da ocorrencia operacional do passeador. Todos opcionais,
+# espelhando os payload.get; evidences continua list[dict] (formato livre); Pydantic v2
+# ignora extras. Nenhum payload legitimo e rejeitado.
+class WalkerOccurrenceRequest(BaseModel):
+    type: str | None = None
+    category: str | None = None
+    message: str | None = None
+    description: str | None = None
+    notes: str | None = None
+    target_type: str | None = None
+    target_user_id: str | None = None
+    target_pet_id: str | None = None
+    title: str | None = None
+    evidences: list[dict] = Field(default_factory=list)
+    metadata: dict | None = None
+
+
 @router.post("/walks/{walk_id}/occurrence")
-def create_walker_occurrence(walk_id: str, payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_walker_occurrence(walk_id: str, payload: WalkerOccurrenceRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
     walk = db.get(Walk, walk_id)
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
     if walk.walker_id != user.id and walk.assigned_walker_id != user.id:
         raise HTTPException(status_code=403, detail="Passeio nao pertence ao passeador")
-    occurrence_type = str(payload.get("type") or payload.get("category") or "operational_issue").strip() or "operational_issue"
-    message = str(payload.get("message") or payload.get("description") or payload.get("notes") or "").strip()
+    occurrence_type = str(payload.type or payload.category or "operational_issue").strip() or "operational_issue"
+    message = str(payload.message or payload.description or payload.notes or "").strip()
     if not message:
         message = "Passeador registrou uma ocorrencia operacional."
     category_by_type = {
@@ -2350,18 +2386,18 @@ def create_walker_occurrence(walk_id: str, payload: dict, user: User = Depends(g
         "delay": "Atraso informado pelo passeador",
         "operational_issue": "Ocorrencia operacional do passeio",
     }
-    target_type = payload.get("target_type") or "walk"
+    target_type = payload.target_type or "walk"
     complaint_payload = ComplaintCreate(
         source="walker",
         target_type=target_type,
-        target_user_id=walk.tutor_id if target_type in {"tutor", "address", "service"} else payload.get("target_user_id"),
-        target_pet_id=walk.pet_id if target_type == "pet" else payload.get("target_pet_id"),
+        target_user_id=walk.tutor_id if target_type in {"tutor", "address", "service"} else payload.target_user_id,
+        target_pet_id=walk.pet_id if target_type == "pet" else payload.target_pet_id,
         walk_id=walk.id,
-        category=payload.get("category") or category_by_type.get(occurrence_type, "ocorrencia_operacional"),
-        title=payload.get("title") or title_by_type.get(occurrence_type, "Ocorrencia operacional do passeio"),
+        category=payload.category or category_by_type.get(occurrence_type, "ocorrencia_operacional"),
+        title=payload.title or title_by_type.get(occurrence_type, "Ocorrencia operacional do passeio"),
         description=message,
-        evidences=[ComplaintEvidenceCreate(**item) for item in payload.get("evidences", [])],
-        metadata={"origin": "walker_walk", "type": occurrence_type, **(payload.get("metadata") or {})},
+        evidences=[ComplaintEvidenceCreate(**item) for item in payload.evidences],
+        metadata={"origin": "walker_walk", "type": occurrence_type, **(payload.metadata or {})},
     )
     complaint = create_complaint(complaint_payload, user, db)
     return {
@@ -2731,9 +2767,15 @@ def walker_active_walk(
     return serialize_operational_walk(walk, db, user=user)
 
 
+# api-T2: schema permissivo do pedido de saque (campo unico `amount`; Pydantic v2 coage
+# string numerica -> float e devolve 422 honesto p/ valor invalido em vez de 500).
+class WithdrawalRequest(BaseModel):
+    amount: float | None = None
+
+
 @router.post("/withdrawals")
-def request_withdrawal(payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    amount = float(payload.get("amount") or 0)
+def request_withdrawal(payload: WithdrawalRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    amount = float(payload.amount or 0)
     if amount < 20:
         raise HTTPException(status_code=400, detail="Valor minimo para saque e R$ 20,00")
     balance = _available_balance(user, db)

@@ -124,6 +124,21 @@ def compute_split(amount: float, commission_percent: float, tenant_margin_percen
     }
 
 
+def walker_percent_from_split(split: dict[str, float]) -> float:
+    """Percentual repassado ao walker no gateway, derivado dos amounts do split.
+
+    Fonte única (R2/R10): walker_amount / (platform+tenant+walker). Honra a margem
+    do tenant e mantém o repasse no gateway igual ao repasse contábil de compute_split.
+    Retorna 0.0 quando o total é zero (sem divisão por zero).
+    """
+    total = (
+        split["platform_amount"]
+        + split.get("tenant_amount", 0.0)
+        + split["walker_amount"]
+    )
+    return round(split["walker_amount"] / total * 100.0, 4) if total > 0 else 0.0
+
+
 def build_payment_split(db: Session, tenant_id: str | None, amount: float) -> dict[str, float]:
     return compute_split(
         amount,

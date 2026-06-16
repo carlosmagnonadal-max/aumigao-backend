@@ -20,7 +20,7 @@ from app.models.payment import Payment
 from app.models.user import User
 from app.models.walk import Walk
 from app.schemas.payment import PaymentCreate, PaymentQuoteResponse, PaymentResponse
-from app.services.payment_split_service import build_payment_split, build_quote
+from app.services.payment_split_service import build_payment_split, build_quote, walker_percent_from_split
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 logger = logging.getLogger("app.routes.payments")
@@ -472,18 +472,11 @@ def _build_split_config_for_payment(db: Session, walk_id: str | None, tenant_id:
     if not walker_profile or not walker_profile.asaas_wallet_id:
         return None
 
-    # Percentual repassado ao walker no gateway = repasse CONTÁBIL (compute_split).
-    # Derivado dos amounts (walker_amount / total) para honrar tenant_margin_percent:
-    # 100 - commission_percent ignoraria a margem do tenant e pagaria o walker a mais.
-    total = (
-        split["platform_amount"]
-        + split.get("tenant_amount", 0.0)
-        + split["walker_amount"]
-    )
-    walker_percent = round(split["walker_amount"] / total * 100.0, 4) if total > 0 else 0.0
+    # Percentual repassado ao walker no gateway = repasse CONTÁBIL (compute_split),
+    # via fonte única walker_percent_from_split (honra a margem do tenant; R2/R10).
     return {
         "wallet_id": walker_profile.asaas_wallet_id,
-        "percentual_value": walker_percent,
+        "percentual_value": walker_percent_from_split(split),
     }
 
 

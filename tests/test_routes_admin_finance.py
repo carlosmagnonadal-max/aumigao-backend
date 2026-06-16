@@ -84,6 +84,16 @@ def test_get_payment_config_happy_path_creates_default():
     assert db.query(TenantPaymentConfig).filter(TenantPaymentConfig.tenant_id == TENANT_ID).count() == 1
 
 
+def test_get_payment_config_exposes_plan_commission_ruler():
+    # R9: a régua de comissão por plano vem do backend (não números fixos no front).
+    client, db = build()
+    r = client.get("/admin/payment-config")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["plan_commission_defaults"] == {"starter": 12.0, "business": 8.0, "enterprise": 5.0}
+    assert body["plan_commission_fallback"] == 10.0
+
+
 def test_get_payment_config_forbidden_for_non_admin():
     # role "tutor" -> falha na dependency de router require_permission("admin.access")
     client, db = build()

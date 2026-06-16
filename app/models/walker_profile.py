@@ -27,6 +27,9 @@ class WalkerProfile(Base):
     active_as_walker: Mapped[bool] = mapped_column(Boolean, default=False)
     # Passeador possui carro — requisito para receber Pet Tour (ver pet_tour_service).
     has_vehicle: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Wave 5 — porte máximo de cão que o passeador aceita ("Pequeno"|"Médio"|"Grande").
+    # Default PERMISSIVO "Grande": aceita todos os portes (zero regressão até configurarem).
+    max_dog_size: Mapped[str] = mapped_column(String, default="Grande", server_default="Grande", nullable=False)
     # WK-02: presença real. is_online é input do matching (WK-10); last_seen_at permite
     # política de offline por TTL no futuro. Default offline.
     is_online: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)

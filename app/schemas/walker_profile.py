@@ -1,6 +1,9 @@
 ﻿from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from app.schemas.common import ORMModel
+
+# Wave 5 — valores aceitos de porte máximo de cão (contrato fixo PT).
+_VALID_MAX_DOG_SIZES = {"Pequeno", "Médio", "Grande"}
 
 class WalkerProfileBase(BaseModel):
     full_name: str = ""
@@ -19,6 +22,15 @@ class WalkerProfileBase(BaseModel):
     proof_of_address_url: str | None = None
     profile_photo_url: str | None = None
     has_vehicle: bool = False
+    # Wave 5 — porte máximo de cão aceito. Default permissivo "Grande".
+    max_dog_size: str = "Grande"
+
+    @field_validator("max_dog_size")
+    @classmethod
+    def _validate_max_dog_size(cls, value: str) -> str:
+        if value not in _VALID_MAX_DOG_SIZES:
+            raise ValueError("max_dog_size deve ser 'Pequeno', 'Médio' ou 'Grande'")
+        return value
 
 class WalkerProfileCreate(WalkerProfileBase):
     pass

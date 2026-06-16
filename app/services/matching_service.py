@@ -1,9 +1,11 @@
 import os
+import unicodedata
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app.models.pet import Pet
 from app.models.walk import Walk
 from app.models.walker_profile import WalkerProfile
 from app.schemas.matching import MatchingWalkerRequest
@@ -27,6 +29,23 @@ def clamp(value: float, min_value: float = 0, max_value: float = 100) -> float:
 
 def normalize(value: str | None) -> str:
     return (value or "").strip().lower()
+
+
+# Wave 5 — ordem de porte para compatibilidade pet ↔ passeador.
+_SIZE_RANK = {"pequeno": 1, "medio": 2, "grande": 3}
+
+
+def size_rank(value: str | None) -> int | None:
+    """Rank de porte: normaliza (lower + remove acento) e mapeia para 1/2/3.
+
+    Retorna None para valor desconhecido/"" (ex.: "", "Gigante") — usado em
+    FAIL-OPEN no matching para não derrubar recall quando o dado é incerto.
+    """
+    if not value:
+        return None
+    text = unicodedata.normalize("NFKD", value.strip().lower())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return _SIZE_RANK.get(text)
 
 
 def parse_datetime(value: str | None) -> datetime | None:
@@ -158,6 +177,18 @@ def get_eligible_walkers(request: MatchingWalkerRequest, db: Session, tenant_id:
             tenant_pool = set(get_matching_pool_for_tenant(db, tenant_id))
         except Exception:
             tenant_pool = set()
+    # Wave 5 — porte do pet (carregado uma vez, de forma segura). FAIL-OPEN:
+    # se não há pet_id, o pet não existe, ou o porte é desconhecido, pet_size_rank
+    # fica None e NÃO filtramos por porte (mantém recall).
+    pet_size_rank: int | None = None
+    pet_id = getattr(request, "pet_id", None)
+    if pet_id:
+        try:
+            pet = db.get(Pet, pet_id)
+        except Exception:
+            pet = None
+        if pet is not None:
+            pet_size_rank = size_rank(getattr(pet, "size", None))
     eligible = []
     seen_keys = set()
     for profile in profiles:
@@ -170,6 +201,13 @@ def get_eligible_walkers(request: MatchingWalkerRequest, db: Session, tenant_id:
         # WK-10: gate de presença (ligável por flag) — offline fora do pool quando ligado.
         if not passes_online_gate(profile):
             continue
+        # Wave 5 — compatibilidade de porte. Só filtra quando AMBOS os ranks são
+        # conhecidos (FAIL-OPEN caso contrário). Exclui se o passeador aceita um
+        # porte máximo menor que o do pet.
+        if pet_size_rank is not None:
+            walker_max_rank = size_rank(getattr(profile, "max_dog_size", None))
+            if walker_max_rank is not None and walker_max_rank < pet_size_rank:
+                continue
         proximity_score, _ = calculate_proximity_score(profile, request)
         if proximity_score <= 0:
             continue

@@ -2434,10 +2434,45 @@ def _get_walk_for_walker(walk_id: str, user: User, db: Session) -> Walk:
     return walk
 
 
+# api-T2: schemas permissivos dos endpoints da maquina de estados. Os 4 itens de
+# checklist sao opcionais (None = nao enviado); usamos model_fields_set para incluir no
+# log apenas as chaves que o app realmente mandou — mesma semantica do `key in payload`
+# anterior, inclusive quando o valor e False. Pydantic v2 ignora extras: nenhum payload
+# legitimo e rejeitado.
+class WalkerChecklistInput(BaseModel):
+    checklist_confirm_water: bool | None = None
+    checklist_confirm_bowl: bool | None = None
+    checklist_confirm_bags: bool | None = None
+    checklist_confirm_first_aid: bool | None = None
+
+
+_CHECKLIST_CONFIRM_KEYS = (
+    "checklist_confirm_water",
+    "checklist_confirm_bowl",
+    "checklist_confirm_bags",
+    "checklist_confirm_first_aid",
+)
+
+
+def _collect_checklist_items(payload: "WalkerChecklistInput | None") -> dict:
+    if not payload:
+        return {}
+    return {
+        key: bool(getattr(payload, key))
+        for key in _CHECKLIST_CONFIRM_KEYS
+        if key in payload.model_fields_set
+    }
+
+
+class WalkExperienceInput(BaseModel):
+    did_pee: bool = False
+    did_poop: bool = False
+
+
 @router.post("/walks/{walk_id}/check-in")
 def walker_check_in(
     walk_id: str,
-    payload: dict | None = None,
+    payload: WalkerChecklistInput | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -2458,14 +2493,7 @@ def walker_check_in(
     walk.operational_status = "walker_arriving"
     walk.status = "Indo buscar o pet"
 
-    checklist_items = {}
-    if payload:
-        checklist_items = {
-            key: bool(payload.get(key))
-            for key in ("checklist_confirm_water", "checklist_confirm_bowl",
-                        "checklist_confirm_bags", "checklist_confirm_first_aid")
-            if key in payload
-        }
+    checklist_items = _collect_checklist_items(payload)
 
     log_event(
         db,
@@ -2486,7 +2514,7 @@ def walker_check_in(
 @router.post("/walks/{walk_id}/pet-handover")
 def pet_handover(
     walk_id: str,
-    payload: dict | None = None,
+    payload: WalkerChecklistInput | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -2526,7 +2554,7 @@ def pet_handover(
 @router.post("/walks/{walk_id}/start-checklist")
 def confirm_start_checklist(
     walk_id: str,
-    payload: dict | None = None,
+    payload: WalkerChecklistInput | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -2552,14 +2580,7 @@ def confirm_start_checklist(
     walk.operational_status = "ride_in_progress"
     walk.status = "Passeando agora"
 
-    checklist_items = {}
-    if payload:
-        checklist_items = {
-            key: bool(payload.get(key))
-            for key in ("checklist_confirm_water", "checklist_confirm_bowl",
-                        "checklist_confirm_bags", "checklist_confirm_first_aid")
-            if key in payload
-        }
+    checklist_items = _collect_checklist_items(payload)
 
     log_event(
         db,
@@ -2582,7 +2603,7 @@ def confirm_start_checklist(
 @router.post("/walks/{walk_id}/checkin-checklist")
 def validate_checkin_checklist(
     walk_id: str,
-    payload: dict | None = None,
+    payload: WalkerChecklistInput | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -2602,14 +2623,7 @@ def validate_checkin_checklist(
             detail=f"Checklist de chegada nao permitido no status '{walk.operational_status}'.",
         )
 
-    checklist_items = {}
-    if payload:
-        checklist_items = {
-            key: bool(payload.get(key))
-            for key in ("checklist_confirm_water", "checklist_confirm_bowl",
-                        "checklist_confirm_bags", "checklist_confirm_first_aid")
-            if key in payload
-        }
+    checklist_items = _collect_checklist_items(payload)
 
     log_event(
         db,
@@ -2632,7 +2646,7 @@ def validate_checkin_checklist(
 @router.post("/walks/{walk_id}/experience")
 def update_walk_experience(
     walk_id: str,
-    payload: dict | None = None,
+    payload: WalkExperienceInput | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -2654,8 +2668,8 @@ def update_walk_experience(
             detail=f"Experiencia do passeio nao pode ser registrada no status '{walk.operational_status}'.",
         )
 
-    did_pee = bool((payload or {}).get("did_pee", False))
-    did_poop = bool((payload or {}).get("did_poop", False))
+    did_pee = bool(payload.did_pee) if payload else False
+    did_poop = bool(payload.did_poop) if payload else False
 
     log_event(
         db,

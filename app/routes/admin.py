@@ -147,10 +147,24 @@ def list_operational_events(
     return {"items": [serialize_admin_operational_event(row) for row in rows], "total": len(rows)}
 
 
+# api-T2: schema permissivo do evento operacional manual. Os campos espelham os lidos
+# pelo helper _validate_operational_event_payload; o endpoint converte via model_dump e
+# mantem o helper intacto (que ja valida entity_type/entity_id/title obrigatorios).
+class OperationalEventRequest(BaseModel):
+    entity_type: str | None = None
+    entity_id: str | None = None
+    title: str | None = None
+    event_type: str | None = None
+    severity: str | None = None
+    description: str | None = None
+    source: str | None = None
+    metadata: dict | None = None
+
+
 @router.post("/operational-events")
 @api_router.post("/operational-events")
-def create_operational_event(payload: dict, admin: User = Depends(require_permission("alerts.resolve")), db: Session = Depends(get_db)):
-    data = _validate_operational_event_payload(payload or {})
+def create_operational_event(payload: OperationalEventRequest, admin: User = Depends(require_permission("alerts.resolve")), db: Session = Depends(get_db)):
+    data = _validate_operational_event_payload(payload.model_dump())
     event = record_admin_operational_event(
         db,
         event_type=data["event_type"],
@@ -1420,23 +1434,36 @@ def partner_application_detail(candidate_id: str, db: Session = Depends(get_db))
     return _serialize_walker_profile(profile, db)
 
 
+# api-T2: schema permissivo dos campos administrativos da candidatura (PATCH). Todos os
+# campos sao opcionais; usamos model_dump(exclude_unset=True) para obter SO as chaves que
+# o cliente enviou, preservando a semantica PATCH original (`"x" in payload`). Pydantic v2
+# ignora extras -> nenhum payload legitimo e rejeitado.
+class UpdatePartnerApplicationRequest(BaseModel):
+    internal_notes: str | None = None
+    status: str | None = None
+    reason: str | None = None
+    reviewed_by_admin_id: str | None = None
+    resubmission_requested_documents: Any | None = None
+    active_as_walker: bool | None = None
+
+
 @router.patch("/partner-applications/{candidate_id}/admin-fields")
 @api_router.patch("/partner-applications/{candidate_id}/admin-fields")
-def update_partner_application_admin_fields(candidate_id: str, payload: dict | None = None, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
+def update_partner_application_admin_fields(candidate_id: str, payload: UpdatePartnerApplicationRequest | None = None, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
     profile = db.get(WalkerProfile, candidate_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Candidatura nao encontrada")
-    payload = payload or {}
-    if "internal_notes" in payload:
-        profile.internal_notes = payload.get("internal_notes") or ""
-    if "status" in payload:
-        _apply_application_status(profile, payload.get("status") or "submitted", payload.get("reason"))
-    if "reviewed_by_admin_id" in payload:
-        profile.reviewed_by_admin_id = payload.get("reviewed_by_admin_id") or None
-    if "resubmission_requested_documents" in payload:
-        profile.resubmission_requested_documents = _document_key_list(payload.get("resubmission_requested_documents") or [])
-    if "active_as_walker" in payload:
-        active_as_walker = bool(payload.get("active_as_walker"))
+    data = payload.model_dump(exclude_unset=True) if payload else {}
+    if "internal_notes" in data:
+        profile.internal_notes = data.get("internal_notes") or ""
+    if "status" in data:
+        _apply_application_status(profile, data.get("status") or "submitted", data.get("reason"))
+    if "reviewed_by_admin_id" in data:
+        profile.reviewed_by_admin_id = data.get("reviewed_by_admin_id") or None
+    if "resubmission_requested_documents" in data:
+        profile.resubmission_requested_documents = _document_key_list(data.get("resubmission_requested_documents") or [])
+    if "active_as_walker" in data:
+        active_as_walker = bool(data.get("active_as_walker"))
         if active_as_walker and profile.status not in {"approved", "active"}:
             raise HTTPException(status_code=400, detail="Apenas candidatos aprovados podem ser ativados como passeador.")
         _apply_application_status(profile, "active" if active_as_walker else "approved")
@@ -1446,9 +1473,9 @@ def update_partner_application_admin_fields(candidate_id: str, payload: dict | N
         if active_as_walker:
             # Marca referral antes do commit para que tudo persista em uma unica transacao.
             mark_referral_approved(profile.user_id, db, commit=False)
-    if any(key in payload for key in ("internal_notes", "status", "active_as_walker")):
-        event_type = "admin_note_added" if "internal_notes" in payload else "status_changed"
-        if payload.get("active_as_walker"):
+    if any(key in data for key in ("internal_notes", "status", "active_as_walker")):
+        event_type = "admin_note_added" if "internal_notes" in data else "status_changed"
+        if data.get("active_as_walker"):
             event_type = "approved"
         record_admin_operational_event(
             db,
@@ -1457,10 +1484,10 @@ def update_partner_application_admin_fields(candidate_id: str, payload: dict | N
             entity_id=profile.user_id,
             severity="info",
             title="Candidatura atualizada",
-            description=payload.get("internal_notes") or payload.get("reason") or "Campos administrativos da candidatura atualizados.",
+            description=data.get("internal_notes") or data.get("reason") or "Campos administrativos da candidatura atualizados.",
             actor=admin,
             source="admin.partner_application.update",
-            metadata={"candidate_id": profile.id, "fields": sorted(payload.keys())},
+            metadata={"candidate_id": profile.id, "fields": sorted(data.keys())},
         )
     db.commit()
     db.refresh(profile)
@@ -1497,13 +1524,19 @@ def approve_walker(walker_id: str, request: Request, admin: User = Depends(requi
     db.refresh(profile)
     return _serialize_walker_profile(profile, db)
 
+# api-T2: schema permissivo da reprovacao de candidatura (campo unico `reason`).
+class RejectWalkerRequest(BaseModel):
+    reason: str | None = None
+
+
 @router.post("/walkers/{walker_id}/reject")
 @api_router.post("/walkers/{walker_id}/reject")
-def reject_walker(walker_id: str, request: Request, payload: dict | None = None, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
+def reject_walker(walker_id: str, request: Request, payload: RejectWalkerRequest | None = None, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
     profile = db.get(WalkerProfile, walker_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Passeador nao encontrado")
-    _apply_application_status(profile, "rejected", (payload or {}).get("reason"))
+    reason = payload.reason if payload else None
+    _apply_application_status(profile, "rejected", reason)
     record_admin_operational_event(
         db,
         event_type="rejected",
@@ -1511,7 +1544,7 @@ def reject_walker(walker_id: str, request: Request, payload: dict | None = None,
         entity_id=profile.user_id,
         severity="warning",
         title="Candidatura reprovada",
-        description=(payload or {}).get("reason") or "Candidatura reprovada pela administracao.",
+        description=reason or "Candidatura reprovada pela administracao.",
         actor=admin,
         source="admin.walker.reject",
         metadata={"candidate_id": profile.id},
@@ -1585,15 +1618,20 @@ def get_admin_walk(
     return _serialize_admin_walk(walk, db)
 
 
+# api-T2: schema permissivo da mudanca de status do passeio pelo admin (campo `status`).
+class AdminWalkStatusRequest(BaseModel):
+    status: str | None = None
+
+
 @router.patch("/walks/{walk_id}/status")
 @api_router.patch("/walks/{walk_id}/status")
-def update_admin_walk_status(walk_id: str, payload: dict, admin: User = Depends(require_permission("walks.update_status")), db: Session = Depends(get_db)):
+def update_admin_walk_status(walk_id: str, payload: AdminWalkStatusRequest, admin: User = Depends(require_permission("walks.update_status")), db: Session = Depends(get_db)):
     walk = db.get(Walk, walk_id)
 
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
 
-    status = payload.get("status")
+    status = payload.status
 
     if not status:
         raise HTTPException(status_code=400, detail="Status nao informado")
@@ -2421,11 +2459,18 @@ def reject_withdrawal(payment_id: str, admin: User = Depends(require_permission(
 # Configuração de carteira Asaas por walker (split real — dormente no sandbox)
 # ---------------------------------------------------------------------------
 
+# api-T2: schema permissivo da config de carteira Asaas. asaas_wallet_id e Any (aceita
+# string ou null); usamos model_fields_set para exigir que a chave seja ENVIADA (mesmo que
+# null para limpar) — mesma semantica do `"asaas_wallet_id" not in payload` anterior.
+class SetWalkerWalletRequest(BaseModel):
+    asaas_wallet_id: Any | None = None
+
+
 @router.patch("/walkers/{user_id}/wallet")
 @api_router.patch("/walkers/{user_id}/wallet")
 def set_walker_wallet(
     user_id: str,
-    payload: dict,
+    payload: SetWalkerWalletRequest,
     admin: User = Depends(require_permission("finance.manage")),
     db: Session = Depends(get_db),
 ):
@@ -2438,10 +2483,10 @@ def set_walker_wallet(
     if not profile:
         raise HTTPException(status_code=404, detail="Perfil de walker nao encontrado para este user_id.")
 
-    if "asaas_wallet_id" not in payload:
+    if "asaas_wallet_id" not in payload.model_fields_set:
         raise HTTPException(status_code=422, detail="Campo 'asaas_wallet_id' obrigatorio no body.")
 
-    new_wallet_id = payload.get("asaas_wallet_id")
+    new_wallet_id = payload.asaas_wallet_id
     if new_wallet_id is not None:
         new_wallet_id = str(new_wallet_id).strip()
         if not new_wallet_id:

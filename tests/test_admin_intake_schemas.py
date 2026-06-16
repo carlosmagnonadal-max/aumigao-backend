@@ -9,10 +9,15 @@ proposito: usam _merge_dict com dict livre aninhado, onde um schema descartaria 
 """
 from app.routes.admin import (
     AdjustWalkerCrRequest,
+    AdminWalkStatusRequest,
     KitAuditActionRequest,
+    OperationalEventRequest,
     ReferralStatusRequest,
     RejectWalkerKitRequest,
+    RejectWalkerRequest,
+    SetWalkerWalletRequest,
     TipReviewActionRequest,
+    UpdatePartnerApplicationRequest,
     WalkCompletionDecisionRequest,
 )
 
@@ -66,3 +71,47 @@ def test_tip_review_defaults_and_ignores_extra():
     m = TipReviewActionRequest(**{"extra": 1})
     assert m.status == "approved"
     assert m.note == ""
+
+
+# --- evento operacional / rejeicao / status / wallet / candidatura --------------
+
+def test_operational_event_model_dump_keeps_keys_for_helper():
+    # O helper faz payload.get(...) sobre o dict -> precisa das chaves presentes (None).
+    d = OperationalEventRequest(entity_type="walk", entity_id="w1", title="t").model_dump()
+    assert d["entity_type"] == "walk"
+    assert d["metadata"] is None  # helper trata None -> {}
+    assert set(d.keys()) == {
+        "entity_type", "entity_id", "title", "event_type", "severity", "description", "source", "metadata",
+    }
+
+
+def test_reject_walker_reason_optional():
+    assert RejectWalkerRequest().reason is None
+    assert RejectWalkerRequest(reason="docs invalidos").reason == "docs invalidos"
+
+
+def test_admin_walk_status_optional():
+    assert AdminWalkStatusRequest().status is None
+    assert AdminWalkStatusRequest(status="ride_scheduled").status == "ride_scheduled"
+
+
+def test_partner_application_exclude_unset_preserves_patch_semantics():
+    # So as chaves enviadas aparecem -> "x in data" se comporta como o dict original.
+    only_notes = UpdatePartnerApplicationRequest(internal_notes="ok").model_dump(exclude_unset=True)
+    assert only_notes == {"internal_notes": "ok"}
+    assert "status" not in only_notes
+    # Enviar active_as_walker=False ainda conta como "presente".
+    with_flag = UpdatePartnerApplicationRequest(active_as_walker=False).model_dump(exclude_unset=True)
+    assert with_flag == {"active_as_walker": False}
+
+
+def test_set_wallet_requires_key_via_fields_set():
+    # Chave ausente -> nao esta em model_fields_set (endpoint devolve 422).
+    assert "asaas_wallet_id" not in SetWalkerWalletRequest().model_fields_set
+    # Chave enviada como null (para limpar) -> presente em model_fields_set.
+    explicit = SetWalkerWalletRequest(**{"asaas_wallet_id": None})
+    assert "asaas_wallet_id" in explicit.model_fields_set
+    # Chave enviada com valor.
+    set_val = SetWalkerWalletRequest(**{"asaas_wallet_id": "wlt_123"})
+    assert set_val.asaas_wallet_id == "wlt_123"
+    assert "asaas_wallet_id" in set_val.model_fields_set

@@ -27,6 +27,10 @@ class WalkerProfile(Base):
     active_as_walker: Mapped[bool] = mapped_column(Boolean, default=False)
     # Passeador possui carro — requisito para receber Pet Tour (ver pet_tour_service).
     has_vehicle: Mapped[bool] = mapped_column(Boolean, default=False)
+    # WK-02: presença real. is_online é input do matching (WK-10); last_seen_at permite
+    # política de offline por TTL no futuro. Default offline.
+    is_online: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -28,6 +28,7 @@ from app.models.walker_kit_submission import WalkerKitSubmission
 from app.models.walker_profile import WalkerProfile
 from app.models.walker_availability import WalkerAvailability
 from app.schemas.walker_availability import WalkerAvailabilityUpdate
+from app.schemas.walker_presence import WalkerOnlineUpdate
 from app.schemas.walker_profile import WalkerProfileCreate, WalkerProfileResponse, WalkerProfileUpdate
 from app.schemas.complaint import ComplaintCreate, ComplaintEvidenceCreate
 from app.services.complaint_service import create_complaint
@@ -1759,7 +1760,7 @@ def api_public_walkers(request: Request = None, db: Session = Depends(get_db)):
 
 @router.get("/availability")
 def availability(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _require_active_walker(user, db)
+    profile = _require_active_walker(user, db)
     # F04: próximos 7 dias REAIS a partir de hoje (default "available")
     now = datetime.utcnow()
     today = datetime(now.year, now.month, now.day)
@@ -1803,6 +1804,24 @@ def availability(user: User = Depends(get_current_user), db: Session = Depends(g
             "available_days": None,
         },
         "schedule": schedule,
+        # WK-02: presença real (aditivo).
+        "is_online": bool(getattr(profile, "is_online", False)),
+        "last_seen_at": profile.last_seen_at.isoformat() if getattr(profile, "last_seen_at", None) else None,
+    }
+
+
+@router.post("/online")
+def set_online(payload: WalkerOnlineUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # WK-02: persiste a presença real do passeador (flag + last_seen). Deriva do token.
+    profile = _require_active_walker(user, db)
+    profile.is_online = bool(payload.online)
+    profile.last_seen_at = datetime.utcnow()
+    db.commit()
+    return {
+        "ok": True,
+        "user_id": user.id,
+        "is_online": profile.is_online,
+        "last_seen_at": profile.last_seen_at.isoformat() if profile.last_seen_at else None,
     }
 
 

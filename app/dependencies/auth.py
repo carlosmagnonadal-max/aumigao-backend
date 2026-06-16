@@ -1,9 +1,8 @@
-﻿import jwt
-from fastapi import Depends, Header, HTTPException, status
+﻿from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.core.security import ALGORITHM, SECRET_KEY
+from app.core.security import decode_access_token
 from app.models.user import User
 
 security = HTTPBearer(auto_error=False)
@@ -16,7 +15,9 @@ def get_current_user(
     if not credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Nao autenticado")
     try:
-        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        # B-ALT-011 (passo 2a): valida assinatura+exp+iss+aud de forma retrocompatível
+        # (tokens legados sem iss/aud ainda passam; iss/aud errados são rejeitados).
+        payload = decode_access_token(credentials.credentials)
         user_id = payload.get("sub")
     except Exception:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token invalido")

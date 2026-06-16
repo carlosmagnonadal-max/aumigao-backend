@@ -48,19 +48,46 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> str:
     now = datetime.now(timezone.utc)
     expire = now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    # B-ALT-011: além de sub/exp, o token carrega iat (idade), iss/aud (emissor/
-    # audiência) e jti (id único — base para revogação). A validação atual checa só
-    # exp+assinatura, então isto é retrocompatível (tokens antigos seguem válidos).
+    # B-ALT-011 (passo 2a): além de sub/exp, o token carrega iat (idade), iss/aud
+    # (emissor/audiência) e jti (id único — base para revogação). O decode passa a ser
+    # feito por decode_access_token, que valida iss/aud de forma retrocompatível.
     payload: dict[str, Any] = {
         "sub": subject,
         "iat": now,
         "exp": expire,
         "iss": JWT_ISSUER,
-        # "aud" NÃO é emitido aqui de propósito: o get_current_user atual decodifica
-        # sem passar audience, e o PyJWT exige audience quando o token traz aud — emitir
-        # aud agora quebraria a validação. aud entra no passo 2, junto do enforcement.
+        "aud": JWT_AUDIENCE,
         "jti": uuid.uuid4().hex,
     }
     if extra:
         payload.update(extra)
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_access_token(token: str) -> dict[str, Any]:
+    """Decodifica e valida o access token (assinatura, exp, iss e aud).
+
+    B-ALT-011 (passo 2a) — enforcement RETROCOMPATÍVEL. Decodificamos primeiro só
+    assinatura+exp (verify_aud desligado, independente de o token trazer aud ou não) e
+    enforçamos iss/aud manualmente com a regra de transição:
+      - claim PRESENTE precisa bater (senão rejeita — protege contra reuso entre serviços);
+      - claim AUSENTE é aceito (token legado emitido antes do enforcement — não desloga
+        usuários durante a janela de expiração/TTL).
+    Fazer a checagem manual (em vez de passar audience/issuer ao jwt.decode) torna o
+    enforcement independente da ordem em que o PyJWT validaria os claims — um token com
+    aud errado e iss ausente NÃO pode escapar como se fosse legado.
+    Quando os tokens legados expirarem, dá para exigir os claims (remover o fallback).
+    """
+    payload = jwt.decode(
+        token,
+        SECRET_KEY,
+        algorithms=[ALGORITHM],
+        options={"verify_aud": False},
+    )
+    aud = payload.get("aud")
+    if aud is not None and aud != JWT_AUDIENCE:
+        raise jwt.InvalidAudienceError("Audiencia do token invalida")
+    iss = payload.get("iss")
+    if iss is not None and iss != JWT_ISSUER:
+        raise jwt.InvalidIssuerError("Emissor do token invalido")
+    return payload

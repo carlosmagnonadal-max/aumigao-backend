@@ -47,3 +47,24 @@ class TenantWalkerAccessResponse(ORMModel):
     responded_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class WalkerNetworkInviteResponse(ORMModel):
+    """Convite à Rede visto pelo passeador (walker-facing)."""
+
+    id: str
+    tenant_id: str
+    tenant_name: str | None = None
+    status: str
+    access_type: str
+    invited_at: datetime | None = None
+    responded_at: datetime | None = None
+
+
+class WalkerNetworkMeResponse(BaseModel):
+    """Plano/capabilities do tenant do passeador autenticado (net-T4)."""
+
+    tenant_id: str
+    plan: str | None = None
+    network_access: bool
+    active_network_tenants: int

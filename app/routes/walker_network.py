@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.dependencies.auth import require_admin
+from app.dependencies.auth import get_current_user, require_admin
 from app.dependencies.rbac import require_permission
 from app.models.tenant import Tenant
 from app.models.tenant_walker_access import TenantWalkerAccess
@@ -16,12 +16,16 @@ from app.schemas.walker_network import (
     TenantWalkerAccessCreate,
     TenantWalkerAccessResponse,
     TenantWalkerAccessUpdate,
+    WalkerNetworkInviteResponse,
+    WalkerNetworkMeResponse,
     WalkerNetworkProfileResponse,
 )
-from app.services.tenant_plan_service import enforce_network_access_allowed
+from app.services.tenant_plan_service import enforce_network_access_allowed, tenant_has_feature
 
 router = APIRouter(prefix="/admin/walker-network", tags=["admin-walker-network"], dependencies=[Depends(require_permission("walkers.read"))])
 api_router = APIRouter(prefix="/api/admin/walker-network", tags=["admin-walker-network"], dependencies=[Depends(require_permission("walkers.read"))])
+# Walker-facing: o passeador deriva do token (get_current_user); ownership por walker_user_id.
+walker_router = APIRouter(prefix="/walker/network", tags=["walker-network"])
 
 
 def _ensure_choice(value: str | None, allowed: set[str], field_name: str) -> None:
@@ -126,3 +130,104 @@ def update_tenant_walker_access(
     db.commit()
     db.refresh(access)
     return access
+
+
+# ---------------------------------------------------------------------------
+# Walker-facing (net-T2/net-T4): o passeador vê e responde os próprios convites.
+# ---------------------------------------------------------------------------
+
+
+def _require_walker(user: User) -> User:
+    if user.role not in {"walker", "passeador"}:
+        raise HTTPException(status_code=403, detail="Apenas passeadores acessam a Rede.")
+    return user
+
+
+def _own_invite_or_404(invite_id: str, walker_user_id: str, db: Session) -> TenantWalkerAccess:
+    invite = (
+        db.query(TenantWalkerAccess)
+        .filter(
+            TenantWalkerAccess.id == invite_id,
+            TenantWalkerAccess.walker_user_id == walker_user_id,
+        )
+        .first()
+    )
+    if not invite:
+        raise HTTPException(status_code=404, detail="Convite nao encontrado.")
+    return invite
+
+
+def _invite_to_response(invite: TenantWalkerAccess, db: Session) -> WalkerNetworkInviteResponse:
+    tenant = db.get(Tenant, invite.tenant_id)
+    return WalkerNetworkInviteResponse(
+        id=invite.id,
+        tenant_id=invite.tenant_id,
+        tenant_name=tenant.name if tenant else None,
+        status=invite.status,
+        access_type=invite.access_type,
+        invited_at=invite.invited_at,
+        responded_at=invite.responded_at,
+    )
+
+
+@walker_router.get("/invites", response_model=list[WalkerNetworkInviteResponse])
+def list_my_invites(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_walker(user)
+    invites = (
+        db.query(TenantWalkerAccess)
+        .filter(
+            TenantWalkerAccess.walker_user_id == user.id,
+            TenantWalkerAccess.status == "pending",
+        )
+        .order_by(TenantWalkerAccess.invited_at.desc(), TenantWalkerAccess.created_at.desc())
+        .all()
+    )
+    return [_invite_to_response(inv, db) for inv in invites]
+
+
+def _respond_to_invite(invite_id: str, new_status: str, user: User, db: Session) -> WalkerNetworkInviteResponse:
+    _require_walker(user)
+    invite = _own_invite_or_404(invite_id, user.id, db)
+    if invite.status != "pending":
+        raise HTTPException(status_code=409, detail="Convite ja respondido.")
+    invite.status = new_status
+    invite.responded_at = datetime.utcnow()
+    invite.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(invite)
+    return _invite_to_response(invite, db)
+
+
+@walker_router.post("/invites/{invite_id}/accept", response_model=WalkerNetworkInviteResponse)
+def accept_invite(invite_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _respond_to_invite(invite_id, "active", user, db)
+
+
+@walker_router.post("/invites/{invite_id}/decline", response_model=WalkerNetworkInviteResponse)
+def decline_invite(invite_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _respond_to_invite(invite_id, "declined", user, db)
+
+
+@walker_router.get("/me", response_model=WalkerNetworkMeResponse)
+def network_me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Plano/capabilities do tenant do passeador (net-T4).
+
+    O app/admin usam network_access para saber se a Rede está disponível.
+    """
+    _require_walker(user)
+    tenant = db.get(Tenant, user.tenant_id) if user.tenant_id else None
+    network_access = bool(tenant and tenant_has_feature(tenant, db, "network_access"))
+    active_count = (
+        db.query(TenantWalkerAccess)
+        .filter(
+            TenantWalkerAccess.walker_user_id == user.id,
+            TenantWalkerAccess.status == "active",
+        )
+        .count()
+    )
+    return WalkerNetworkMeResponse(
+        tenant_id=user.tenant_id,
+        plan=tenant.plan if tenant else None,
+        network_access=network_access,
+        active_network_tenants=active_count,
+    )

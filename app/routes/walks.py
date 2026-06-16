@@ -1,4 +1,5 @@
 ﻿import logging
+import os
 import traceback
 from uuid import uuid4
 from datetime import date, datetime, timedelta
@@ -314,6 +315,13 @@ def list_walks(
     rows = query.order_by(Walk.created_at.desc()).limit(limit).all()
     return _serialize_walk_list(rows, user)
 
+def _require_payment_before_matching() -> bool:
+    """R7: gate de produto. Quando ligado, o walk só entra no fluxo operacional
+    (matching) depois que o pagamento liquida — antes disso fica 'awaiting_payment'.
+    Default DESLIGADO para não mudar o comportamento de produção sem decisão."""
+    return os.getenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
 @router.post("", response_model=WalkResponse)
 def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     logger.warning(
@@ -398,9 +406,16 @@ def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db:
             walk.id,
         )
 
-        walk.operational_status = "pending_walker_confirmation"
-        walk.status = "Agendado"
-        walk.no_walker_reason = "Buscando o melhor passeador disponível."
+        # R7: com o gate ligado, o walk nasce aguardando pagamento e NÃO entra no
+        # matching até o webhook de pagamento confirmado liberá-lo (payments.py).
+        if _require_payment_before_matching():
+            walk.operational_status = "awaiting_payment"
+            walk.status = "aguardando_pagamento"
+            walk.no_walker_reason = "Aguardando confirmação do pagamento."
+        else:
+            walk.operational_status = "pending_walker_confirmation"
+            walk.status = "Agendado"
+            walk.no_walker_reason = "Buscando o melhor passeador disponível."
 
         logger.warning(
             "create_walk.before_commit walk_id=%s operational_status=%s",

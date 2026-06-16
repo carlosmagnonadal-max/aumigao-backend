@@ -946,6 +946,17 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_db)
                 except Exception:
                     logger.exception("falha ao criar notificação de pagamento confirmado payment_id=%s", payment.id)
 
+            # R7: pagamento liquidado libera o walk do estado de espera ('awaiting_payment')
+            # para o fluxo operacional/matching. Só age sobre walks que estavam à espera
+            # (criados com o gate REQUIRE_PAYMENT_BEFORE_MATCHING ligado) — no-op caso contrário.
+            if new_status == _PAYMENT_CONFIRMED_STATUS and payment.walk_id:
+                walk = db.get(Walk, payment.walk_id)
+                if walk and getattr(walk, "operational_status", None) == "awaiting_payment":
+                    walk.operational_status = "pending_walker_confirmation"
+                    walk.status = "Agendado"
+                    db.add(walk)
+                    logger.info("asaas_webhook.walk_liberado walk_id=%s payment_id=%s", walk.id, payment.id)
+
             db.commit()
         else:
             # R3: pagamento órfão (provider_payment_id sem Payment local) NÃO é

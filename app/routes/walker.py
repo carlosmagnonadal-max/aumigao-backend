@@ -1448,6 +1448,15 @@ def my_walker_level(user: User = Depends(get_current_user), db: Session = Depend
 def update_kit(payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
     items_payload = (payload or {}).get("items") or []
+    # WK-05: só URLs HOSPEDADAS (http/https) podem ser persistidas. URIs locais do
+    # dispositivo (file://, content://, blob:) não abrem no admin/tutor — rejeita.
+    for item in items_payload:
+        for url in (item.get("photo_urls") or []):
+            if isinstance(url, str) and url.strip().lower().startswith(("file:", "content:", "blob:")):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Foto do kit deve ser uma URL hospedada (http/https), nao um arquivo local do dispositivo.",
+                )
     items = {}
     for definition in KIT_ITEM_DEFINITIONS:
         incoming = next((item for item in items_payload if item.get("key") == definition["key"]), {})

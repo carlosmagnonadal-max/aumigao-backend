@@ -472,7 +472,15 @@ def _build_split_config_for_payment(db: Session, walk_id: str | None, tenant_id:
     if not walker_profile or not walker_profile.asaas_wallet_id:
         return None
 
-    walker_percent = round(100.0 - split["commission_percent"], 4)
+    # Percentual repassado ao walker no gateway = repasse CONTÁBIL (compute_split).
+    # Derivado dos amounts (walker_amount / total) para honrar tenant_margin_percent:
+    # 100 - commission_percent ignoraria a margem do tenant e pagaria o walker a mais.
+    total = (
+        split["platform_amount"]
+        + split.get("tenant_amount", 0.0)
+        + split["walker_amount"]
+    )
+    walker_percent = round(split["walker_amount"] / total * 100.0, 4) if total > 0 else 0.0
     return {
         "wallet_id": walker_profile.asaas_wallet_id,
         "percentual_value": walker_percent,

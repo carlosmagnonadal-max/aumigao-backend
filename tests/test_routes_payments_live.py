@@ -29,6 +29,7 @@ from app.models.walk import Walk
 from app.models.walker_profile import WalkerProfile
 from app.routes import payments, admin as admin_routes
 from app.routes.payments import _build_split_config_for_payment
+from app.services.payment_split_service import compute_split
 from app.services.tenant_seed_service import DEFAULT_TENANT_SLUG
 
 TENANT_ID = "t-live-test"
@@ -307,13 +308,39 @@ def test_build_split_config_returns_none_when_wallet_missing(monkeypatch):
 
 
 def test_build_split_config_percent_uses_commission_source(monkeypatch):
-    """percentual_value = 100 - commission_percent, usando a mesma fonte de verdade."""
+    """percentual_value derivado dos amounts do split (walker_amount/total), não 100-commission."""
     monkeypatch.setattr(payments, "PAYMENT_MODE", "asaas_live")
     db = _make_db_for_split(split_enabled=True, walker_wallet_id="wallet-xyz", commission_percent=15.0)
     split = {"commission_percent": 15.0, "platform_amount": 15.0, "walker_amount": 85.0}
     result = _build_split_config_for_payment(db, WALK_ID, TENANT_ID, split)
     assert result is not None
     assert result["percentual_value"] == 85.0
+
+
+def test_build_split_config_honors_tenant_margin(monkeypatch):
+    """R2 — teste cruzado contábil×gateway: com margem>0 o percentual ao Asaas
+    reflete walker_amount/amount (78%), NÃO 100-commission (88%). O repasse no
+    gateway iguala o repasse contábil registrado em compute_split."""
+    monkeypatch.setattr(payments, "PAYMENT_MODE", "asaas_live")
+    db = _make_db_for_split(split_enabled=True, walker_wallet_id="wallet-abc")
+    amount = 100.0
+    split = compute_split(amount, 12.0, 10.0)  # comissão 12% + margem do tenant 10%
+    assert split["walker_amount"] == 78.0  # 100 - 12 - 10
+    result = _build_split_config_for_payment(db, WALK_ID, TENANT_ID, split)
+    assert result is not None
+    assert result["percentual_value"] == 78.0  # não 88%
+    # Igualdade gateway == contábil: percentual aplicado ao amount devolve walker_amount.
+    assert result["percentual_value"] == round(split["walker_amount"] / amount * 100, 4)
+
+
+def test_build_split_config_margin_zero_does_not_regress(monkeypatch):
+    """R2 — margem 0: resultado idêntico ao comportamento anterior (80%)."""
+    monkeypatch.setattr(payments, "PAYMENT_MODE", "asaas_live")
+    db = _make_db_for_split(split_enabled=True, walker_wallet_id="wallet-abc")
+    split = compute_split(100.0, 20.0, 0.0)
+    result = _build_split_config_for_payment(db, WALK_ID, TENANT_ID, split)
+    assert result is not None
+    assert result["percentual_value"] == 80.0
 
 
 # ---------------------------------------------------------------------------

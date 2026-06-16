@@ -1432,6 +1432,18 @@ def goals_evolution(user: User = Depends(get_current_user), db: Session = Depend
     return _goals_evolution_payload(user, db)
 
 
+@router.get("/me/level")
+def my_walker_level(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """WK-06: nível REAL do passeador (Bronze/Prata/Ouro/Diamante via _walker_level).
+
+    Retorna o MESMO objeto level que o dashboard/goals-evolution (current/next/score/
+    progress_percent/levels/criteria), para a tela de Níveis parar de usar array
+    hardcoded. Requer passeador ativo (sem fallback demo silencioso no cliente).
+    """
+    _require_active_walker(user, db)
+    return _goals_evolution_payload(user, db)["level"]
+
+
 @router.put("/kit")
 def update_kit(payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)

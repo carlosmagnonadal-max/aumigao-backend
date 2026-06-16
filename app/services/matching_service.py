@@ -97,12 +97,28 @@ def calculate_experience_score(total_walks: int) -> float:
     return 40.0
 
 
+def _matching_requires_online() -> bool:
+    """WK-10: gate de produto. Quando ligado, passeador offline não entra no pool.
+    Default DESLIGADO para não mudar o matching em produção sem decisão explícita."""
+    return os.getenv("MATCHING_REQUIRE_ONLINE", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def passes_online_gate(profile: WalkerProfile) -> bool:
+    """WK-10: True se o passeador pode entrar no pool dado o gate de presença."""
+    if not _matching_requires_online():
+        return True
+    return bool(getattr(profile, "is_online", False))
+
+
 def calculate_availability_score(profile: WalkerProfile, request: MatchingWalkerRequest, db: Session) -> float:
     if has_schedule_conflict(profile.user_id, request, db):
         return 0.0
-    if request.scheduled_at:
-        return 100.0
-    return 80.0
+    base = 100.0 if request.scheduled_at else 80.0
+    # WK-10: presença real entra no score — deixa de ser constante. Offline pesa
+    # metade (continua elegível salvo se o gate MATCHING_REQUIRE_ONLINE estiver ligado).
+    if not getattr(profile, "is_online", False):
+        base = round(base * 0.5, 2)
+    return base
 
 
 def calculate_base_matching_score(proximity_score: float, rating_score: float, experience_score: float, availability_score: float) -> float:
@@ -139,6 +155,9 @@ def get_eligible_walkers(request: MatchingWalkerRequest, db: Session) -> list[Wa
         if not profile.user_id or not dedupe_key or dedupe_key in seen_keys:
             continue
         seen_keys.add(dedupe_key)
+        # WK-10: gate de presença (ligável por flag) — offline fora do pool quando ligado.
+        if not passes_online_gate(profile):
+            continue
         proximity_score, _ = calculate_proximity_score(profile, request)
         if proximity_score <= 0:
             continue

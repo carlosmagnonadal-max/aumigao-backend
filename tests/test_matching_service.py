@@ -253,6 +253,7 @@ def test_availability_score_zero_on_conflict():
 def test_availability_score_full_when_scheduled_and_free():
     db = _db()
     profile = _profile(db, user_id="walker-1")
+    profile.is_online = True  # WK-10: presença real entra no score (online = cheio)
     req = _request(scheduled_at="2024-05-10T14:30:00", duration_minutes=45)
     assert svc.calculate_availability_score(profile, req, db) == 100.0
 
@@ -260,8 +261,18 @@ def test_availability_score_full_when_scheduled_and_free():
 def test_availability_score_immediate_request():
     db = _db()
     profile = _profile(db, user_id="walker-1")
+    profile.is_online = True  # WK-10
     req = _request(scheduled_at=None)
     assert svc.calculate_availability_score(profile, req, db) == 80.0
+
+
+def test_availability_score_offline_is_reduced():
+    # WK-10: deixou de ser constante — offline pontua menos que online.
+    db = _db()
+    profile = _profile(db, user_id="walker-1")
+    profile.is_online = False
+    req = _request(scheduled_at=None)
+    assert svc.calculate_availability_score(profile, req, db) == 40.0
 
 
 # --------------------------------------------------------------------------- #

@@ -18,6 +18,8 @@ jobs:
       # Desliga schema-ensure e admin-seed na inicialização do app durante os testes.
       RUN_STARTUP_SCHEMA_ENSURE: "false"
       RUN_STARTUP_ADMIN_SEED: "false"
+      # Defesa em profundidade: DDL destrutivo nunca roda em CI (Onda 0 / mt-MT6).
+      RUN_LEGACY_ID_COMPAT: "false"
       # Não inicia scheduler operacional em CI.
       ENVIRONMENT: "ci"
       LOG_LEVEL: "WARNING"

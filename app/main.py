@@ -280,10 +280,18 @@ def ensure_notification_schema():
 _production_environment = _is_production_environment()
 _run_startup_schema_ensure = get_bool_env("RUN_STARTUP_SCHEMA_ENSURE", default=not _production_environment)
 _run_startup_admin_seed = get_bool_env("RUN_STARTUP_ADMIN_SEED", default=not _production_environment)
+# DDL DESTRUTIVO (DROP de constraints/types) — fail-SAFE: só roda com opt-in
+# explícito (RUN_LEGACY_ID_COMPAT=true), nunca por omissão de env. Em SQLite é
+# no-op (dialect != postgresql) de qualquer forma. Onda 0 / mt-MT6.
+_run_legacy_id_compat = get_bool_env("RUN_LEGACY_ID_COMPAT", default=False)
 
 if _run_startup_schema_ensure:
     print("[startup] schema ensure enabled")
-    ensure_legacy_id_compatibility()
+    if _run_legacy_id_compat:
+        print("[startup] legacy id compatibility ENABLED (DDL destrutivo) — RUN_LEGACY_ID_COMPAT=true")
+        ensure_legacy_id_compatibility()
+    else:
+        print("[startup] legacy id compatibility SKIPPED (defina RUN_LEGACY_ID_COMPAT=true para habilitar)")
     Base.metadata.create_all(bind=engine)
     ensure_operational_schema(engine)
     ensure_user_schema()

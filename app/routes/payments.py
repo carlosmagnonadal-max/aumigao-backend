@@ -635,6 +635,35 @@ def get_payment(payment_id: str, user: User = Depends(get_current_user), db: Ses
 _PAYMENT_CONFIRMED_STATUS = "pagamento_confirmado_sandbox"
 _PAYMENT_CONFIRMED_EVENTS = {"PAYMENT_CONFIRMED", "PAYMENT_RECEIVED", "PAYMENT_DUNNING_RECEIVED"}
 
+# R3 — estado de estorno consumado, DISTINTO de 'falha_pagamento' (que é falha de
+# cobrança). Auditável: um pagamento confirmado que foi estornado não deve ser
+# confundido com uma cobrança que nunca liquidou.
+_PAYMENT_REFUNDED_STATUS = "pagamento_estornado"
+# Eventos que consumam o estorno e tiram o pagamento do estado confirmado.
+_PAYMENT_REFUND_EVENTS = {"PAYMENT_REFUNDED"}
+# Estados terminais "pegajosos": uma vez aqui, eventos de cobrança comuns NÃO
+# regridem o status (só um estorno consumado pode sair de confirmado).
+_PAYMENT_STICKY_STATUSES = {_PAYMENT_CONFIRMED_STATUS, _PAYMENT_REFUNDED_STATUS}
+
+
+def resolve_payment_webhook_status(current_status: str | None, event: str | None, fallback_status: str | None) -> str | None:
+    """Decide o novo status de um Payment a partir de um evento de webhook do
+    Asaas, com idempotência e anti-retrocesso (R3).
+
+    Regras (nesta ordem):
+    1. Estorno consumado (PAYMENT_REFUNDED) leva ao estado de estorno DISTINTO,
+       mesmo a partir de confirmado — é uma transição legítima e auditável.
+    2. Status terminal (confirmado/estornado) é pegajoso: eventos de cobrança
+       comuns não o regridem (ex.: PAYMENT_OVERDUE atrasado após PAYMENT_CONFIRMED
+       é ignorado; reentrega de PAYMENT_CONFIRMED é no-op).
+    3. Caso contrário, aplica o mapeamento do evento (ou o fallback do provider).
+    """
+    if event in _PAYMENT_REFUND_EVENTS:
+        return _PAYMENT_REFUNDED_STATUS
+    if current_status in _PAYMENT_STICKY_STATUSES:
+        return current_status
+    return STATUS_BY_WEBHOOK_EVENT.get(event, fallback_status)
+
 
 def _create_payment_confirmed_notification(db: Session, payment: Payment) -> None:
     """Cria notificação de pagamento confirmado para o tutor — idempotente.
@@ -891,9 +920,15 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_db)
     if provider_payment_id:
         payment = db.query(Payment).filter(Payment.provider_payment_id == provider_payment_id).first()
         if payment:
-            new_status = STATUS_BY_WEBHOOK_EVENT.get(event, normalize_payment_status(payment_data.get("status")))
-            payment.status = new_status
-            db.add(payment)
+            # R3: máquina de estados idempotente + anti-retrocesso. Não sobrescreve
+            # um pagamento confirmado com OVERDUE/REFUNDED atrasado; estorno vai
+            # para estado distinto.
+            fallback = normalize_payment_status(payment_data.get("status"))
+            new_status = resolve_payment_webhook_status(payment.status, event, fallback)
+            status_changed = new_status != payment.status
+            if status_changed:
+                payment.status = new_status
+                db.add(payment)
 
             # F1.3: notificação de pagamento confirmado (idempotente)
             if event in _PAYMENT_CONFIRMED_EVENTS or new_status == _PAYMENT_CONFIRMED_STATUS:
@@ -903,6 +938,14 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_db)
                     logger.exception("falha ao criar notificação de pagamento confirmado payment_id=%s", payment.id)
 
             db.commit()
+        else:
+            # R3: pagamento órfão (provider_payment_id sem Payment local) NÃO é
+            # silencioso — loga para auditoria e ainda responde 200 ao Asaas.
+            logger.warning(
+                "asaas_webhook.orfao event=%s provider_payment_id=%s sem Payment local",
+                event,
+                provider_payment_id,
+            )
     return {"ok": True, "received": event}
 
 

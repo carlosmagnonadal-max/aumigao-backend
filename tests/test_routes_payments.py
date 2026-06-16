@@ -295,6 +295,114 @@ def test_webhook_unknown_payment_does_not_break(monkeypatch):
     assert r.json()["received"] == "PAYMENT_RECEIVED"
 
 
+# ----------------------------------- R3: idempotência + anti-retrocesso (puro)
+from app.routes.payments import (  # noqa: E402
+    resolve_payment_webhook_status,
+    _PAYMENT_REFUNDED_STATUS,
+)
+
+CONFIRMED = "pagamento_confirmado_sandbox"
+AGUARDANDO = "aguardando_pagamento"
+FALHA = "falha_pagamento"
+
+
+def test_resolve_status_confirmed_is_sticky_against_overdue():
+    # PAYMENT_OVERDUE atrasado após confirmado NÃO regride o status.
+    assert resolve_payment_webhook_status(CONFIRMED, "PAYMENT_OVERDUE", FALHA) == CONFIRMED
+
+
+def test_resolve_status_confirmed_reentry_is_idempotent():
+    # Reentrega do mesmo PAYMENT_CONFIRMED mantém o status estável.
+    assert resolve_payment_webhook_status(CONFIRMED, "PAYMENT_CONFIRMED", CONFIRMED) == CONFIRMED
+
+
+def test_resolve_status_refund_goes_to_distinct_estornado_not_falha():
+    # Estorno consumado leva a estado de estorno DISTINTO, não 'falha_pagamento'.
+    result = resolve_payment_webhook_status(CONFIRMED, "PAYMENT_REFUNDED", FALHA)
+    assert result == _PAYMENT_REFUNDED_STATUS
+    assert result != FALHA
+
+
+def test_resolve_status_pending_overdue_still_fails():
+    # Pagamento não-confirmado regride normalmente (OVERDUE -> falha).
+    assert resolve_payment_webhook_status(AGUARDANDO, "PAYMENT_OVERDUE", FALHA) == FALHA
+
+
+def test_resolve_status_late_payment_can_confirm_from_failure():
+    # Pagamento em falha que depois confirma sobe para confirmado.
+    assert resolve_payment_webhook_status(FALHA, "PAYMENT_CONFIRMED", CONFIRMED) == CONFIRMED
+
+
+# ----------------------------------- R3: idempotência + anti-retrocesso (endpoint)
+def _post_webhook(client, event, prov_id="prov-1", status=None):
+    pay = {"id": prov_id}
+    if status:
+        pay["status"] = status
+    return client.post(
+        "/payments/webhooks/asaas",
+        json={"event": event, "payment": pay},
+        headers={"asaas-access-token": "segredo"},
+    )
+
+
+def test_webhook_overdue_after_confirmed_does_not_regress(monkeypatch):
+    monkeypatch.setenv("ASAAS_WEBHOOK_TOKEN", "segredo")
+    test_app, db = build()
+    db.add(Payment(id="pay-1", tenant_id=TENANT_ID, tutor_id=TUTOR_ID, amount=10.0,
+                   status="pagamento_confirmado_sandbox", provider="asaas_sandbox",
+                   provider_payment_id="prov-1"))
+    db.commit()
+    client = TestClient(test_app)
+    r = _post_webhook(client, "PAYMENT_OVERDUE")
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    # confirmado é pegajoso: OVERDUE atrasado não vira falha_pagamento
+    assert db.get(Payment, "pay-1").status == "pagamento_confirmado_sandbox"
+
+
+def test_webhook_refunded_after_confirmed_sets_distinct_state(monkeypatch):
+    monkeypatch.setenv("ASAAS_WEBHOOK_TOKEN", "segredo")
+    test_app, db = build()
+    db.add(Payment(id="pay-2", tenant_id=TENANT_ID, tutor_id=TUTOR_ID, amount=10.0,
+                   status="pagamento_confirmado_sandbox", provider="asaas_sandbox",
+                   provider_payment_id="prov-2"))
+    db.commit()
+    client = TestClient(test_app)
+    r = _post_webhook(client, "PAYMENT_REFUNDED", prov_id="prov-2")
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    status = db.get(Payment, "pay-2").status
+    assert status == _PAYMENT_REFUNDED_STATUS
+    assert status != "falha_pagamento"
+
+
+def test_webhook_confirmed_reentry_keeps_status_stable(monkeypatch):
+    monkeypatch.setenv("ASAAS_WEBHOOK_TOKEN", "segredo")
+    test_app, db = build()
+    db.add(Payment(id="pay-3", tenant_id=TENANT_ID, tutor_id=TUTOR_ID, amount=10.0,
+                   status="pagamento_confirmado_sandbox", provider="asaas_sandbox",
+                   provider_payment_id="prov-3"))
+    db.commit()
+    client = TestClient(test_app)
+    _post_webhook(client, "PAYMENT_CONFIRMED", prov_id="prov-3", status="CONFIRMED")
+    _post_webhook(client, "PAYMENT_CONFIRMED", prov_id="prov-3", status="CONFIRMED")
+    db.expire_all()
+    assert db.get(Payment, "pay-3").status == "pagamento_confirmado_sandbox"
+
+
+def test_webhook_orphan_payment_is_logged_not_silent(monkeypatch, caplog):
+    import logging
+    monkeypatch.setenv("ASAAS_WEBHOOK_TOKEN", "segredo")
+    test_app, db = build()
+    client = TestClient(test_app)
+    with caplog.at_level(logging.WARNING):
+        r = _post_webhook(client, "PAYMENT_RECEIVED", prov_id="orfao-999")
+    assert r.status_code == 200, r.text
+    assert any("orfao" in rec.message.lower() or "órfão" in rec.message.lower()
+               or "orphan" in rec.message.lower() for rec in caplog.records)
+    assert any("orfao-999" in str(rec.args) + rec.message for rec in caplog.records)
+
+
 # Regressao do bug de indentacao em create_payment: no sucesso do Asaas os dados
 # de PIX (qr code / copia-e-cola) devem vir preenchidos na resposta (nao zerados).
 def test_create_keeps_pix_data_on_asaas_success(monkeypatch):

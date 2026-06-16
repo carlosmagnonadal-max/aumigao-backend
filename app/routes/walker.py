@@ -1,6 +1,7 @@
 import os
 import logging
 import json
+from typing import Any
 from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -2244,6 +2245,18 @@ async def upload_walk_completion_photo(
     }
 
 
+# api-T2: schema permissivo do relatorio de finalizacao. Todos os campos sao opcionais
+# (espelham os payload.get do helper); checklist/checklist_json sao Any para aceitar tanto
+# dict quanto string JSON, como o _normalize_completion_checklist ja tratava. Pydantic v2
+# ignora extras. O endpoint converte para dict (model_dump) e mantem o helper intacto.
+class CompletionReportRequest(BaseModel):
+    photo_url: str | None = None
+    url: str | None = None
+    notes: str | None = None
+    checklist: Any | None = None
+    checklist_json: Any | None = None
+
+
 def _submit_completion_review(walk: Walk, payload: dict | None, user: User, db: Session) -> WalkCompletionReview:
     if walk.walker_id != user.id:
         raise HTTPException(status_code=403, detail="Passeio nao pertence ao passeador")
@@ -2292,12 +2305,12 @@ def _submit_completion_review(walk: Walk, payload: dict | None, user: User, db: 
 
 
 @router.post("/walks/{walk_id}/completion-report")
-def submit_completion_report(walk_id: str, payload: dict | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def submit_completion_report(walk_id: str, payload: CompletionReportRequest | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
     walk = db.get(Walk, walk_id)
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
-    review = _submit_completion_review(walk, payload, user, db)
+    review = _submit_completion_review(walk, payload.model_dump() if payload else None, user, db)
     db.commit()
     db.refresh(review)
     db.refresh(walk)
@@ -2305,12 +2318,12 @@ def submit_completion_report(walk_id: str, payload: dict | None = None, user: Us
 
 
 @router.post("/walks/{walk_id}/report")
-def send_report(walk_id: str, payload: dict | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def send_report(walk_id: str, payload: CompletionReportRequest | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
     walk = db.get(Walk, walk_id)
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
-    review = _submit_completion_review(walk, payload, user, db)
+    review = _submit_completion_review(walk, payload.model_dump() if payload else None, user, db)
     db.commit()
     db.refresh(review)
     db.refresh(walk)

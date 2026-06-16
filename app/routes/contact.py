@@ -56,7 +56,14 @@ class ContactCreate(BaseModel):
     message: str = Field("", max_length=5000)
 
 
-@router.post("", status_code=201)
+class ContactCreateResponse(BaseModel):
+    """api-T3: contrato estavel do intake publico de contato."""
+
+    ok: bool
+    id: str
+
+
+@router.post("", status_code=201, response_model=ContactCreateResponse)
 def create_contact(payload: ContactCreate, request: Request, db: Session = Depends(get_db)):
     _enforce_contact_rate_limit(request)
     try:

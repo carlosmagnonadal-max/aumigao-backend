@@ -81,6 +81,27 @@ def test_contact_rate_limit_blocks_flood():
     assert last.status_code == 429, last.text
 
 
+def test_contact_post_has_response_model_in_openapi():
+    # api-T3: o POST publico declara response_model (contrato {ok, id}) no OpenAPI.
+    client, _ = build()
+    schema = client.app.openapi()
+    op = schema["paths"]["/api/contact"]["post"]
+    ref = op["responses"]["201"]["content"]["application/json"]["schema"]["$ref"]
+    assert ref.endswith("/ContactCreateResponse")
+    model = schema["components"]["schemas"]["ContactCreateResponse"]
+    assert set(model["properties"]) == {"ok", "id"}
+    assert model["properties"]["ok"]["type"] == "boolean"
+    assert model["properties"]["id"]["type"] == "string"
+
+
+def test_contact_post_response_shape_is_exactly_ok_and_id():
+    # Campos extras eventualmente retornados pela view sao filtrados pelo modelo.
+    client, _ = build()
+    r = client.post("/api/contact", json={"name": "Z", "email": "z@test.com"})
+    assert r.status_code == 201, r.text
+    assert set(r.json()) == {"ok", "id"}
+
+
 def test_build_contact_email_has_lead_fields():
     from types import SimpleNamespace
     from app.services.contact_notification_service import build_contact_email, DEFAULT_CONTACT_TO

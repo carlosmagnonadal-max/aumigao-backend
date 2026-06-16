@@ -27,7 +27,7 @@ from app.core.database import Base, get_db
 from app.dependencies.auth import get_current_user
 from app.models.payment import Payment
 from app.models.tenant import Tenant
-from app.models.tenant_payment_config import DEFAULT_COMMISSION_PERCENT, TenantPaymentConfig
+from app.models.tenant_payment_config import TenantPaymentConfig, commission_default_for_plan
 from app.models.user import User
 from app.routes import payments
 from app.services.tenant_seed_service import DEFAULT_TENANT_SLUG
@@ -143,16 +143,17 @@ def test_create_status_mapping_confirmed(monkeypatch):
     assert r.json()["status"] == "pagamento_confirmado_sandbox"
 
 
-def test_create_split_uses_default_commission(monkeypatch):
+def test_create_split_uses_plan_default_commission(monkeypatch):
     monkeypatch.setattr(payments, "create_asaas_payment", fake_asaas_ok())
-    test_app, db = build()  # sem TenantPaymentConfig -> usa DEFAULT (20%)
+    # sem TenantPaymentConfig -> fallback deriva do PLANO do tenant (business = 8%), não 20%
+    test_app, db = build()
     client = as_user(test_app, db, TUTOR_ID)
     r = client.post("/payments/create", json={"amount": 100.0})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["commission_percent"] == DEFAULT_COMMISSION_PERCENT  # 20.0
-    assert body["platform_amount"] == 20.0
-    assert body["walker_amount"] == 80.0
+    assert body["commission_percent"] == commission_default_for_plan("business")  # 8.0
+    assert body["platform_amount"] == 8.0
+    assert body["walker_amount"] == 92.0
 
 
 def test_create_split_uses_tenant_config_commission(monkeypatch):

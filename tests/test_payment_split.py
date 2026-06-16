@@ -41,17 +41,19 @@ def test_get_commission_uses_tenant_config():
     assert get_commission_percent(db, "t1") == 15.0
 
 
-def test_get_commission_falls_back_to_default():
+def test_get_commission_falls_back_to_plan_default():
     db = _db()
-    assert get_commission_percent(db, "inexistente") == 20.0
-    assert get_commission_percent(db, None) == 20.0
+    # Sem tabela/registro de tenant aqui → fallback de plano desconhecido (10%), nunca 20.
+    assert get_commission_percent(db, "inexistente") == 10.0
+    assert get_commission_percent(db, None) == 10.0
 
 
-def test_inactive_config_uses_default():
+def test_inactive_config_uses_plan_default():
     db = _db()
     db.add(TenantPaymentConfig(tenant_id="t2", commission_percent=5.0, active=False))
     db.commit()
-    assert get_commission_percent(db, "t2") == 20.0  # config inativa é ignorada
+    # config inativa é ignorada → fallback de plano (10%), não o legado 20%
+    assert get_commission_percent(db, "t2") == 10.0
 
 
 def _db_with_audit():

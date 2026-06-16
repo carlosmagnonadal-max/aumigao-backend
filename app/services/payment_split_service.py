@@ -16,6 +16,26 @@ from app.models.tenant_payment_config import (
 )
 
 
+def _commission_fallback_for_tenant(db: Session, tenant_id: str | None) -> float:
+    """Fallback de comissão quando o tenant ainda não tem TenantPaymentConfig.
+
+    Deriva do TIER do plano do tenant (12/8/5 via commission_default_for_plan),
+    NUNCA do legado de 20%. Defensivo: se a tabela/registro de tenant não existir
+    (ex.: testes isolados) ou o tenant_id for nulo, cai no fallback de plano
+    desconhecido (10%) — coerente com commission_default_for_plan(None).
+    """
+    plan = None
+    if tenant_id:
+        try:
+            from app.models.tenant import Tenant
+
+            tenant = db.get(Tenant, tenant_id)
+            plan = tenant.plan if tenant else None
+        except Exception:
+            plan = None
+    return commission_default_for_plan(plan)
+
+
 def get_commission_percent(db: Session, tenant_id: str | None) -> float:
     if tenant_id:
         config = (
@@ -28,7 +48,8 @@ def get_commission_percent(db: Session, tenant_id: str | None) -> float:
         )
         if config and config.commission_percent is not None:
             return float(config.commission_percent)
-    return DEFAULT_COMMISSION_PERCENT
+    # Sem config ativa: deriva do plano do tenant (12/8/5), não do legado de 20%.
+    return _commission_fallback_for_tenant(db, tenant_id)
 
 
 def get_tenant_margin_percent(db: Session, tenant_id: str | None) -> float:

@@ -9,6 +9,7 @@ from app.models.tenant import Tenant
 from app.models.tenant_payment_config import commission_default_for_plan
 from app.services.payment_split_service import (
     compute_split,
+    get_commission_percent,
     get_or_create_payment_config,
     update_payment_config,
 )
@@ -96,3 +97,48 @@ def test_compute_split_10_percent():
     s = compute_split(50.0, 10.0)
     assert s["platform_amount"] == 5.0
     assert s["walker_amount"] == 45.0
+
+
+# --------------------------------------------------------------------------
+# R1 — get_commission_percent: tenant SEM config deriva do plano (12/8/5),
+# nunca cai no fallback legado de 20%.
+# --------------------------------------------------------------------------
+
+def test_get_commission_percent_falls_back_to_plan_default():
+    db = _db()
+    _tenant(db, "t-st", "starter")
+    _tenant(db, "t-bz", "business")
+    _tenant(db, "t-ent", "enterprise")
+    # Sem TenantPaymentConfig criada → deriva do plano do tenant, não 20%.
+    assert get_commission_percent(db, "t-st") == 12.0
+    assert get_commission_percent(db, "t-bz") == 8.0
+    assert get_commission_percent(db, "t-ent") == 5.0
+
+
+def test_get_commission_percent_unknown_plan_falls_back_to_10():
+    db = _db()
+    _tenant(db, "t-x", "plano_inexistente")
+    assert get_commission_percent(db, "t-x") == 10.0
+
+
+def test_get_commission_percent_no_tenant_falls_back_to_10():
+    db = _db()
+    # tenant_id None ou inexistente → fallback de plano desconhecido (10), nunca 20.
+    assert get_commission_percent(db, None) == 10.0
+    assert get_commission_percent(db, "nao-existe") == 10.0
+
+
+def test_get_commission_percent_respects_existing_config_over_plan():
+    db = _db()
+    _tenant(db, "t-st", "starter")  # default de plano seria 12%
+    get_or_create_payment_config(db, "t-st")
+    update_payment_config(db, "t-st", commission_percent=0.0)  # Fundador/sócio 0%
+    # Config existente (custom 0%) prevalece sobre o default do plano.
+    assert get_commission_percent(db, "t-st") == 0.0
+
+
+def test_get_commission_percent_never_returns_legacy_20():
+    db = _db()
+    _tenant(db, "t-st", "starter")
+    for tid in ("t-st", None, "nao-existe"):
+        assert get_commission_percent(db, tid) != 20.0

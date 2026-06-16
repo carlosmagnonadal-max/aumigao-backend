@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
 from app.models.tenant_payment_config import (
-    DEFAULT_COMMISSION_PERCENT,
+    PLAN_COMMISSION_FALLBACK,
     TenantPaymentConfig,
 )
 from app.services import payment_split_service as svc
@@ -122,12 +122,14 @@ def test_compute_split_returns_expected_keys():
 
 def test_get_commission_percent_default_when_no_tenant():
     db = _db()
-    assert svc.get_commission_percent(db, None) == DEFAULT_COMMISSION_PERCENT
+    # tenant_id None → fallback de plano desconhecido (10%), nunca o legado 20%.
+    assert svc.get_commission_percent(db, None) == PLAN_COMMISSION_FALLBACK
 
 
 def test_get_commission_percent_default_when_no_config():
     db = _db()
-    assert svc.get_commission_percent(db, "t-sem-config") == DEFAULT_COMMISSION_PERCENT
+    # Sem tabela tenants neste teste isolado → fallback de plano desconhecido (10%).
+    assert svc.get_commission_percent(db, "t-sem-config") == PLAN_COMMISSION_FALLBACK
 
 
 def test_get_commission_percent_uses_tenant_config():
@@ -139,8 +141,8 @@ def test_get_commission_percent_uses_tenant_config():
 def test_get_commission_percent_ignores_inactive_config():
     db = _db()
     _config(db, tenant_id="t1", commission_percent=5.0, active=False)
-    # config inativa é ignorada -> cai no padrão
-    assert svc.get_commission_percent(db, "t1") == DEFAULT_COMMISSION_PERCENT
+    # config inativa é ignorada -> cai no fallback de plano (10%), não no legado 20%
+    assert svc.get_commission_percent(db, "t1") == PLAN_COMMISSION_FALLBACK
 
 
 def test_get_commission_percent_zero_config_is_respected():
@@ -172,9 +174,10 @@ def test_build_payment_split_uses_tenant_commission():
     assert result["walker_amount"] == 140.0
 
 
-def test_build_payment_split_falls_back_to_default():
+def test_build_payment_split_falls_back_to_plan_default():
     db = _db()
     result = svc.build_payment_split(db, None, 100.0)
-    assert result["commission_percent"] == DEFAULT_COMMISSION_PERCENT
-    assert result["platform_amount"] == 20.0
-    assert result["walker_amount"] == 80.0
+    # Sem tenant → fallback de plano desconhecido (10%), não o legado 20%.
+    assert result["commission_percent"] == PLAN_COMMISSION_FALLBACK
+    assert result["platform_amount"] == 10.0
+    assert result["walker_amount"] == 90.0

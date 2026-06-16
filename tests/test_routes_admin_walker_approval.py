@@ -111,17 +111,20 @@ def test_partner_application_detail_404():
 
 # --------------------------------------------------------- approve / reject ---
 def test_approve_walker_happy_path():
+    # Aprovacao em UM passo: aprova E ativa operacionalmente (libera o passeador
+    # no app) — status=active, active_as_walker=True e role do user vira "walker".
     client, db = build(profile_status="under_review")
     r = client.post(f"/admin/walkers/{CAND_ID}/approve")
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["raw_status"] == "approved"
+    assert body["raw_status"] == "active"
     assert body["approved_at"] is not None
     assert body["rejected_at"] is None
-    # persistencia real
+    # persistencia real: ativo, promovido a walker
     prof = db.get(WalkerProfile, CAND_ID)
-    assert prof.status == "approved"
-    assert prof.active_as_walker is False
+    assert prof.status == "active"
+    assert prof.active_as_walker is True
+    assert db.get(User, CAND_USER_ID).role == "walker"
 
 
 def test_approve_walker_requires_permission():

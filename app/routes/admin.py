@@ -1471,7 +1471,13 @@ def approve_walker(walker_id: str, request: Request, admin: User = Depends(requi
     profile = db.get(WalkerProfile, walker_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Passeador nao encontrado")
-    _apply_application_status(profile, "approved")
+    # Aprovacao em um passo: aprova E ativa operacionalmente (libera o passeador no app).
+    # Espelha o que "Ativar operacionalmente" fazia: status=active, role=walker e referral.
+    _apply_application_status(profile, "active")
+    user = db.get(User, profile.user_id)
+    if user:
+        user.role = "walker"
+    mark_referral_approved(profile.user_id, db, commit=False)
     record_admin_operational_event(
         db,
         event_type="approved",
@@ -1479,7 +1485,7 @@ def approve_walker(walker_id: str, request: Request, admin: User = Depends(requi
         entity_id=profile.user_id,
         severity="info",
         title="Candidatura aprovada",
-        description="Candidatura de passeador aprovada pela administracao.",
+        description="Candidatura de passeador aprovada e ativada pela administracao.",
         actor=admin,
         source="admin.walker.approve",
         metadata={"candidate_id": profile.id},

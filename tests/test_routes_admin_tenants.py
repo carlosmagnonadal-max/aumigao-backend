@@ -33,12 +33,14 @@ from app.core.database import Base, get_db
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_permission  # noqa: F401 (doc)
 from app.models.audit_log import AuditLog
+from app.models.rbac import Permission, Role, RolePermission, UserRoleAssignment
 from app.models.tenant import Tenant, TenantFeature
 from app.models.user import User
 from app.routes import tenants
 
 ADMIN_ID = "admin-1"
 TUTOR_ID = "tutor-1"
+TENANT_ADMIN_ID = "tadmin-1"
 T_STARTER = "t-starter"
 T_BUSINESS = "t-business"
 T_ENTERPRISE = "t-enterprise"
@@ -292,3 +294,75 @@ def test_patch_features_forbidden_without_permission():
         json=[{"feature_key": "network_access", "enabled": True}],
     )
     assert r.status_code == 403
+
+
+# ------------------------------------- isolamento por tenant (Onda 1 / mt-MT1) ---
+def _make_tenant_admin(db, user_id, tenant_id):
+    """Cria um admin de tenant com a permissão tenants.read escopada ao seu tenant."""
+    db.add(User(id=user_id, email=f"{user_id}@test.com", password_hash="x",
+                role="admin", tenant_id=tenant_id))
+    perm = Permission(id="perm-tenants-read", key="tenants.read", module="tenants", action="read")
+    role = Role(id="role-tadmin", name="tenant_admin", scope_type="tenant")
+    db.add(perm)
+    db.add(role)
+    db.flush()
+    db.add(RolePermission(role_id=role.id, permission_id=perm.id))
+    db.add(UserRoleAssignment(user_id=user_id, role_id=role.id, tenant_id=tenant_id))
+    db.commit()
+
+
+def test_tenant_admin_lists_only_own_tenant():
+    client, db = build()
+    _make_tenant_admin(db, TENANT_ADMIN_ID, T_BUSINESS)
+    set_user(client, db, TENANT_ADMIN_ID)
+    r = client.get("/admin/tenants")
+    assert r.status_code == 200, r.text
+    ids = {t["id"] for t in r.json()}
+    assert ids == {T_BUSINESS}  # NÃO vê Starter nem Enterprise
+
+
+def test_tenant_admin_cannot_read_other_tenant():
+    client, db = build()
+    _make_tenant_admin(db, TENANT_ADMIN_ID, T_BUSINESS)
+    set_user(client, db, TENANT_ADMIN_ID)
+    assert client.get(f"/admin/tenants/{T_STARTER}").status_code == 404
+
+
+def test_tenant_admin_cannot_update_other_tenant():
+    # O furo CRÍTICO C13: tenant_admin alterando plano/marca de um concorrente.
+    client, db = build()
+    _make_tenant_admin(db, TENANT_ADMIN_ID, T_BUSINESS)
+    set_user(client, db, TENANT_ADMIN_ID)
+    r = client.patch(f"/admin/tenants/{T_STARTER}", json={"plan": "enterprise"})
+    assert r.status_code == 404, r.text
+    db.expire_all()
+    assert db.get(Tenant, T_STARTER).plan == "starter"  # nada foi alterado
+
+
+def test_tenant_admin_cannot_update_other_tenant_branding():
+    client, db = build()
+    _make_tenant_admin(db, TENANT_ADMIN_ID, T_BUSINESS)
+    set_user(client, db, TENANT_ADMIN_ID)
+    r = client.patch(f"/admin/tenants/{T_STARTER}/branding", json={"display_name": "Hack"})
+    assert r.status_code == 404, r.text
+
+
+def test_tenant_admin_can_manage_own_tenant():
+    client, db = build()
+    _make_tenant_admin(db, TENANT_ADMIN_ID, T_BUSINESS)
+    set_user(client, db, TENANT_ADMIN_ID)
+    assert client.get(f"/admin/tenants/{T_BUSINESS}").status_code == 200
+    r = client.patch(f"/admin/tenants/{T_BUSINESS}", json={"name": "Meu Nome"})
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "Meu Nome"
+
+
+def test_tenant_admin_cannot_create_tenant():
+    client, db = build()
+    _make_tenant_admin(db, TENANT_ADMIN_ID, T_BUSINESS)
+    set_user(client, db, TENANT_ADMIN_ID)
+    r = client.post(
+        "/admin/tenants",
+        json={"name": "Nova", "slug": "nova-co", "status": "active", "plan": "starter"},
+    )
+    assert r.status_code == 403, r.text

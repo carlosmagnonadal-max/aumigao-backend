@@ -12,6 +12,14 @@ class PaymentCreate(BaseModel):
     method: str = "pix"
 
 
+class PaymentQuoteResponse(BaseModel):
+    """Cotação por tenant (R4): preço, desconto de plano e total. Sem taxa de serviço."""
+    walk_price: float
+    plan_discount_percent: float
+    plan_discount: float
+    total: float
+
+
 class PaymentResponse(PaymentCreate, ORMModel):
     id: str
     tutor_id: str

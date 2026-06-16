@@ -28,7 +28,9 @@ from app.dependencies.auth import get_current_user
 from app.models.payment import Payment
 from app.models.tenant import Tenant
 from app.models.tenant_payment_config import TenantPaymentConfig, commission_default_for_plan
+from app.models.pet import Pet
 from app.models.user import User
+from app.models.walk import Walk
 from app.routes import payments
 from app.services.tenant_seed_service import DEFAULT_TENANT_SLUG
 
@@ -240,6 +242,64 @@ def test_get_payment_requires_auth_401():
     db.commit()
     client = TestClient(test_app)  # sem override -> get_current_user real -> 401
     assert client.get("/payments/pay-z").status_code == 401
+
+
+# --------------------------------------------------------------------- quote
+def _add_walk(db, walk_id="walk-q", price=100.0, tenant_id=TENANT_ID, tutor_id=TUTOR_ID):
+    pet_id = f"pet-{walk_id}"
+    db.add(Pet(id=pet_id, tutor_id=tutor_id, tenant_id=tenant_id, name="Bolinha"))
+    db.add(Walk(
+        id=walk_id, tutor_id=tutor_id, tenant_id=tenant_id, pet_id=pet_id,
+        scheduled_date="2026-07-01", duration_minutes=30, status="scheduled", price=price,
+    ))
+    db.commit()
+
+
+def test_quote_returns_total_with_plan_discount():
+    test_app, db = build(payment_configs=[
+        dict(tenant_id=TENANT_ID, provider="asaas", plan_discount_percent=10.0, active=True)
+    ])
+    _add_walk(db, price=100.0)
+    client = as_user(test_app, db, TUTOR_ID)
+    r = client.get("/payments/quote", params={"walk_id": "walk-q"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["walk_price"] == 100.0
+    assert body["plan_discount_percent"] == 10.0
+    assert body["plan_discount"] == 10.0
+    assert body["total"] == 90.0
+    # taxa R$5 removida: quote não carrega service_fee
+    assert "service_fee" not in body
+
+
+def test_quote_no_config_has_zero_discount():
+    test_app, db = build()
+    _add_walk(db, price=80.0)
+    client = as_user(test_app, db, TUTOR_ID)
+    r = client.get("/payments/quote", params={"walk_id": "walk-q"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["plan_discount"] == 0.0
+    assert body["total"] == 80.0
+
+
+def test_quote_requires_auth_401():
+    test_app, db = build()
+    _add_walk(db)
+    client = TestClient(test_app)
+    r = client.get("/payments/quote", params={"walk_id": "walk-q"})
+    assert r.status_code == 401
+
+
+def test_quote_not_owner_returns_404():
+    test_app, db = build(users=[
+        dict(id=TUTOR_ID, email="t@test.com", password_hash="x", role="cliente", tenant_id=TENANT_ID),
+        dict(id="outro-tutor", email="o@test.com", password_hash="x", role="cliente", tenant_id=TENANT_ID),
+    ])
+    _add_walk(db, tutor_id=TUTOR_ID)
+    client = as_user(test_app, db, "outro-tutor")
+    r = client.get("/payments/quote", params={"walk_id": "walk-q"})
+    assert r.status_code == 404
 
 
 # ------------------------------------------------------------------- webhook

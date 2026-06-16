@@ -38,6 +38,9 @@ class TenantPaymentConfig(Base):
     # % adicional que o TENANT retém sobre o restante (margem do operador white-label).
     # Default 0: resultado idêntico ao comportamento anterior.
     tenant_margin_percent: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    # % de desconto que o tenant concede por passeio aos tutores do seu plano
+    # recorrente (configurável no admin). Default 0: sem desconto.
+    plan_discount_percent: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
     # Quando True, a comissão foi negociada/editada à mão (ex.: Fundador/sócio 0%) e
     # NÃO é sobrescrita pelo default do plano (backfill ou mudança de plano).
     commission_is_custom: Mapped[bool] = mapped_column(

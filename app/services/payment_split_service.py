@@ -67,6 +67,44 @@ def get_tenant_margin_percent(db: Session, tenant_id: str | None) -> float:
     return 0.0
 
 
+def get_plan_discount_percent(db: Session, tenant_id: str | None) -> float:
+    """% de desconto de plano que o tenant concede por passeio (0 se sem config)."""
+    if tenant_id:
+        config = (
+            db.query(TenantPaymentConfig)
+            .filter(
+                TenantPaymentConfig.tenant_id == tenant_id,
+                TenantPaymentConfig.active.is_(True),
+            )
+            .first()
+        )
+        if config and config.plan_discount_percent is not None:
+            return float(config.plan_discount_percent)
+    return 0.0
+
+
+def compute_quote(walk_price: float, plan_discount_percent: float = 0.0) -> dict[str, float]:
+    """Cotação por tenant: preço do passeio, desconto de plano e total a pagar.
+
+    Decisão Carlos (2026-06-16): SEM taxa de serviço (R$5 removida). O desconto de
+    plano é um % por tenant. total = walk_price - plan_discount.
+    """
+    walk_price = round(float(walk_price or 0), 2)
+    plan_discount_percent = max(0.0, min(100.0, float(plan_discount_percent or 0)))
+    plan_discount = round(walk_price * plan_discount_percent / 100.0, 2)
+    total = round(walk_price - plan_discount, 2)
+    return {
+        "walk_price": walk_price,
+        "plan_discount_percent": plan_discount_percent,
+        "plan_discount": plan_discount,
+        "total": total,
+    }
+
+
+def build_quote(db: Session, tenant_id: str | None, walk_price: float) -> dict[str, float]:
+    return compute_quote(walk_price, get_plan_discount_percent(db, tenant_id))
+
+
 def compute_split(amount: float, commission_percent: float, tenant_margin_percent: float = 0.0) -> dict[str, float]:
     amount = round(float(amount or 0), 2)
     commission_percent = max(0.0, min(100.0, float(commission_percent)))

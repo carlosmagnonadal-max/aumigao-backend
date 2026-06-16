@@ -19,8 +19,8 @@ from app.models.notification import Notification
 from app.models.payment import Payment
 from app.models.user import User
 from app.models.walk import Walk
-from app.schemas.payment import PaymentCreate, PaymentResponse
-from app.services.payment_split_service import build_payment_split
+from app.schemas.payment import PaymentCreate, PaymentQuoteResponse, PaymentResponse
+from app.services.payment_split_service import build_payment_split, build_quote
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 logger = logging.getLogger("app.routes.payments")
@@ -619,6 +619,22 @@ async def create_payment(payload: PaymentCreate, user: User = Depends(get_curren
         pix_expiration_date=pix_data.get("expirationDate"),
         sandbox_message=sandbox_msg,
     )
+
+
+@router.get("/quote", response_model=PaymentQuoteResponse)
+def get_payment_quote(walk_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Cotação por tenant (R4): preço do passeio, desconto de plano e total.
+
+    Fonte de verdade do total a cobrar (o app não calcula taxa/desconto localmente).
+    Sem taxa de serviço (R$5 removida). 404 quando o walk não é do solicitante
+    (não revela existência de passeios de outros tutores).
+    """
+    walk = db.get(Walk, walk_id)
+    is_admin = user.role in {"admin", "super_admin"}
+    if not walk or (walk.tutor_id != user.id and not is_admin):
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado.")
+    quote = build_quote(db, walk.tenant_id, walk.price)
+    return PaymentQuoteResponse(**quote)
 
 
 @router.get("/{payment_id}", response_model=PaymentResponse)

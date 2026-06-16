@@ -1,6 +1,7 @@
 ﻿import logging
 import os
 import traceback
+from typing import Any
 from uuid import uuid4
 from datetime import date, datetime, timedelta
 import json
@@ -786,18 +787,35 @@ def respond_walk_reconfirmation(
     return response
 
 
+# api-T2: schema permissivo da remarcacao restrita. Os campos de data/horario sao
+# opcionais (espelham o payload.get anterior) e o Pydantic v2 ignora extras desconhecidos,
+# entao nenhum payload legitimo e rejeitado. Os campos PROIBIDOS sao declarados de
+# proposito (tipo Any p/ nao gerar 422 por tipo) so para detecta-los via model_fields_set
+# e manter a mesma rejeicao explicita (400) que o payload.keys() fazia antes.
+class RescheduleSelectedWalkerRequest(BaseModel):
+    scheduled_date: str | None = None
+    walk_date: str | None = None
+    walk_time: str | None = None
+    price: Any | None = None
+    duration_minutes: Any | None = None
+    pet_id: Any | None = None
+    walker_id: Any | None = None
+    assigned_walker_id: Any | None = None
+    walker_selection_mode: Any | None = None
+
+
 @router.post("/{walk_id}/reschedule-selected-walker")
 def reschedule_selected_walker_walk(
     walk_id: str,
-    payload: dict,
+    payload: RescheduleSelectedWalkerRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    forbidden = FORBIDDEN_RESCHEDULE_FIELDS.intersection(payload.keys())
+    forbidden = FORBIDDEN_RESCHEDULE_FIELDS.intersection(payload.model_fields_set)
     if forbidden:
         raise HTTPException(status_code=400, detail="Esta remarcacao permite alterar apenas data e horario.")
 
-    scheduled_date = str(payload.get("scheduled_date") or "").strip()
+    scheduled_date = str(payload.scheduled_date or "").strip()
     scheduled_at = _parse_scheduled_at(scheduled_date)
     if scheduled_at <= datetime.utcnow():
         raise HTTPException(status_code=400, detail="Escolha um horario futuro para remarcar.")
@@ -828,10 +846,10 @@ def reschedule_selected_walker_walk(
     walk.scheduled_date = scheduled_date
 
     if hasattr(walk, "walk_date"):
-        walk.walk_date = payload.get("walk_date")
+        walk.walk_date = payload.walk_date
 
     if hasattr(walk, "walk_time"):
-        walk.walk_time = payload.get("walk_time")
+        walk.walk_time = payload.walk_time
 
     walk.walker_id = selected_walker_id
     walk.assigned_walker_id = selected_walker_id
@@ -851,8 +869,8 @@ def reschedule_selected_walker_walk(
         metadata={
             "previous_scheduled_date": previous_scheduled_date,
             "scheduled_date": scheduled_date,
-            "walk_date": payload.get("walk_date"),
-            "walk_time": payload.get("walk_time"),
+            "walk_date": payload.walk_date,
+            "walk_time": payload.walk_time,
             "walker_id": selected_walker_id,
         },
     )

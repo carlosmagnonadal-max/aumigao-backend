@@ -229,15 +229,6 @@ def test_walkers_listing_output_correct():
     assert by_name["Walker 0"]["user_id"] == "wu-0"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "B-ALT-006 follow-up: /admin/walkers ainda tem N+1 residual. O "
-        "selectinload(WalkerProfile.user) reduziu parte, mas a eliminacao completa "
-        "exige replicar o batch-preload usado em /admin/payments. Dashboard e "
-        "payments ja estao sem N+1."
-    ),
-    strict=False,
-)
 def test_walkers_listing_no_n_plus_one():
     """O número de queries do /walkers NÃO escala com a quantidade de passeadores."""
     client, db, engine = build()

@@ -61,7 +61,10 @@ from app.services.operational_observability_service import (
 )
 from app.services.beta_readiness_service import build_beta_readiness_checklist
 from app.services.operational_scheduler_service import get_operational_scheduler_status
-from app.services.walker_operational_score_service import calculate_walker_operational_score
+from app.services.walker_operational_score_service import (
+    calculate_walker_operational_score,
+    calculate_walker_operational_scores,
+)
 from app.routes.notifications import NotificationCreate, _create_notification
 from app.services.signed_uploads import create_signed_upload_url
 
@@ -598,7 +601,7 @@ def _canonical_application_status(status: str | None) -> str:
     return "submitted"
 
 
-def _serialize_walker_profile(profile: WalkerProfile, db: Session, include_internal: bool = True) -> dict:
+def _serialize_walker_profile(profile: WalkerProfile, db: Session, include_internal: bool = True, operational_score: dict | None = None) -> dict:
     user = _profile_user(profile, db)
     document_count = len([value for value in [profile.document_url, profile.identity_document_back_url, profile.selfie_url, profile.proof_of_address_url] if value])
     raw_status = _canonical_application_status(profile.status)
@@ -648,7 +651,9 @@ def _serialize_walker_profile(profile: WalkerProfile, db: Session, include_inter
         "updated_at": profile.updated_at or profile.created_at,
         "asaas_wallet_id": getattr(profile, "asaas_wallet_id", None),
     }
-    payload.update(calculate_walker_operational_score(profile.user_id, db))
+    # operational_score pode vir pré-calculado em lote (evita N+1 nas listagens);
+    # senão calcula sob demanda (detalhe de 1 perfil).
+    payload.update(operational_score if operational_score is not None else calculate_walker_operational_score(profile.user_id, db))
     if include_internal:
         payload["internal_notes"] = profile.internal_notes or ""
     return payload
@@ -702,6 +707,7 @@ def _unique_walker_profiles(db: Session, include_internal: bool = True) -> list[
         .options(selectinload(WalkerProfile.user))
         .order_by(WalkerProfile.created_at.desc())
     )
+    surviving = []
     for profile in profiles_query.all():
         user = _profile_user(profile, db)
         if _is_fake_walker_profile(profile, user):
@@ -710,7 +716,15 @@ def _unique_walker_profiles(db: Session, include_internal: bool = True) -> list[
         if key in seen_keys:
             continue
         seen_keys.add(key)
-        rows.append(_serialize_walker_profile(profile, db, include_internal=include_internal))
+        surviving.append(profile)
+    # B-ALT-006 follow-up: score operacional de todos os passeadores em LOTE (4 queries
+    # totais) em vez de 4 por passeador — elimina o N+1 residual da listagem.
+    scores = calculate_walker_operational_scores([p.user_id for p in surviving], db)
+    for profile in surviving:
+        rows.append(_serialize_walker_profile(
+            profile, db, include_internal=include_internal,
+            operational_score=scores.get(profile.user_id),
+        ))
     return rows
 
 

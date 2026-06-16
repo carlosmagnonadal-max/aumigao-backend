@@ -89,13 +89,30 @@ def calculate_walker_operational_score(walker_id: str | None, db: Session) -> di
             "score_policy": "Indicador informativo de desempenho. Não gera bloqueios automáticos.",
         }
 
-    completed = _completed_walks(walker_id, db)
-    completed_count = len(completed)
     rating_avg, rating_count = _rating_summary(walker_id, db)
-    events = _recent_events(walker_id, db)
+    return _score_from_inputs(
+        completed_count=len(_completed_walks(walker_id, db)),
+        rating_avg=rating_avg,
+        rating_count=rating_count,
+        events=_recent_events(walker_id, db),
+        rejected_count=_rejected_completion_count(walker_id, db),
+    )
+
+
+def _score_from_inputs(
+    completed_count: int,
+    rating_avg: float,
+    rating_count: int,
+    events: list,
+    rejected_count: int,
+) -> dict:
+    """Lógica PURA de score (sem I/O) — compartilhada pelo cálculo single e o batch.
+
+    Mantém o cálculo idêntico ao anterior; só foi extraída para permitir alimentar com
+    dados pré-carregados em lote (calculate_walker_operational_scores) e eliminar o N+1.
+    """
     attention_events = [event for event in events if event.event_type in ATTENTION_EVENTS]
     high_attention_events = [event for event in events if event.event_type in HIGH_ATTENTION_EVENTS or event.severity == "high"]
-    rejected_count = _rejected_completion_count(walker_id, db)
 
     score = 70
     score += min(12, completed_count * 2)
@@ -144,3 +161,74 @@ def calculate_walker_operational_score(walker_id: str | None, db: Session) -> di
         },
         "score_policy": "Indicador informativo de desempenho. Não gera bloqueios automáticos.",
     }
+
+
+def calculate_walker_operational_scores(walker_ids, db: Session) -> dict[str, dict]:
+    """B-ALT-006 follow-up: score operacional de VÁRIOS passeadores SEM N+1.
+
+    Faz 4 queries agrupadas (passeios concluídos, avaliações, eventos recentes,
+    finalizações rejeitadas) em vez de 4 por passeador, e reaproveita _score_from_inputs
+    para um resultado IDÊNTICO ao calculate_walker_operational_score por passeador.
+    Retorna {walker_id: payload}. IDs None/duplicados são ignorados.
+    """
+    ids = [wid for wid in dict.fromkeys(walker_ids) if wid]
+    if not ids:
+        return {}
+    idset = set(ids)
+
+    # 1) passeios concluídos — atribui cada passeio aos walkers (walker_id/assigned) no conjunto.
+    completed_ids: dict[str, set] = {wid: set() for wid in ids}
+    walks = (
+        db.query(Walk)
+        .filter(
+            ((Walk.walker_id.in_(idset)) | (Walk.assigned_walker_id.in_(idset))),
+            ((Walk.operational_status == "ride_completed") | (Walk.status == "Finalizado")),
+        )
+        .all()
+    )
+    for walk in walks:
+        for wid in {walk.walker_id, walk.assigned_walker_id} & idset:
+            completed_ids[wid].add(walk.id)
+
+    # 2) avaliações
+    ratings: dict[str, list] = {wid: [] for wid in ids}
+    for review in db.query(WalkReview).filter(WalkReview.walker_id.in_(idset)).all():
+        if review.walker_id in idset:
+            ratings[review.walker_id].append(float(review.rating or 0))
+
+    # 3) eventos operacionais recentes (90 dias)
+    since = datetime.utcnow() - timedelta(days=90)
+    events_by: dict[str, list] = {wid: [] for wid in ids}
+    for ev in (
+        db.query(WalkOperationalEvent)
+        .filter(WalkOperationalEvent.walker_id.in_(idset), WalkOperationalEvent.created_at >= since)
+        .all()
+    ):
+        if ev.walker_id in idset:
+            events_by[ev.walker_id].append(ev)
+
+    # 4) finalizações rejeitadas
+    rejected_by: dict[str, int] = {wid: 0 for wid in ids}
+    for rr in (
+        db.query(WalkCompletionReview)
+        .filter(
+            WalkCompletionReview.walker_user_id.in_(idset),
+            WalkCompletionReview.status.in_(["rejected", "completion_rejected"]),
+        )
+        .all()
+    ):
+        if rr.walker_user_id in idset:
+            rejected_by[rr.walker_user_id] += 1
+
+    result: dict[str, dict] = {}
+    for wid in ids:
+        rlist = ratings[wid]
+        rating_avg = round(sum(rlist) / len(rlist), 2) if rlist else 0
+        result[wid] = _score_from_inputs(
+            completed_count=len(completed_ids[wid]),
+            rating_avg=rating_avg,
+            rating_count=len(rlist),
+            events=events_by[wid],
+            rejected_count=rejected_by[wid],
+        )
+    return result

@@ -3,6 +3,8 @@ import logging
 from app.models.tutor_profile import TutorProfile
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi import HTTPException
+from pydantic import BaseModel, Field
+from typing import Any
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -1910,9 +1912,18 @@ def pending_walk_completions(admin: User = Depends(require_permission("walks.rea
     }
 
 
+# api-T2: schema permissivo das decisoes de finalizacao. Campos opcionais (admin_note/
+# note/reason) espelhando os (payload or {}).get; Pydantic v2 ignora extras. Nenhum
+# payload legitimo e rejeitado — ganho de validacao de tipo e contrato OpenAPI.
+class WalkCompletionDecisionRequest(BaseModel):
+    admin_note: str | None = None
+    note: str | None = None
+    reason: str | None = None
+
+
 @router.post("/walk-completions/{review_id}/approve")
 @api_router.post("/walk-completions/{review_id}/approve")
-def approve_walk_completion(review_id: str, payload: dict | None = None, admin: User = Depends(require_permission("walks.update_status")), db: Session = Depends(get_db)):
+def approve_walk_completion(review_id: str, payload: WalkCompletionDecisionRequest | None = None, admin: User = Depends(require_permission("walks.update_status")), db: Session = Depends(get_db)):
     review = db.get(WalkCompletionReview, review_id)
     if not review:
         record_operational_log(
@@ -1953,7 +1964,7 @@ def approve_walk_completion(review_id: str, payload: dict | None = None, admin: 
 
     now = datetime.utcnow()
     review.status = "approved"
-    review.admin_note = (payload or {}).get("admin_note") or (payload or {}).get("note")
+    review.admin_note = (payload.admin_note or payload.note) if payload else None
     review.reviewed_by_admin_id = admin.id
     review.reviewed_at = now
     review.updated_at = now
@@ -2024,7 +2035,7 @@ def approve_walk_completion(review_id: str, payload: dict | None = None, admin: 
 
 @router.post("/walk-completions/{review_id}/reject")
 @api_router.post("/walk-completions/{review_id}/reject")
-def reject_walk_completion(review_id: str, payload: dict | None = None, admin: User = Depends(require_permission("walks.update_status")), db: Session = Depends(get_db)):
+def reject_walk_completion(review_id: str, payload: WalkCompletionDecisionRequest | None = None, admin: User = Depends(require_permission("walks.update_status")), db: Session = Depends(get_db)):
     review = db.get(WalkCompletionReview, review_id)
     if not review:
         record_operational_log(
@@ -2065,7 +2076,7 @@ def reject_walk_completion(review_id: str, payload: dict | None = None, admin: U
 
     now = datetime.utcnow()
     review.status = "rejected"
-    review.admin_note = (payload or {}).get("admin_note") or (payload or {}).get("reason") or "Finalizacao rejeitada pela revisao administrativa."
+    review.admin_note = ((payload.admin_note or payload.reason) if payload else None) or "Finalizacao rejeitada pela revisao administrativa."
     review.reviewed_by_admin_id = admin.id
     review.reviewed_at = now
     review.updated_at = now
@@ -2156,16 +2167,22 @@ def approve_walker_kit(submission_id: str, admin: User = Depends(require_permiss
     return _serialize_walker_kit_submission(submission, db)
 
 
+# api-T2: schema permissivo da rejeicao de kit (audit_note/reason opcionais).
+class RejectWalkerKitRequest(BaseModel):
+    audit_note: str | None = None
+    reason: str | None = None
+
+
 @router.post("/walker-kits/{submission_id}/reject")
 @api_router.post("/walker-kits/{submission_id}/reject")
-def reject_walker_kit(submission_id: str, payload: dict | None = None, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
+def reject_walker_kit(submission_id: str, payload: RejectWalkerKitRequest | None = None, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
     submission = db.query(WalkerKitSubmission).filter(WalkerKitSubmission.id == submission_id).first()
     if not submission:
         raise HTTPException(status_code=404, detail="Envio de kit nao encontrado.")
 
     now = datetime.utcnow()
     submission.audit_status = "rejected"
-    submission.audit_note = (payload or {}).get("audit_note") or (payload or {}).get("reason") or "Kit rejeitado pela auditoria administrativa."
+    submission.audit_note = ((payload.audit_note or payload.reason) if payload else None) or "Kit rejeitado pela auditoria administrativa."
     submission.reviewed_by_admin_id = admin.id
     submission.reviewed_at = now
     submission.updated_at = now

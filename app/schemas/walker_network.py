@@ -7,7 +7,11 @@ from app.schemas.common import ORMModel
 
 WALKER_NETWORK_STATUSES = {"active", "suspended", "blocked"}
 TENANT_WALKER_ACCESS_TYPES = {"shared_network", "tenant_exclusive"}
-TENANT_WALKER_ACCESS_STATUSES = {"active", "paused", "revoked"}
+# Estados do convite à Rede: pending/active/declined/revoked.
+# "paused" e "active" preservados para compatibilidade com dados legados.
+TENANT_WALKER_ACCESS_STATUSES = {"pending", "active", "declined", "revoked", "paused"}
+# Apenas estes contam como "na rede do tenant" para fins de matching.
+TENANT_WALKER_ACCESS_ACTIVE_STATUSES = {"active"}
 
 
 class WalkerNetworkProfileResponse(ORMModel):
@@ -39,5 +43,7 @@ class TenantWalkerAccessResponse(ORMModel):
     walker_user_id: str
     access_type: str
     status: str
+    invited_at: datetime | None = None
+    responded_at: datetime | None = None
     created_at: datetime
     updated_at: datetime

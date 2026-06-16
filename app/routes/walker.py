@@ -1,6 +1,7 @@
 import os
 import logging
 import json
+from typing import Any
 from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -1445,10 +1446,17 @@ def my_walker_level(user: User = Depends(get_current_user), db: Session = Depend
     return _goals_evolution_payload(user, db)["level"]
 
 
+# api-T2: schema permissivo do envio do kit. `items` e uma lista de dicts (cada item
+# mantem o formato livre original {key, available, photo_urls}); Pydantic v2 ignora extras
+# no nivel raiz. Validacao de tipo no topo (items precisa ser lista) sem reescrever o loop.
+class UpdateKitRequest(BaseModel):
+    items: list[dict] = Field(default_factory=list)
+
+
 @router.put("/kit")
-def update_kit(payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_kit(payload: UpdateKitRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
-    items_payload = (payload or {}).get("items") or []
+    items_payload = payload.items or []
     # WK-05: só URLs HOSPEDADAS (http/https) podem ser persistidas. URIs locais do
     # dispositivo (file://, content://, blob:) não abrem no admin/tutor — rejeita.
     for item in items_payload:
@@ -1910,10 +1918,15 @@ def update_availability(payload: WalkerAvailabilityUpdate, user: User = Depends(
     db.commit()
     return {"ok": True, "user_id": user.id, "schedule": schedule_dict}
 
+# api-T2: schema permissivo da reconfirmacao do tutor (campo unico `decision`).
+class WalkReconfirmationRequest(BaseModel):
+    decision: str | None = None
+
+
 @router.post("/walks/{walk_id}/reconfirmation")
 def tutor_walk_reconfirmation(
     walk_id: str,
-    payload: dict,
+    payload: WalkReconfirmationRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1925,7 +1938,7 @@ def tutor_walk_reconfirmation(
     if str(walk.tutor_id) != str(user.id):
         raise HTTPException(status_code=403, detail="Passeio nao pertence ao tutor")
 
-    decision = str(payload.get("decision") or "").strip()
+    decision = str(payload.decision or "").strip()
 
     if walk.operational_status not in {"awaiting_tutor_reconfirmation", "no_walker_found"}:
         raise HTTPException(status_code=409, detail="Passeio nao aguarda confirmacao do tutor")
@@ -2088,8 +2101,13 @@ def decline_walk(walk_id: str, user: User = Depends(get_current_user), db: Sessi
     return {"ok": True, "walk_id": walk_id, "walk": serialize_operational_walk(walk, db, user=user)}
 
 
+# api-T2: schema permissivo da mudanca de status pelo passeador (campo unico `status`).
+class WalkerStatusRequest(BaseModel):
+    status: str | None = None
+
+
 @router.post("/walks/{walk_id}/status")
-def walker_status(walk_id: str, payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def walker_status(walk_id: str, payload: WalkerStatusRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
     walk = db.get(Walk, walk_id)
     if not walk:
@@ -2100,7 +2118,9 @@ def walker_status(walk_id: str, payload: dict, user: User = Depends(get_current_
         raise HTTPException(status_code=403, detail="Passeio nao pertence ao passeador")
     if walk.operational_status in {"pending_walker_confirmation", "auto_rematching"}:
         accept_operational_walk(walk, user, db)
-    requested_status = str(payload.get("status", walk.status))
+    # Preserva o default do .get("status", walk.status): so cai no walk.status se a chave
+    # nao foi enviada (model_fields_set), nao quando vem explicitamente nula.
+    requested_status = str(payload.status) if "status" in payload.model_fields_set else str(walk.status)
     if requested_status in {"ride_completed", "Finalizado", "finalizado", "completed", "finished"}:
         raise HTTPException(status_code=409, detail="Finalizacao exige envio de relatorio para revisao administrativa.")
     update_operational_status(walk, requested_status, db, actor=user)
@@ -2244,6 +2264,18 @@ async def upload_walk_completion_photo(
     }
 
 
+# api-T2: schema permissivo do relatorio de finalizacao. Todos os campos sao opcionais
+# (espelham os payload.get do helper); checklist/checklist_json sao Any para aceitar tanto
+# dict quanto string JSON, como o _normalize_completion_checklist ja tratava. Pydantic v2
+# ignora extras. O endpoint converte para dict (model_dump) e mantem o helper intacto.
+class CompletionReportRequest(BaseModel):
+    photo_url: str | None = None
+    url: str | None = None
+    notes: str | None = None
+    checklist: Any | None = None
+    checklist_json: Any | None = None
+
+
 def _submit_completion_review(walk: Walk, payload: dict | None, user: User, db: Session) -> WalkCompletionReview:
     if walk.walker_id != user.id:
         raise HTTPException(status_code=403, detail="Passeio nao pertence ao passeador")
@@ -2292,12 +2324,12 @@ def _submit_completion_review(walk: Walk, payload: dict | None, user: User, db: 
 
 
 @router.post("/walks/{walk_id}/completion-report")
-def submit_completion_report(walk_id: str, payload: dict | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def submit_completion_report(walk_id: str, payload: CompletionReportRequest | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
     walk = db.get(Walk, walk_id)
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
-    review = _submit_completion_review(walk, payload, user, db)
+    review = _submit_completion_review(walk, payload.model_dump() if payload else None, user, db)
     db.commit()
     db.refresh(review)
     db.refresh(walk)
@@ -2305,28 +2337,45 @@ def submit_completion_report(walk_id: str, payload: dict | None = None, user: Us
 
 
 @router.post("/walks/{walk_id}/report")
-def send_report(walk_id: str, payload: dict | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def send_report(walk_id: str, payload: CompletionReportRequest | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
     walk = db.get(Walk, walk_id)
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
-    review = _submit_completion_review(walk, payload, user, db)
+    review = _submit_completion_review(walk, payload.model_dump() if payload else None, user, db)
     db.commit()
     db.refresh(review)
     db.refresh(walk)
     return {"ok": True, "review": _completion_review_payload(review), "walk": serialize_operational_walk(walk, db, user=user)}
 
 
+# api-T2: schema permissivo da ocorrencia operacional do passeador. Todos opcionais,
+# espelhando os payload.get; evidences continua list[dict] (formato livre); Pydantic v2
+# ignora extras. Nenhum payload legitimo e rejeitado.
+class WalkerOccurrenceRequest(BaseModel):
+    type: str | None = None
+    category: str | None = None
+    message: str | None = None
+    description: str | None = None
+    notes: str | None = None
+    target_type: str | None = None
+    target_user_id: str | None = None
+    target_pet_id: str | None = None
+    title: str | None = None
+    evidences: list[dict] = Field(default_factory=list)
+    metadata: dict | None = None
+
+
 @router.post("/walks/{walk_id}/occurrence")
-def create_walker_occurrence(walk_id: str, payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_walker_occurrence(walk_id: str, payload: WalkerOccurrenceRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
     walk = db.get(Walk, walk_id)
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
     if walk.walker_id != user.id and walk.assigned_walker_id != user.id:
         raise HTTPException(status_code=403, detail="Passeio nao pertence ao passeador")
-    occurrence_type = str(payload.get("type") or payload.get("category") or "operational_issue").strip() or "operational_issue"
-    message = str(payload.get("message") or payload.get("description") or payload.get("notes") or "").strip()
+    occurrence_type = str(payload.type or payload.category or "operational_issue").strip() or "operational_issue"
+    message = str(payload.message or payload.description or payload.notes or "").strip()
     if not message:
         message = "Passeador registrou uma ocorrencia operacional."
     category_by_type = {
@@ -2337,18 +2386,18 @@ def create_walker_occurrence(walk_id: str, payload: dict, user: User = Depends(g
         "delay": "Atraso informado pelo passeador",
         "operational_issue": "Ocorrencia operacional do passeio",
     }
-    target_type = payload.get("target_type") or "walk"
+    target_type = payload.target_type or "walk"
     complaint_payload = ComplaintCreate(
         source="walker",
         target_type=target_type,
-        target_user_id=walk.tutor_id if target_type in {"tutor", "address", "service"} else payload.get("target_user_id"),
-        target_pet_id=walk.pet_id if target_type == "pet" else payload.get("target_pet_id"),
+        target_user_id=walk.tutor_id if target_type in {"tutor", "address", "service"} else payload.target_user_id,
+        target_pet_id=walk.pet_id if target_type == "pet" else payload.target_pet_id,
         walk_id=walk.id,
-        category=payload.get("category") or category_by_type.get(occurrence_type, "ocorrencia_operacional"),
-        title=payload.get("title") or title_by_type.get(occurrence_type, "Ocorrencia operacional do passeio"),
+        category=payload.category or category_by_type.get(occurrence_type, "ocorrencia_operacional"),
+        title=payload.title or title_by_type.get(occurrence_type, "Ocorrencia operacional do passeio"),
         description=message,
-        evidences=[ComplaintEvidenceCreate(**item) for item in payload.get("evidences", [])],
-        metadata={"origin": "walker_walk", "type": occurrence_type, **(payload.get("metadata") or {})},
+        evidences=[ComplaintEvidenceCreate(**item) for item in payload.evidences],
+        metadata={"origin": "walker_walk", "type": occurrence_type, **(payload.metadata or {})},
     )
     complaint = create_complaint(complaint_payload, user, db)
     return {
@@ -2434,10 +2483,45 @@ def _get_walk_for_walker(walk_id: str, user: User, db: Session) -> Walk:
     return walk
 
 
+# api-T2: schemas permissivos dos endpoints da maquina de estados. Os 4 itens de
+# checklist sao opcionais (None = nao enviado); usamos model_fields_set para incluir no
+# log apenas as chaves que o app realmente mandou — mesma semantica do `key in payload`
+# anterior, inclusive quando o valor e False. Pydantic v2 ignora extras: nenhum payload
+# legitimo e rejeitado.
+class WalkerChecklistInput(BaseModel):
+    checklist_confirm_water: bool | None = None
+    checklist_confirm_bowl: bool | None = None
+    checklist_confirm_bags: bool | None = None
+    checklist_confirm_first_aid: bool | None = None
+
+
+_CHECKLIST_CONFIRM_KEYS = (
+    "checklist_confirm_water",
+    "checklist_confirm_bowl",
+    "checklist_confirm_bags",
+    "checklist_confirm_first_aid",
+)
+
+
+def _collect_checklist_items(payload: "WalkerChecklistInput | None") -> dict:
+    if not payload:
+        return {}
+    return {
+        key: bool(getattr(payload, key))
+        for key in _CHECKLIST_CONFIRM_KEYS
+        if key in payload.model_fields_set
+    }
+
+
+class WalkExperienceInput(BaseModel):
+    did_pee: bool = False
+    did_poop: bool = False
+
+
 @router.post("/walks/{walk_id}/check-in")
 def walker_check_in(
     walk_id: str,
-    payload: dict | None = None,
+    payload: WalkerChecklistInput | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -2458,14 +2542,7 @@ def walker_check_in(
     walk.operational_status = "walker_arriving"
     walk.status = "Indo buscar o pet"
 
-    checklist_items = {}
-    if payload:
-        checklist_items = {
-            key: bool(payload.get(key))
-            for key in ("checklist_confirm_water", "checklist_confirm_bowl",
-                        "checklist_confirm_bags", "checklist_confirm_first_aid")
-            if key in payload
-        }
+    checklist_items = _collect_checklist_items(payload)
 
     log_event(
         db,
@@ -2486,7 +2563,7 @@ def walker_check_in(
 @router.post("/walks/{walk_id}/pet-handover")
 def pet_handover(
     walk_id: str,
-    payload: dict | None = None,
+    payload: WalkerChecklistInput | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -2526,7 +2603,7 @@ def pet_handover(
 @router.post("/walks/{walk_id}/start-checklist")
 def confirm_start_checklist(
     walk_id: str,
-    payload: dict | None = None,
+    payload: WalkerChecklistInput | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -2552,14 +2629,7 @@ def confirm_start_checklist(
     walk.operational_status = "ride_in_progress"
     walk.status = "Passeando agora"
 
-    checklist_items = {}
-    if payload:
-        checklist_items = {
-            key: bool(payload.get(key))
-            for key in ("checklist_confirm_water", "checklist_confirm_bowl",
-                        "checklist_confirm_bags", "checklist_confirm_first_aid")
-            if key in payload
-        }
+    checklist_items = _collect_checklist_items(payload)
 
     log_event(
         db,
@@ -2582,7 +2652,7 @@ def confirm_start_checklist(
 @router.post("/walks/{walk_id}/checkin-checklist")
 def validate_checkin_checklist(
     walk_id: str,
-    payload: dict | None = None,
+    payload: WalkerChecklistInput | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -2602,14 +2672,7 @@ def validate_checkin_checklist(
             detail=f"Checklist de chegada nao permitido no status '{walk.operational_status}'.",
         )
 
-    checklist_items = {}
-    if payload:
-        checklist_items = {
-            key: bool(payload.get(key))
-            for key in ("checklist_confirm_water", "checklist_confirm_bowl",
-                        "checklist_confirm_bags", "checklist_confirm_first_aid")
-            if key in payload
-        }
+    checklist_items = _collect_checklist_items(payload)
 
     log_event(
         db,
@@ -2632,7 +2695,7 @@ def validate_checkin_checklist(
 @router.post("/walks/{walk_id}/experience")
 def update_walk_experience(
     walk_id: str,
-    payload: dict | None = None,
+    payload: WalkExperienceInput | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -2654,8 +2717,8 @@ def update_walk_experience(
             detail=f"Experiencia do passeio nao pode ser registrada no status '{walk.operational_status}'.",
         )
 
-    did_pee = bool((payload or {}).get("did_pee", False))
-    did_poop = bool((payload or {}).get("did_poop", False))
+    did_pee = bool(payload.did_pee) if payload else False
+    did_poop = bool(payload.did_poop) if payload else False
 
     log_event(
         db,
@@ -2704,9 +2767,15 @@ def walker_active_walk(
     return serialize_operational_walk(walk, db, user=user)
 
 
+# api-T2: schema permissivo do pedido de saque (campo unico `amount`; Pydantic v2 coage
+# string numerica -> float e devolve 422 honesto p/ valor invalido em vez de 500).
+class WithdrawalRequest(BaseModel):
+    amount: float | None = None
+
+
 @router.post("/withdrawals")
-def request_withdrawal(payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    amount = float(payload.get("amount") or 0)
+def request_withdrawal(payload: WithdrawalRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    amount = float(payload.amount or 0)
     if amount < 20:
         raise HTTPException(status_code=400, detail="Valor minimo para saque e R$ 20,00")
     balance = _available_balance(user, db)

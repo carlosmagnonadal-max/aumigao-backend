@@ -26,6 +26,8 @@ from app.models.walk_review import WalkReview
 from app.models.walk_tip import WalkTip
 from app.models.walker_kit_submission import WalkerKitSubmission
 from app.models.walker_profile import WalkerProfile
+from app.models.walker_availability import WalkerAvailability
+from app.schemas.walker_availability import WalkerAvailabilityUpdate
 from app.schemas.walker_profile import WalkerProfileCreate, WalkerProfileResponse, WalkerProfileUpdate
 from app.schemas.complaint import ComplaintCreate, ComplaintEvidenceCreate
 from app.services.complaint_service import create_complaint
@@ -1780,6 +1782,16 @@ def availability(user: User = Depends(get_current_user), db: Session = Depends(g
     for en, pt in _months_pt.items():
         month_label = month_label.replace(en, pt)
 
+    # WK-01: disponibilidade editável REAL persistida (aditivo aos campos legados
+    # week/slots/month, que apps distribuídos antigos ainda consomem). Vazio honesto
+    # quando o passeador ainda não definiu — nunca slots fictícios.
+    row = (
+        db.query(WalkerAvailability)
+        .filter(WalkerAvailability.walker_user_id == user.id)
+        .first()
+    )
+    schedule = json.loads(row.schedule_json) if row and row.schedule_json else {}
+
     return {
         "week": week,
         "slots": ["07:00", "08:00", "09:00", "14:00", "15:00", "17:00", "18:00", "19:00", "20:00"],
@@ -1790,15 +1802,27 @@ def availability(user: User = Depends(get_current_user), db: Session = Depends(g
             "possible_walks": None,
             "available_days": None,
         },
+        "schedule": schedule,
     }
 
 
 @router.put("/availability")
-def update_availability(payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_availability(payload: WalkerAvailabilityUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active_walker(user, db)
-    # NOTA: persistência real depende de tabela de disponibilidade futura (não criada nesta rodada).
-    # Por enquanto, aceita o payload e retorna confirmação sem persistir.
-    return {"ok": True, "user_id": user.id, **payload}
+    # WK-01: upsert por passeador (uma linha por walker; deriva do token -> ownership).
+    schedule_dict = {day: sch.model_dump() for day, sch in payload.schedule.items()}
+    schedule_json = json.dumps(schedule_dict)
+    row = (
+        db.query(WalkerAvailability)
+        .filter(WalkerAvailability.walker_user_id == user.id)
+        .first()
+    )
+    if row:
+        row.schedule_json = schedule_json
+    else:
+        db.add(WalkerAvailability(walker_user_id=user.id, schedule_json=schedule_json))
+    db.commit()
+    return {"ok": True, "user_id": user.id, "schedule": schedule_dict}
 
 @router.post("/walks/{walk_id}/reconfirmation")
 def tutor_walk_reconfirmation(

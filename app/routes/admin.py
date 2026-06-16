@@ -2256,10 +2256,16 @@ def referrals(limit: int = 20):
     return {"items": items, "total": len(REFERRAL_RECORDS)}
 
 
+# api-T2: schema permissivo da mudanca de status de indicacao (demo in-memory).
+class ReferralStatusRequest(BaseModel):
+    status: str | None = None
+    note: str = ""
+
+
 @router.post("/referrals/{referral_id}/status")
-def update_referral_status(referral_id: str, payload: dict):
-    status = (payload or {}).get("status")
-    note = (payload or {}).get("note", "")
+def update_referral_status(referral_id: str, payload: ReferralStatusRequest):
+    status = payload.status
+    note = payload.note or ""
     for item in REFERRAL_RECORDS:
         if item["id"] == referral_id:
             item["status"] = status or item["status"]
@@ -2311,42 +2317,60 @@ def update_walker_program_settings(payload: dict, admin: User = Depends(require_
     return merged
 
 
+# api-T2: schema permissivo do ajuste de CR do passeador.
+class AdjustWalkerCrRequest(BaseModel):
+    amount: int = 0
+    reason: str = "Ajuste administrativo"
+
+
 @router.post("/walker-programs/walkers/{walker_id}/cr")
-def adjust_walker_cr(walker_id: str, payload: dict, db: Session = Depends(get_db)):
+def adjust_walker_cr(walker_id: str, payload: AdjustWalkerCrRequest, db: Session = Depends(get_db)):
     action = {
         "id": str(uuid4()),
         "type": "cr_adjustment",
         "walker_id": walker_id,
-        "amount": int((payload or {}).get("amount", 0)),
-        "reason": (payload or {}).get("reason", "Ajuste administrativo"),
+        "amount": int(payload.amount),
+        "reason": payload.reason or "Ajuste administrativo",
         "created_at": _now(),
     }
     append_walker_program_action(db, action_type="cr", walker_id=walker_id, payload=action)
     return {"ok": True, "action": action}
 
 
+# api-T2: schema permissivo da auditoria de kit (defaults preservados).
+class KitAuditActionRequest(BaseModel):
+    status: str = "aprovado"
+    note: str = ""
+
+
 @router.post("/walker-programs/walkers/{walker_id}/kit-audit")
-def audit_walker_kit(walker_id: str, payload: dict, db: Session = Depends(get_db)):
+def audit_walker_kit(walker_id: str, payload: KitAuditActionRequest, db: Session = Depends(get_db)):
     action = {
         "id": str(uuid4()),
         "type": "kit_audit",
         "walker_id": walker_id,
-        "status": (payload or {}).get("status", "aprovado"),
-        "note": (payload or {}).get("note", ""),
+        "status": payload.status,
+        "note": payload.note,
         "created_at": _now(),
     }
     append_walker_program_action(db, action_type="kit", walker_id=walker_id, payload=action)
     return {"ok": True, "action": action}
 
 
+# api-T2: schema permissivo da revisao de gorjeta (defaults preservados).
+class TipReviewActionRequest(BaseModel):
+    status: str = "approved"
+    note: str = ""
+
+
 @router.post("/walker-programs/tips/{tip_id}/review")
-def review_tip(tip_id: str, payload: dict, db: Session = Depends(get_db)):
+def review_tip(tip_id: str, payload: TipReviewActionRequest, db: Session = Depends(get_db)):
     action = {
         "id": str(uuid4()),
         "type": "tip_review",
         "tip_id": tip_id,
-        "status": (payload or {}).get("status", "approved"),
-        "note": (payload or {}).get("note", ""),
+        "status": payload.status,
+        "note": payload.note,
         "created_at": _now(),
     }
     append_walker_program_action(db, action_type="tip", walker_id=None, payload=action)

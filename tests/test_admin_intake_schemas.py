@@ -8,7 +8,11 @@ Os endpoints de settings (referral-program/walker-programs) NAO foram migrados d
 proposito: usam _merge_dict com dict livre aninhado, onde um schema descartaria chaves.
 """
 from app.routes.admin import (
+    AdjustWalkerCrRequest,
+    KitAuditActionRequest,
+    ReferralStatusRequest,
     RejectWalkerKitRequest,
+    TipReviewActionRequest,
     WalkCompletionDecisionRequest,
 )
 
@@ -34,3 +38,31 @@ def test_reject_kit_empty_and_extra():
     assert RejectWalkerKitRequest().audit_note is None
     m = RejectWalkerKitRequest(**{"reason": "incompleto", "extra": 1})
     assert m.reason == "incompleto"
+
+
+# --- acoes do programa de passeadores (defaults preservados) --------------------
+
+def test_referral_status_defaults():
+    m = ReferralStatusRequest()
+    assert m.status is None
+    assert m.note == ""
+
+
+def test_adjust_cr_defaults_and_coercion():
+    m = AdjustWalkerCrRequest()
+    assert m.amount == 0
+    assert m.reason == "Ajuste administrativo"
+    # Pydantic coage string numerica -> int.
+    assert AdjustWalkerCrRequest(amount="5").amount == 5
+
+
+def test_kit_audit_defaults():
+    m = KitAuditActionRequest()
+    assert m.status == "aprovado"
+    assert m.note == ""
+
+
+def test_tip_review_defaults_and_ignores_extra():
+    m = TipReviewActionRequest(**{"extra": 1})
+    assert m.status == "approved"
+    assert m.note == ""

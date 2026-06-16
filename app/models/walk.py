@@ -4,6 +4,7 @@ from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+from app.models.types import Money
 
 
 class Walk(Base):
@@ -16,7 +17,7 @@ class Walk(Base):
     pet_id: Mapped[str] = mapped_column(String, ForeignKey("pets.id"))
     scheduled_date: Mapped[str] = mapped_column(String)
     duration_minutes: Mapped[int] = mapped_column(Integer)
-    price: Mapped[float] = mapped_column(Float)
+    price: Mapped[float] = mapped_column(Money)
     status: Mapped[str] = mapped_column(String, default="Agendado")
     pickup_method: Mapped[str] = mapped_column(String, default="Buscar em casa")
     # Modalidade do passeio: "standard" (rotina) ou "pet_tour" (especial: busca de

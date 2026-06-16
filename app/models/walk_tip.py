@@ -1,9 +1,10 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+from app.models.types import Money
 
 
 class WalkTip(Base):
@@ -14,7 +15,7 @@ class WalkTip(Base):
     walk_id: Mapped[str] = mapped_column(String, ForeignKey("walks.id"), index=True)
     tutor_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), index=True)
     walker_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), index=True)
-    amount: Mapped[float] = mapped_column(Float)
+    amount: Mapped[float] = mapped_column(Money)
     status: Mapped[str] = mapped_column(String, default="pending", index=True)
     provider: Mapped[str] = mapped_column(String, default="internal_mock")
     checkout_url: Mapped[str | None] = mapped_column(String, nullable=True)

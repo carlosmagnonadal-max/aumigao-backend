@@ -112,7 +112,9 @@ def test_verify_extra_dollar_in_digest_is_tolerated_by_split_maxsplit():
 # --------------------------------------------------------------------------
 
 def _decode(token: str) -> dict:
-    return jwt.decode(token, security.SECRET_KEY, algorithms=[security.ALGORITHM])
+    # B-ALT-011 (passo 2a): o token agora carrega aud, e o PyJWT exige audience no decode
+    # quando o token traz aud. Usamos o decodificador canônico (valida assinatura+exp+iss+aud).
+    return security.decode_access_token(token)
 
 
 def test_create_access_token_sets_sub():
@@ -148,10 +150,11 @@ def test_extra_claims_can_override_sub():
     assert payload["sub"] == "overridden"
 
 
-def test_extra_none_produces_only_sub_and_exp():
+def test_extra_none_produces_hardening_claims():
+    # B-ALT-011: sem extra, o token carrega os claims de endurecimento (sub/iat/exp/iss/aud/jti).
     token = security.create_access_token("u", extra=None)
     payload = _decode(token)
-    assert set(payload.keys()) == {"sub", "exp"}
+    assert set(payload.keys()) == {"sub", "iat", "exp", "iss", "aud", "jti"}
 
 
 def test_token_uses_configured_algorithm():

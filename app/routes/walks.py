@@ -882,30 +882,52 @@ def delete_walk(walk_id: str, user: User = Depends(get_current_user), db: Sessio
     return {"ok": True}
 
 
+# api-T2: schemas Pydantic permissivos para as ocorrências de passeio (entrada do
+# tutor). Todos os campos são opcionais — espelham os defaults do código anterior — e o
+# Pydantic v2 ignora campos extras por padrão; então nenhum payload que os apps já
+# enviam é rejeitado. Ganho: validação de tipo, 422 honesto e contrato no OpenAPI.
+class WalkComplaintRequest(BaseModel):
+    target_type: str | None = None
+    target_user_id: str | None = None
+    target_pet_id: str | None = None
+    category: str | None = None
+    title: str | None = None
+    description: str | None = None
+    notes: str | None = None
+    evidences: list[dict] = Field(default_factory=list)
+    metadata: dict | None = None
+
+
+class WalkKitIssueReportRequest(BaseModel):
+    confirm_report: bool = False
+    missing_items: dict | None = None
+    notes: str | None = None
+
+
 @router.post("/{walk_id}/complaint")
-def create_walk_complaint(walk_id: str, payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_walk_complaint(walk_id: str, payload: WalkComplaintRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     walk = _get_walk_for_user(walk_id, user, db)
     complaint_payload = ComplaintCreate(
         source="tutor",
-        target_type=payload.get("target_type") or "walker",
-        target_user_id=payload.get("target_user_id") or walk.walker_id,
-        target_pet_id=payload.get("target_pet_id") or walk.pet_id,
+        target_type=payload.target_type or "walker",
+        target_user_id=payload.target_user_id or walk.walker_id,
+        target_pet_id=payload.target_pet_id or walk.pet_id,
         walk_id=walk.id,
-        category=payload.get("category") or "servico",
-        title=payload.get("title") or "Reclamacao sobre passeio",
-        description=payload.get("description") or payload.get("notes") or "Tutor registrou uma ocorrencia sobre o passeio.",
-        evidences=[ComplaintEvidenceCreate(**item) for item in payload.get("evidences", [])],
-        metadata={"origin": "walk_detail", **(payload.get("metadata") or {})},
+        category=payload.category or "servico",
+        title=payload.title or "Reclamacao sobre passeio",
+        description=payload.description or payload.notes or "Tutor registrou uma ocorrencia sobre o passeio.",
+        evidences=[ComplaintEvidenceCreate(**item) for item in payload.evidences],
+        metadata={"origin": "walk_detail", **(payload.metadata or {})},
     )
     return create_complaint(complaint_payload, user, db)
 
 
 @router.post("/{walk_id}/kit-issue-report")
-def create_walk_kit_issue_report(walk_id: str, payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_walk_kit_issue_report(walk_id: str, payload: WalkKitIssueReportRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     walk = _get_walk_for_user(walk_id, user, db)
-    if not payload.get("confirm_report"):
+    if not payload.confirm_report:
         raise HTTPException(status_code=400, detail="Confirme a ocorrencia antes de enviar.")
-    missing = ", ".join([key for key, value in (payload.get("missing_items") or {}).items() if not value]) or "Itens essenciais do kit"
+    missing = ", ".join([key for key, value in (payload.missing_items or {}).items() if not value]) or "Itens essenciais do kit"
     complaint_payload = ComplaintCreate(
         source="tutor",
         target_type="walker",
@@ -914,8 +936,8 @@ def create_walk_kit_issue_report(walk_id: str, payload: dict, user: User = Depen
         walk_id=walk.id,
         category="falta_cuidado",
         title="Ocorrencia de kit do passeador",
-        description=payload.get("notes") or f"Tutor informou problema com kit: {missing}.",
+        description=payload.notes or f"Tutor informou problema com kit: {missing}.",
         evidences=[],
-        metadata={"origin": "kit_issue_report", "missing_items": payload.get("missing_items") or {}},
+        metadata={"origin": "kit_issue_report", "missing_items": payload.missing_items or {}},
     )
     return create_complaint(complaint_payload, user, db)

@@ -5,7 +5,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlalchemy import inspect, text
@@ -565,6 +565,22 @@ app.include_router(legal.router)
 app.include_router(legal.api_router)
 app.include_router(walk_locations.router)
 app.include_router(walk_locations.api_router)
+
+# ── /api/v1 — versionamento de contrato (api-T5). ADITIVO: as rotas atuais (sem
+# versão) continuam servindo os apps em uso; /api/v1/* é a superfície ESTÁVEL para
+# apps/integrações futuras apontarem sem risco de quebra de contrato. Monta os
+# routers de NEGÓCIO (consumidos pelos apps) sob o prefixo versionado; rotas de
+# console/admin internas ficam fora por ora. Cada router de negócio tem prefixo
+# próprio (/auth, /payments, ...), então não há colisão /api/v1/api.
+_v1_router = APIRouter(prefix="/api/v1")
+for _v1_child in (
+    auth.router, tutor.router, pets.router, walks.router, walk_locations.router,
+    walker.router, walker_network.walker_router, payments.router, notifications.router,
+    matching.router, pet_tour.router, recurring_plans.router, shared_walks.router,
+    individual_walk_pricing.router, protected_chat.router,
+):
+    _v1_router.include_router(_v1_child)
+app.include_router(_v1_router)
 
 _operational_scheduler_task: asyncio.Task | None = None
 

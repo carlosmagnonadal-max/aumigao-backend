@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -182,12 +183,20 @@ def admin_legacy_occurrences(
     return [complaint_admin_payload(item) for item in items]
 
 
+# api-T2: schema permissivo da acao administrativa legada sobre ocorrencias. Campos
+# opcionais espelhando o (payload or {}).get anterior; Pydantic v2 ignora extras, entao
+# nenhum payload existente e rejeitado — so ganhamos validacao de tipo e contrato OpenAPI.
+class LegacyOccurrenceActionRequest(BaseModel):
+    action: str | None = None
+    note: str | None = None
+
+
 @legacy_admin_occurrences_router.post("/{complaint_id}/action")
 @api_legacy_admin_occurrences_router.post("/{complaint_id}/action")
-def admin_legacy_occurrence_action(complaint_id: str, payload: dict, admin: User = Depends(require_permission("occurrences.manage")), db: Session = Depends(get_db)):
+def admin_legacy_occurrence_action(complaint_id: str, payload: LegacyOccurrenceActionRequest, admin: User = Depends(require_permission("occurrences.manage")), db: Session = Depends(get_db)):
     complaint = get_complaint_or_403(complaint_id, admin, db)
-    action = (payload or {}).get("action", "add_internal_note")
-    note = (payload or {}).get("note") or f"Acao administrativa: {action}"
+    action = payload.action or "add_internal_note"
+    note = payload.note or f"Acao administrativa: {action}"
     if action == "mark_resolved":
         return complaint_admin_payload(admin_update_complaint(complaint, "resolvida", None, note, admin, db))
     if action == "mark_unresolved":

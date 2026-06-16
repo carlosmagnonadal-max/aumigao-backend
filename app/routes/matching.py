@@ -32,7 +32,9 @@ api_admin_router = APIRouter(prefix="/api/admin/matching", tags=["admin-matching
 @router.post("/walkers", response_model=MatchingResponse)
 @api_router.post("/walkers", response_model=MatchingResponse)
 def match_walkers(payload: MatchingWalkerRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return rank_walkers(payload, db, debug=False)
+    # C11/mt-MT3: restringe a vitrine ao pool da rede do tenant do solicitante
+    # (mesma fronteira da alocação vinculante) — não vaza passeadores cross-tenant.
+    return rank_walkers(payload, db, debug=False, tenant_id=getattr(user, "tenant_id", None))
 
 
 def boost_response_payload(profile: WalkerProfile, db: Session) -> dict:

@@ -139,7 +139,7 @@ def risk_visibility_adjustment(risk_level: str) -> float:
     return 0.0
 
 
-def get_eligible_walkers(request: MatchingWalkerRequest, db: Session) -> list[WalkerProfile]:
+def get_eligible_walkers(request: MatchingWalkerRequest, db: Session, tenant_id: str | None = None) -> list[WalkerProfile]:
     query = db.query(WalkerProfile).filter(
         WalkerProfile.status == "active",
         WalkerProfile.active_as_walker.is_(True),
@@ -148,6 +148,16 @@ def get_eligible_walkers(request: MatchingWalkerRequest, db: Session) -> list[Wa
     if getattr(request, "modality", "standard") == "pet_tour":
         query = query.filter(WalkerProfile.has_vehicle.is_(True))
     profiles = query.order_by(WalkerProfile.created_at.desc()).all()
+    # C11/mt-MT3: quando há tenant, a PREVIEW respeita o MESMO pool da rede usado pela
+    # alocação vinculante — a vitrine não vaza passeadores de fora da rede do tenant
+    # (nem convidados pending/declined). Sem tenant_id mantém o comportamento legado.
+    tenant_pool: set[str] | None = None
+    if tenant_id:
+        from app.services.walker_network_matching_service import get_matching_pool_for_tenant
+        try:
+            tenant_pool = set(get_matching_pool_for_tenant(db, tenant_id))
+        except Exception:
+            tenant_pool = set()
     eligible = []
     seen_keys = set()
     for profile in profiles:
@@ -155,6 +165,8 @@ def get_eligible_walkers(request: MatchingWalkerRequest, db: Session) -> list[Wa
         if not profile.user_id or not dedupe_key or dedupe_key in seen_keys:
             continue
         seen_keys.add(dedupe_key)
+        if tenant_pool is not None and profile.user_id not in tenant_pool:
+            continue
         # WK-10: gate de presença (ligável por flag) — offline fora do pool quando ligado.
         if not passes_online_gate(profile):
             continue
@@ -296,8 +308,8 @@ def demo_matching_response(request: MatchingWalkerRequest, debug: bool = False) 
     return {"top_recommended": public_items[:3], "other_options": public_items[3:], "total_found": len(items), "matching_context": context}
 
 
-def rank_walkers(request: MatchingWalkerRequest, db: Session, debug: bool = False) -> dict:
-    profiles = get_eligible_walkers(request, db)
+def rank_walkers(request: MatchingWalkerRequest, db: Session, debug: bool = False, tenant_id: str | None = None) -> dict:
+    profiles = get_eligible_walkers(request, db, tenant_id=tenant_id)
     if not profiles:
         if DEMO_MODE:
             return demo_matching_response(request, debug=debug)

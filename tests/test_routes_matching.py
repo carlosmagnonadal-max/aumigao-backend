@@ -80,6 +80,11 @@ def add_walker(db, *, user_id, status="active", active_as_walker=True, city="sal
         city=city,
         created_at=datetime.utcnow(),
     ))
+    # C11: a preview de matching agora restringe ao pool da rede do tenant; o walker
+    # precisa de vínculo ativo (TenantWalkerAccess) com o TENANT_ID para ser elegível.
+    from app.models.tenant_walker_access import TenantWalkerAccess
+    db.add(TenantWalkerAccess(id=f"twa-{user_id}", tenant_id=TENANT_ID, walker_user_id=user_id,
+                              status="active", access_type="shared_network"))
     db.commit()
 
 

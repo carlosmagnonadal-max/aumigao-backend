@@ -11,7 +11,7 @@ from uuid import uuid4
 _logger = logging.getLogger("aumigao.admin")
 
 from sqlalchemy import and_, exists, func, inspect, not_, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from app.core.database import get_db
 from app.services.app_settings_service import (
     append_walker_program_action,
@@ -75,6 +75,11 @@ DIRECT_COMPLETION_STATUSES = {"ride_completed", "Finalizado", "finalizado", "com
 COMPLETION_REVIEW_MUTABLE_STATUSES = {"pending", "pending_review", "under_review"}
 COMPLETION_REVIEW_APPROVED_STATUSES = {"approved"}
 COMPLETION_REVIEW_REJECTED_STATUSES = {"rejected", "completion_rejected"}
+
+# Teto de itens serializados na lista `critical_walks` do dashboard. O CONTADOR
+# (critical_operational_alerts / beta_operational_health.critical_recovery_walks)
+# continua refletindo o total real; só a lista (payload pesado) é limitada.
+CRITICAL_WALKS_LIST_CAP = 50
 
 RECOVERY_WALK_STATUSES = {
     "no_walker_found",
@@ -688,7 +693,16 @@ def _apply_application_status(profile: WalkerProfile, status: str, reason: str |
 def _unique_walker_profiles(db: Session, include_internal: bool = True) -> list[dict]:
     rows = []
     seen_keys = set()
-    for profile in db.query(WalkerProfile).order_by(WalkerProfile.created_at.desc()).all():
+    # selectinload do user (relationship WalkerProfile.user): popula o identity map
+    # da sessão numa query batch, de modo que os db.get(User, profile.user_id) em
+    # _profile_user / _serialize_walker_profile / _is_fake_walker_profile virem
+    # cache hit (elimina o N+1 de 1 SELECT de user por passeador).
+    profiles_query = (
+        db.query(WalkerProfile)
+        .options(selectinload(WalkerProfile.user))
+        .order_by(WalkerProfile.created_at.desc())
+    )
+    for profile in profiles_query.all():
         user = _profile_user(profile, db)
         if _is_fake_walker_profile(profile, user):
             continue
@@ -852,10 +866,52 @@ def _weekly_walk_tip_amount(db: Session, real_walk_ids: set[str]) -> float:
     return round(sum(float(tip.amount or 0) for tip in tips), 2)
 
 
-def _serialize_admin_payment(payment: Payment, db: Session) -> dict:
-    walk = db.get(Walk, payment.walk_id) if payment.walk_id else None
-    tutor = db.get(User, payment.tutor_id) if payment.tutor_id else None
-    pet = db.get(Pet, walk.pet_id) if walk and walk.pet_id else None
+def _preload_admin_payment_refs(
+    payments: list[Payment], db: Session
+) -> tuple[dict[str, Walk], dict[str, User], dict[str, Pet]]:
+    """Batch preload de walks/tutores/pets das linhas de pagamento (elimina N+1).
+
+    Substitui 3×db.get por pagamento (até 1000 pagamentos => 3000 queries) por 3
+    queries IN(...). A semântica de lookup por id é idêntica ao db.get.
+    """
+    walk_ids = {p.walk_id for p in payments if p.walk_id}
+    tutor_ids = {p.tutor_id for p in payments if p.tutor_id}
+    walks_by_id = (
+        {w.id: w for w in db.query(Walk).filter(Walk.id.in_(walk_ids)).all()}
+        if walk_ids else {}
+    )
+    pet_ids = {w.pet_id for w in walks_by_id.values() if w.pet_id}
+    tutors_by_id = (
+        {u.id: u for u in db.query(User).filter(User.id.in_(tutor_ids)).all()}
+        if tutor_ids else {}
+    )
+    pets_by_id = (
+        {p.id: p for p in db.query(Pet).filter(Pet.id.in_(pet_ids)).all()}
+        if pet_ids else {}
+    )
+    return walks_by_id, tutors_by_id, pets_by_id
+
+
+def _serialize_admin_payment(
+    payment: Payment,
+    db: Session,
+    walks_by_id: dict | None = None,
+    tutors_by_id: dict | None = None,
+    pets_by_id: dict | None = None,
+) -> dict:
+    # Usa preloads batch quando disponíveis (listagem); senão db.get (detalhe único).
+    if walks_by_id is not None:
+        walk = walks_by_id.get(payment.walk_id) if payment.walk_id else None
+    else:
+        walk = db.get(Walk, payment.walk_id) if payment.walk_id else None
+    if tutors_by_id is not None:
+        tutor = tutors_by_id.get(payment.tutor_id) if payment.tutor_id else None
+    else:
+        tutor = db.get(User, payment.tutor_id) if payment.tutor_id else None
+    if pets_by_id is not None:
+        pet = pets_by_id.get(walk.pet_id) if walk and walk.pet_id else None
+    else:
+        pet = db.get(Pet, walk.pet_id) if walk and walk.pet_id else None
     walk_date, walk_time = _split_scheduled_date(walk.scheduled_date) if walk else (None, None)
     return {
         "id": payment.id,
@@ -1156,6 +1212,9 @@ def dashboard(admin: User = Depends(require_permission("admin.access")), db: Ses
         "disintermediation_alerts": 0,
         "critical_operational_alerts": len(critical_walks),
 
+        # Lista limitada a CRITICAL_WALKS_LIST_CAP para não estourar payload em
+        # tenants grandes. O contador critical_operational_alerts (acima) e o
+        # beta_operational_health.critical_recovery_walks seguem contando TODOS.
         "critical_walks": [
             {
                 "id": walk.id,
@@ -1165,7 +1224,7 @@ def dashboard(admin: User = Depends(require_permission("admin.access")), db: Ses
                 "operational_status": walk.operational_status,
                 "scheduled_date": walk.scheduled_date,
             }
-            for walk in critical_walks
+            for walk in critical_walks[:CRITICAL_WALKS_LIST_CAP]
         ],
         "weekly_tips_amount": _weekly_walk_tip_amount(db, {walk.id for walk in real_walks}),
         "no_show_rate": round((no_show_total / walk_total) * 100, 2) if walk_total else 0,
@@ -1918,7 +1977,12 @@ def payments(
     # require_permission convive com o require_admin do router durante a migração.
     query = apply_tenant_filter(db.query(Payment), Payment, get_admin_tenant_scope(admin))
     rows = query.order_by(Payment.created_at.desc()).offset(offset).limit(limit).all()
-    return [_serialize_admin_payment(payment, db) for payment in rows]
+    # Batch preload (3 queries) — elimina o N+1 de 3×db.get por pagamento.
+    walks_by_id, tutors_by_id, pets_by_id = _preload_admin_payment_refs(rows, db)
+    return [
+        _serialize_admin_payment(payment, db, walks_by_id, tutors_by_id, pets_by_id)
+        for payment in rows
+    ]
 
 
 @router.get("/payments/{payment_id}")

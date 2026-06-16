@@ -2,6 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from app.enums import TenantWalkerAccessStatus
 from app.schemas.common import ORMModel
 
 
@@ -29,7 +30,11 @@ class WalkerNetworkProfileResponse(ORMModel):
 class TenantWalkerAccessCreate(BaseModel):
     walker_user_id: str
     access_type: str = "shared_network"
-    status: str = "active"
+    # api-T1: mantido como str crua de proposito. A rota valida o status
+    # manualmente e devolve 400 em valor invalido — tipar como StrEnum aqui
+    # mudaria esse contrato para 422 (Pydantic). Os valores canonicos vivem em
+    # app.enums.TenantWalkerAccessStatus (espelhado por TENANT_WALKER_ACCESS_STATUSES).
+    status: str = TenantWalkerAccessStatus.ACTIVE.value
 
 
 class TenantWalkerAccessUpdate(BaseModel):

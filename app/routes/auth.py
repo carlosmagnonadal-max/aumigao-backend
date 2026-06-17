@@ -107,7 +107,9 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # benefício comprovado em prod. Se necessário no futuro, adicionar espelhamento aqui.
 
 def build_session(user: User) -> TokenResponse:
-    token = create_access_token(user.id, {"role": user.role})
+    # B-ALT-011 (passo 2b): "ver" carrega o token_version do usuario; o get_current_user
+    # rejeita tokens cujo "ver" ficou para tras (revogados na troca/reset de senha).
+    token = create_access_token(user.id, {"role": user.role, "ver": user.token_version or 0})
     return TokenResponse(access_token=token, refresh_token=token, user=UserResponse.model_validate(user))
 
 @router.post("/register", response_model=TokenResponse)
@@ -502,6 +504,9 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
 
     # Código correto: atualiza senha e marca como usado
     user.password_hash = get_password_hash(payload.new_password)
+    # B-ALT-011 (passo 2b): redefinir a senha revoga TODAS as sessoes antigas
+    # (essencial na recuperacao de conta comprometida).
+    user.token_version = (user.token_version or 0) + 1
     reset_code.used_at = now
     db.commit()
 
@@ -532,6 +537,8 @@ def change_password(
     _validate_password_strength(payload.new_password)
 
     current_user.password_hash = get_password_hash(payload.new_password)
+    # B-ALT-011 (passo 2b): trocar a senha revoga TODAS as sessoes antigas.
+    current_user.token_version = (current_user.token_version or 0) + 1
     db.commit()
 
     _change_password_limiter.clear(limiter_key)

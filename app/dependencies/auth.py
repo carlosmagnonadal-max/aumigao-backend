@@ -24,6 +24,12 @@ def get_current_user(
     user = db.get(User, user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario invalido")
+    # B-ALT-011 (passo 2b): revogação de sessão. Se o token traz "ver" e ele ficou para
+    # trás do token_version atual (troca/reset de senha bumpou), o token está revogado.
+    # Tokens legados sem "ver" são aceitos durante a janela de transição (retrocompat).
+    token_ver = payload.get("ver")
+    if token_ver is not None and token_ver != (user.token_version or 0):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sessao expirada")
     # Armazena o tenant alvo (somente super_admin usa; tenant_scope.py filtra por role).
     # O valor é isolado por request — não há estado compartilhado entre requisições.
     user._act_as_tenant_id = x_act_as_tenant or None

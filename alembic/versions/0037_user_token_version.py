@@ -4,8 +4,8 @@ users: adiciona token_version (Integer, NOT NULL, server_default "0"). Default 0
 tokens legados (sem "ver") seguem aceitos; novos tokens carregam ver=0 ate a 1a troca de
 senha. ZERO regressao no deploy.
 
-Revision ID: 0035_user_token_version
-Revises: 0034_walker_max_dog_size
+Revision ID: 0037_user_token_version
+Revises: 0036_fk_integrity
 Create Date: 2026-06-16
 """
 from typing import Sequence, Union
@@ -14,8 +14,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0035_user_token_version"
-down_revision: Union[str, None] = "0034_walker_max_dog_size"
+revision: str = "0037_user_token_version"
+down_revision: Union[str, None] = "0036_fk_integrity"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

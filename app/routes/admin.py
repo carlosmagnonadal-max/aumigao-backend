@@ -101,6 +101,13 @@ from app.lib.admin_serializers import (
     _walk_completion_checklist,
     _serialize_walk_completion_review,
 )
+from app.models.walker_background_certificate import WalkerBackgroundCertificate
+from app.services.background_check_service import (
+    compute_background_status,
+    official_validation_url as background_official_validation_url,
+    DEFAULT_CERT_VALIDITY_DAYS,
+)
+from app.services.tenant_feature_runtime_service import is_tenant_feature_enabled
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_permission("admin.access"))])
 api_router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_permission("admin.access"))])
@@ -1066,6 +1073,75 @@ def partner_application_detail(candidate_id: str, db: Session = Depends(get_db))
     return _serialize_walker_profile(profile, db)
 
 
+@router.patch("/partner-applications/{candidate_id}/background-certificate/{cert_id}")
+@api_router.patch("/partner-applications/{candidate_id}/background-certificate/{cert_id}")
+def update_background_certificate(
+    candidate_id: str,
+    cert_id: str,
+    request: Request,
+    payload: dict | None = None,
+    admin: User = Depends(require_permission("walkers.validate")),
+    db: Session = Depends(get_db),
+):
+    """Valida / rejeita / expira UMA certidao de antecedentes (semi-manual).
+
+    payload = {"status": "validated"|"rejected"|"expired", "notes": str?}.
+    Recomputa o status agregado do passeador.
+    """
+    profile = db.get(WalkerProfile, candidate_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Candidatura nao encontrada")
+    cert = db.get(WalkerBackgroundCertificate, cert_id)
+    if not cert or cert.walker_profile_id != profile.id:
+        raise HTTPException(status_code=404, detail="Certidao nao encontrada")
+    payload = payload or {}
+    new_status = (payload.get("status") or "").strip().lower()
+    if new_status not in {"validated", "rejected", "expired"}:
+        raise HTTPException(status_code=400, detail="Status de certidao invalido.")
+    notes = payload.get("notes")
+    cert.status = new_status
+    if notes is not None:
+        cert.notes = str(notes)
+    if new_status == "validated":
+        cert.validated_by_admin_id = admin.id
+        cert.validated_at = datetime.utcnow()
+        if not cert.expires_at:
+            cert.expires_at = datetime.utcnow() + timedelta(days=DEFAULT_CERT_VALIDITY_DAYS)
+    else:
+        cert.validated_by_admin_id = admin.id
+        cert.validated_at = None
+    cert.updated_at = datetime.utcnow()
+
+    certificates = (
+        db.query(WalkerBackgroundCertificate)
+        .filter(WalkerBackgroundCertificate.walker_profile_id == profile.id)
+        .all()
+    )
+    aggregate = compute_background_status(profile, certificates)
+    record_admin_operational_event(
+        db,
+        event_type="background_cert_validated" if new_status == "validated" else "background_cert_rejected",
+        entity_type="walker",
+        entity_id=profile.user_id,
+        severity="info" if new_status == "validated" else "warning",
+        title="Certidao de antecedentes atualizada",
+        description=f"Certidao {cert.cert_type} marcada como {new_status} pela administracao.",
+        actor=admin,
+        source="admin.walker.background_certificate",
+        metadata={
+            "candidate_id": profile.id,
+            "cert_id": cert.id,
+            "cert_type": cert.cert_type,
+            "status": new_status,
+            "aggregate": aggregate,
+        },
+        request=request,
+    )
+    db.commit()
+    db.refresh(profile)
+    return _serialize_walker_profile(profile, db)
+
+
 # api-T2: schema permissivo dos campos administrativos da candidatura (PATCH). Todos os
 # campos sao opcionais; usamos model_dump(exclude_unset=True) para obter SO as chaves que
 # o cliente enviou, preservando a semantica PATCH original (`"x" in payload`). Pydantic v2
@@ -1128,10 +1204,48 @@ def update_partner_application_admin_fields(candidate_id: str, payload: UpdatePa
 
 @router.post("/walkers/{walker_id}/approve")
 @api_router.post("/walkers/{walker_id}/approve")
-def approve_walker(walker_id: str, request: Request, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
+def approve_walker(walker_id: str, request: Request, payload: dict | None = None, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
     profile = db.get(WalkerProfile, walker_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Passeador nao encontrado")
+    # GATE Background Check (Fase 0) — dormente: so age quando a flag de tenant
+    # `background_checks` esta LIGADA. Flag OFF (default) => comportamento IDENTICO ao
+    # anterior (zero regressao).
+    payload = payload or {}
+    _bg_user = db.get(User, profile.user_id)
+    _bg_tenant_id = getattr(_bg_user, "tenant_id", None) if _bg_user else None
+    if is_tenant_feature_enabled(db, "background_checks", tenant_id=_bg_tenant_id):
+        certificates = (
+            db.query(WalkerBackgroundCertificate)
+            .filter(WalkerBackgroundCertificate.walker_profile_id == profile.id)
+            .all()
+        )
+        aggregate = compute_background_status(profile, certificates)
+        if aggregate != "verified":
+            override = bool(payload.get("override"))
+            justification = (payload.get("override_justification") or payload.get("justification") or "").strip()
+            if not (override and justification):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Antecedentes nao verificados. Aprovacao bloqueada; envie override=true com justificativa para prosseguir.",
+                )
+            record_admin_operational_event(
+                db,
+                event_type="background_gate_override",
+                entity_type="walker",
+                entity_id=profile.user_id,
+                severity="warning",
+                title="Aprovacao com override de antecedentes",
+                description=justification,
+                actor=admin,
+                source="admin.walker.approve.override",
+                metadata={
+                    "candidate_id": profile.id,
+                    "background_check_status": aggregate,
+                    "justification": justification,
+                },
+                request=request,
+            )
     # Aprovacao em um passo: aprova E ativa operacionalmente (libera o passeador no app).
     # Espelha o que "Ativar operacionalmente" fazia: status=active, role=walker e referral.
     _apply_application_status(profile, "active")

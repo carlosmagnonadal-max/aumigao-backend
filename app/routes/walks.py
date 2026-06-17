@@ -894,9 +894,36 @@ async def create_walk_tip(walk_id: str, payload: WalkTipCreate, user: User = Dep
         db,
     )
 
+# espelha PAID_PAYMENT_STATUSES em admin.py (nao importamos de la p/ evitar import circular).
+_PAID_PAYMENT_STATUSES = {"paid", "Pago", "pagamento_confirmado_sandbox", "payment_confirmed", "confirmed"}
+# Estados em que o passeio ja esta em execucao/concluido — exclusao orfanaria o pagamento
+# ou apagaria historico operacional. Defesa em profundidade caso a linha de Payment falte.
+_WALK_STATUSES_BLOCKED_FROM_DELETE = {
+    "walker_accepted",
+    "ride_scheduled",
+    "walker_arriving",
+    "pet_handover_confirmed",
+    "ride_in_progress",
+    "awaiting_completion_review",
+    "ride_completed",
+    "awaiting_tutor_reconfirmation",
+    "completion_rejected",
+}
+
 @router.delete("/{walk_id}")
 def delete_walk(walk_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     walk = _get_walk_for_user(walk_id, user, db)
+    has_paid_payment = (
+        db.query(Payment)
+        .filter(Payment.walk_id == walk.id, Payment.status.in_(_PAID_PAYMENT_STATUSES))
+        .first()
+        is not None
+    )
+    if has_paid_payment or walk.operational_status in _WALK_STATUSES_BLOCKED_FROM_DELETE:
+        raise HTTPException(
+            status_code=409,
+            detail="Nao e possivel excluir um passeio que ja foi pago, esta em andamento ou foi concluido.",
+        )
     db.delete(walk)
     db.commit()
     return {"ok": True}

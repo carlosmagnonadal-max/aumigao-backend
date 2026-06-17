@@ -1975,33 +1975,6 @@ def recover_walk(walk_id: str, admin: User = Depends(require_permission("walks.r
 
     return _serialize_admin_walk(walk, db)
 
-    _create_notification(
-        db,
-        NotificationCreate(
-            user_id=walk.tutor_id,
-            user_role="tutor",
-            title="Confirme seu passeio",
-            message=(
-                "Encontramos uma situação operacional neste passeio. "
-                "Você pode continuar a busca por um passeador, reagendar ou cancelar sem custo."
-            ),
-            type="walk_recovery",
-            related_entity_type="walk",
-            related_entity_id=walk.id,
-            metadata={
-                "priority": "high",
-                "channel": "in_app",
-                "action": "awaiting_tutor_reconfirmation",
-                "available_options": ["continue_search", "reschedule", "cancel_without_fee"],
-            },
-        ),
-    )
-
-    db.commit()
-    db.refresh(walk)
-
-    return _serialize_admin_walk(walk, db)
-
 @router.get("/payments")
 @api_router.get("/payments")
 def payments(

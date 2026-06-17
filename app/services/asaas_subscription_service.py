@@ -88,7 +88,9 @@ async def create_asaas_subscription(
 
     payload = {
         "customer": customer_id,
-        "billingType": "UNDEFINED" if not is_live else "BOLETO",
+        # A-01: UNDEFINED em sandbox e live — o tutor escolhe PIX/cartao/boleto na
+        # fatura do Asaas a cada ciclo (menor atrito que boleto recorrente fixo).
+        "billingType": "UNDEFINED",
         "value": value,
         "nextDueDate": str(due),
         "cycle": cycle,

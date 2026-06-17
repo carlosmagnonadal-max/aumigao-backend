@@ -94,12 +94,13 @@ def test_create_unknown_interval_defaults_monthly(monkeypatch):
     assert cap["payload"]["cycle"] == svc.DEFAULT_CYCLE == "MONTHLY"
 
 
-def test_create_live_uses_boleto_billing(monkeypatch):
+def test_create_live_uses_undefined_billing(monkeypatch):
+    # A-01: em live o billingType e UNDEFINED (tutor escolhe PIX/cartao/boleto na fatura).
     cfg_live = {"api_key": "k", "base_url": "https://api.asaas", "is_live": True}
     cap = _patch(monkeypatch, cfg=cfg_live, resp=_FakeResp(200, {"id": "s"}))
     asyncio.run(svc.create_asaas_subscription(
         customer_id="c1", value=10.0, interval="monthly", tutor_subscription_id="ts-4"))
-    assert cap["payload"]["billingType"] == "BOLETO"
+    assert cap["payload"]["billingType"] == "UNDEFINED"
 
 
 def test_create_raises_502_on_gateway_error(monkeypatch):

@@ -3,6 +3,7 @@ from app.models.admin_operational_event import AdminOperationalEvent
 from app.models.tutor_profile import TutorProfile
 from app.models.pet import Pet
 from app.models.walker_profile import WalkerProfile
+from app.models.walker_background_certificate import WalkerBackgroundCertificate
 from app.models.walker_availability import WalkerAvailability
 from app.models.walk import Walk, WalkMatchingAttempt, WalkOperationalLog
 from app.models.walk_operational_event import WalkOperationalEvent

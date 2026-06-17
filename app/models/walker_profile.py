@@ -44,5 +44,14 @@ class WalkerProfile(Base):
     # ID da carteira Asaas do walker para split real (Fase B — dormente até PAYMENT_MODE=asaas_live).
     # Configurável via PATCH /admin/walkers/{user_id}/wallet com permissão finance.manage.
     asaas_wallet_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Background Check Fase 0 — status agregado das certidoes de antecedentes.
+    # none|submitted|partial|verified|flagged. Default "none" => ZERO efeito ate ligarem a flag.
+    background_check_status: Mapped[str] = mapped_column(
+        String, default="none", server_default="none", nullable=False
+    )
+    background_verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Consentimento LGPD (base legal p/ dado sensivel) — data + versao do texto aceito.
+    background_consent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    background_consent_version: Mapped[str | None] = mapped_column(String, nullable=True)
 
     user = relationship("User", back_populates="walker_profile")

@@ -38,6 +38,9 @@ PRODUCT_RUNTIME_FEATURE_KEYS = (
     "push_notifications",
     "transactional_emails",
     "support_tickets",
+    # Background Check Fase 0 — gate de antecedentes do passeador. Default-OFF:
+    # NAO esta em DEFAULT_ON_FEATURE_KEYS, entao parte desligada => ZERO regressao.
+    "background_checks",
 )
 
 

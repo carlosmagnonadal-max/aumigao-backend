@@ -137,10 +137,15 @@ def compute_walker_trust(db: Session, walker_user_id: str) -> dict:
         and cancellation_rate < VERIFIED_MAX_CANCELLATION
         and critical_incidents == 0
     )
+    # Background Check Fase 0 — selo de antecedentes verificados (PF + TJ validadas).
+    # Dormente ate ligarem a flag de tenant `background_checks`: enquanto o passeador
+    # nao enviar/validar certidoes, background_check_status fica "none" => selo False.
+    antecedentes_verificados = bool(profile and getattr(profile, "background_check_status", "none") == "verified")
     seals = {
         "cadastro_verificado": cadastro_verificado,
         "identidade_verificada": identidade_verificada,
         "passeador_verificado": passeador_verificado,
+        "antecedentes_verificados": antecedentes_verificados,
     }
 
     # ----- Camada 2: certificacoes automaticas -----

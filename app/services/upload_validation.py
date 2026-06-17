@@ -45,6 +45,11 @@ def _looks_like_image(head: bytes) -> bool:
     return False
 
 
+def _looks_like_pdf(head: bytes) -> bool:
+    # PDFs reais comecam com "%PDF-".
+    return head.startswith(b"%PDF-")
+
+
 def enforce_upload_rate_limit(request: Request) -> None:
     client_ip = (request.client.host if request and request.client else "") or "unknown"
     if upload_rate_limiter.is_blocked(client_ip):
@@ -75,4 +80,34 @@ async def read_image_upload_safely(file: UploadFile, max_bytes: int = MAX_UPLOAD
         raise HTTPException(status_code=400, detail="Arquivo vazio.")
     if not _looks_like_image(head):
         raise HTTPException(status_code=400, detail="O arquivo enviado nao e uma imagem valida.")
+    return b"".join(chunks)
+
+
+async def read_document_upload_safely(file: UploadFile, max_bytes: int = MAX_UPLOAD_BYTES) -> bytes:
+    """Lê o upload aplicando limite de tamanho e aceita IMAGEM ou PDF (certidoes).
+
+    Usado pelos uploads de certidao de antecedentes (Background Check Fase 0), que
+    sao PDFs oficiais. Valida magic bytes (nao confia no content_type, falsificavel).
+    """
+    chunks: list[bytes] = []
+    total = 0
+    head = b""
+    while True:
+        chunk = await file.read(_CHUNK_SIZE)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Arquivo excede o limite de {max_bytes // (1024 * 1024)} MB.",
+            )
+        if len(head) < _HEAD_SIZE:
+            head = (head + chunk)[:_HEAD_SIZE]
+        chunks.append(chunk)
+
+    if total == 0:
+        raise HTTPException(status_code=400, detail="Arquivo vazio.")
+    if not (_looks_like_image(head) or _looks_like_pdf(head)):
+        raise HTTPException(status_code=400, detail="Envie uma imagem ou PDF valido.")
     return b"".join(chunks)

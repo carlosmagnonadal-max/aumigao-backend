@@ -31,7 +31,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.walk import Walk
 from app.models.walker_profile import WalkerProfile
-from app.routes import walker
+from app.routes import partner_application, walker
 from app.services.tenant_seed_service import DEFAULT_TENANT_SLUG
 
 TENANT_ID = "t-test"
@@ -70,7 +70,7 @@ def _build(current_user_id: str | None):
 
     test_app = FastAPI()
     test_app.include_router(walker.router)
-    test_app.include_router(walker.partner_router)
+    test_app.include_router(partner_application.router)
     test_app.dependency_overrides[get_db] = lambda: db
     if current_user_id is not None:
         test_app.dependency_overrides[get_current_user] = lambda: db.get(User, current_user_id)

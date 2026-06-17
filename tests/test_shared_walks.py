@@ -16,6 +16,7 @@ from app.models.shared_walk import (
     TenantSharedWalkConfig,
 )
 from app.models.tenant import Tenant, TenantFeature
+from app.models.tenant_payment_config import TenantPaymentConfig
 from app.services import shared_walk_service as svc
 
 
@@ -24,6 +25,7 @@ def _db():
     Base.metadata.create_all(engine, tables=[
         Tenant.__table__, TenantFeature.__table__, TenantSharedWalkConfig.__table__,
         SharedWalk.__table__, SharedWalkParticipant.__table__, Pet.__table__, Payment.__table__,
+        TenantPaymentConfig.__table__,
     ])
     return sessionmaker(bind=engine)()
 
@@ -108,6 +110,19 @@ def test_checkout_creates_payment_and_marks_paid():
     assert all(p.status == PARTICIPANT_PAID for p in s.participants)
     assert db.query(Payment).count() == 1
     assert db.query(Payment).first().amount == s.price_per_pet * 2
+
+
+def test_checkout_records_commission_split():
+    # B-ALT-003: o passeio compartilhado registra o split (não escapa da comissão).
+    db = _db(); t = _tenant(db); _pet(db, "p1", "tutorA"); _pet(db, "p2", "tutorA")
+    s = svc.create_session(db, t, "tutorA", scheduled_date="x", duration_minutes=45, host_pet_ids=["p1", "p2"], open_to_pool=False)
+    svc.checkout(db, t, s.id, "tutorA")
+    pay = db.query(Payment).first()
+    assert pay.commission_percent is not None and pay.commission_percent > 0
+    assert pay.platform_amount is not None and pay.walker_amount is not None
+    assert pay.platform_amount > 0
+    # plataforma + walker reconstroem o valor cobrado (sem margem de tenant no teste).
+    assert round(pay.platform_amount + pay.walker_amount, 2) == round(pay.amount, 2)
 
 
 def test_confirm_requires_all_paid():

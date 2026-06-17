@@ -30,6 +30,7 @@ from app.models.shared_walk import (
     TenantSharedWalkConfig,
 )
 from app.models.tenant import Tenant
+from app.services.payment_split_service import build_payment_split
 from app.services.tenant_plan_service import enforce_tenant_product_feature, tenant_has_feature
 
 FEATURE_LABEL = "Passeios compartilhados"
@@ -179,6 +180,12 @@ def checkout(db: Session, tenant: Tenant, walk_id: str, tutor_id: str) -> Shared
     if not mine:
         raise HTTPException(status_code=400, detail="Nenhuma cota pendente para este tutor.")
     amount = sum(p.price for p in mine)
+    # B-ALT-003: registra o split de comissão (mesma fonte do passeio individual,
+    # build_payment_split) para o passeio compartilhado NÃO escapar do split. Antes
+    # criava Payment provider="internal" sem comissão/repasse, vazando receita.
+    # A cobrança real no gateway (Asaas) segue a maturidade do beta (Fase B, pendente
+    # também no passeio individual).
+    split = build_payment_split(db, tenant.id, amount)
     payment = Payment(
         id=str(uuid4()),
         tenant_id=tenant.id,
@@ -186,6 +193,9 @@ def checkout(db: Session, tenant: Tenant, walk_id: str, tutor_id: str) -> Shared
         amount=amount,
         status="pending",
         provider="internal",
+        commission_percent=split["commission_percent"],
+        platform_amount=split["platform_amount"],
+        walker_amount=split["walker_amount"],
     )
     db.add(payment)
     for p in mine:

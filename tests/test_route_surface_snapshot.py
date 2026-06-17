@@ -4,11 +4,15 @@ Objetivo: pegar remoção/renomeação ACIDENTAL de endpoint (regressão que que
 apps distribuídos) e forçar uma revisão consciente ao ADICIONAR rotas. Não é
 frágil a mudanças de schema/campos — observa apenas o conjunto (método, path).
 
-Atualizar após uma mudança INTENCIONAL de rotas:
-    python tests/test_route_surface_snapshot.py    # regenera o JSON
+Atualizar após uma mudança INTENCIONAL de rotas (rodar na pasta backend/):
+    python -m tests.test_route_surface_snapshot    # regenera o JSON
 """
 import json
+import sys
 from pathlib import Path
+
+# Permite rodar como script (regeneração) com a raiz do backend no sys.path.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.main import app
 

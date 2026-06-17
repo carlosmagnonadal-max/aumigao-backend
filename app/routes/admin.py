@@ -2510,6 +2510,8 @@ def review_tip(tip_id: str, payload: TipReviewActionRequest, db: Session = Depen
 def approve_withdrawal(payment_id: str, admin: User = Depends(require_permission("finance.manage")), db: Session = Depends(get_db)):
     payment = db.get(Payment, payment_id)
     if payment:
+        # Isolamento multi-tenant: admin de tenant não aprova saque de outro tenant.
+        ensure_tenant_access(payment.tenant_id, get_admin_tenant_scope(admin))
         payment.status = "paid"
         record_admin_operational_event(
             db,
@@ -2530,6 +2532,8 @@ def approve_withdrawal(payment_id: str, admin: User = Depends(require_permission
 def reject_withdrawal(payment_id: str, admin: User = Depends(require_permission("finance.manage")), db: Session = Depends(get_db)):
     payment = db.get(Payment, payment_id)
     if payment:
+        # Isolamento multi-tenant: admin de tenant não rejeita saque de outro tenant.
+        ensure_tenant_access(payment.tenant_id, get_admin_tenant_scope(admin))
         payment.status = "rejected"
         record_admin_operational_event(
             db,

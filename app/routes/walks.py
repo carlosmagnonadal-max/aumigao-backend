@@ -884,8 +884,10 @@ def reschedule_selected_walker_walk(
 
 
 @router.post("/{walk_id}/tip")
-def create_walk_tip(walk_id: str, payload: WalkTipCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return create_walk_tip_checkout(
+async def create_walk_tip(walk_id: str, payload: WalkTipCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # create_walk_tip_checkout é async (chama o gateway). Antes esta rota era `def`
+    # síncrona e retornava a coroutine SEM await => a gorjeta nunca era criada.
+    return await create_walk_tip_checkout(
         walk_id,
         WalkTipCheckoutCreate(amount=payload.amount),
         user,

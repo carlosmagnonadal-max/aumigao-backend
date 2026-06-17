@@ -1034,7 +1034,14 @@ def _available_balance(user: User, db: Session) -> float:
     payments_with_split = (
         db.query(Payment)
         .join(Walk, Payment.walk_id == Walk.id)
-        .filter(Walk.walker_id == user.id, Payment.status == "paid", Payment.walker_amount.isnot(None))
+        # Status de pagamento CONFIRMADO. Antes filtrava só "paid", mas o Asaas grava
+        # "pagamento_confirmado_sandbox"/"payment_confirmed" => o saldo caía sempre no
+        # fallback de preço cheio (ignorando o split). Espelha PAID_PAYMENT_STATUSES.
+        .filter(
+            Walk.walker_id == user.id,
+            Payment.status.in_(("paid", "Pago", "pagamento_confirmado_sandbox", "payment_confirmed", "confirmed")),
+            Payment.walker_amount.isnot(None),
+        )
         .all()
     )
     if payments_with_split:

@@ -273,15 +273,14 @@ def list_walks(
         if user.role == "walker":
             allowed_tenant_ids = _walker_allowed_tenant_ids(user.id, db)
             # Walker ve seus proprios passeios + passeios sem walker atribuido
-            # restritos aos tenants que ele atende (ou passeios sem tenant).
+            # restritos aos tenants que ele atende.
+            # M-04: removido o allow tenant_id IS NULL (vazamento cross-tenant).
+            # Auditoria 2026-06-17 confirmou 0 walks orfaos em prod.
             query = query.filter(
                 (Walk.walker_id == user.id)
                 | (
                     Walk.walker_id.is_(None)
-                    & (
-                        Walk.tenant_id.is_(None)
-                        | Walk.tenant_id.in_(allowed_tenant_ids)
-                    )
+                    & Walk.tenant_id.in_(allowed_tenant_ids)
                 )
             )
         elif user.role in {"admin", "super_admin"}:
@@ -298,15 +297,14 @@ def list_walks(
     if user.role == "walker":
         allowed_tenant_ids = _walker_allowed_tenant_ids(user.id, db)
         # Walker ve seus proprios passeios + passeios sem walker atribuido
-        # restritos aos tenants que ele atende (ou passeios sem tenant).
+        # restritos aos tenants que ele atende.
+        # M-04: removido o allow tenant_id IS NULL (vazamento cross-tenant).
+        # Auditoria 2026-06-17 confirmou 0 walks orfaos em prod.
         query = query.filter(
             (Walk.walker_id == user.id)
             | (
                 Walk.walker_id.is_(None)
-                & (
-                    Walk.tenant_id.is_(None)
-                    | Walk.tenant_id.in_(allowed_tenant_ids)
-                )
+                & Walk.tenant_id.in_(allowed_tenant_ids)
             )
         )
     elif user.role in {"admin", "super_admin"}:

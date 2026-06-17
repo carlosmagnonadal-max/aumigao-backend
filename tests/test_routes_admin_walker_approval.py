@@ -101,6 +101,10 @@ def test_partner_application_detail_happy_path():
     assert body["walker_id"] == CAND_ID
     assert body["user_id"] == CAND_USER_ID
     assert body["raw_status"] == "submitted"
+    # Ficha do passeador (task 3): porte máximo aceito + veículo próprio serializados.
+    assert "max_dog_size" in body
+    assert "has_vehicle" in body
+    assert isinstance(body["has_vehicle"], bool)
 
 
 def test_partner_application_detail_404():

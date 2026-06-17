@@ -650,6 +650,9 @@ def _serialize_walker_profile(profile: WalkerProfile, db: Session, include_inter
         "created_at": profile.created_at,
         "updated_at": profile.updated_at or profile.created_at,
         "asaas_wallet_id": getattr(profile, "asaas_wallet_id", None),
+        # Porte máximo de cão aceito pelo passeador (alimenta o matching; migration 0034).
+        "max_dog_size": getattr(profile, "max_dog_size", None),
+        "has_vehicle": bool(getattr(profile, "has_vehicle", False)),
     }
     # operational_score pode vir pré-calculado em lote (evita N+1 nas listagens);
     # senão calcula sob demanda (detalhe de 1 perfil).

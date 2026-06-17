@@ -1162,8 +1162,19 @@ def dashboard(admin: User = Depends(require_permission("admin.access")), db: Ses
     real_active_walkers_count = _sql_count_real_active_walkers(db)
     real_risk_walkers_count = _sql_count_risk_walkers(db)
 
-    # Walks: preloaded batch (ja era eficiente; mantido para calculo de critical/completed)
-    walk_rows = apply_tenant_filter(db.query(Walk), Walk, scope).all()
+    # Walks: pré-filtra os FAKE em SQL antes de carregar (B-ALT-005). Os mesmos campos
+    # checados por _has_fake_token no realness Python; como _not_fake_token_conditions
+    # usa substring por coluna (tokens sem espaço), o conjunto carregado é IDÊNTICO ao
+    # que o passo 1 do realness manteria — só evita trazer walks de demo/teste para a
+    # memória. O filtro de tutor/pet real (join-coupled) segue em Python.
+    walk_rows = (
+        apply_tenant_filter(db.query(Walk), Walk, scope)
+        .filter(*_not_fake_token_conditions([
+            Walk.id, Walk.tutor_id, Walk.walker_id, Walk.assigned_walker_id,
+            Walk.pet_id, Walk.address_snapshot, Walk.notes,
+        ]))
+        .all()
+    )
     walk_users_by_id, walk_pets_by_id, walk_profiles_by_user_id = _preload_admin_walk_realness(walk_rows, db)
     real_walks = [
         walk

@@ -407,7 +407,13 @@ def _serialize_admin_pet(pet: Pet, db: Session) -> dict:
     }
 
 
-def _serialize_walker_profile(profile: WalkerProfile, db: Session, include_internal: bool = True, operational_score: dict | None = None) -> dict:
+def _serialize_walker_profile(
+    profile: WalkerProfile,
+    db: Session,
+    include_internal: bool = True,
+    operational_score: dict | None = None,
+    background_certs_by_profile_id: dict[str, list] | None = None,
+) -> dict:
     user = _profile_user(profile, db)
     document_count = len([value for value in [profile.document_url, profile.identity_document_back_url, profile.selfie_url, profile.proof_of_address_url] if value])
     raw_status = _canonical_application_status(profile.status)
@@ -464,11 +470,16 @@ def _serialize_walker_profile(profile: WalkerProfile, db: Session, include_inter
     # senão calcula sob demanda (detalhe de 1 perfil).
     payload.update(operational_score if operational_score is not None else calculate_walker_operational_score(profile.user_id, db))
     # Background Check Fase 0 — certidoes de antecedentes (dormente ate ligar a flag).
-    background_certs = (
-        db.query(WalkerBackgroundCertificate)
-        .filter(WalkerBackgroundCertificate.walker_profile_id == profile.id)
-        .all()
-    )
+    # Usa preload batch quando disponivel (background_certs_by_profile_id), caso contrario
+    # faz a query sob demanda (detalhe de 1 perfil — evita N+1 em listagens).
+    if background_certs_by_profile_id is not None:
+        background_certs = background_certs_by_profile_id.get(profile.id, [])
+    else:
+        background_certs = (
+            db.query(WalkerBackgroundCertificate)
+            .filter(WalkerBackgroundCertificate.walker_profile_id == profile.id)
+            .all()
+        )
     payload["background_check_status"] = compute_background_status(profile, background_certs)
     payload["background_verified_at"] = profile.background_verified_at
     payload["background_consent_at"] = profile.background_consent_at

@@ -429,10 +429,21 @@ def _unique_walker_profiles(db: Session, include_internal: bool = True) -> list[
     # B-ALT-006 follow-up: score operacional de todos os passeadores em LOTE (4 queries
     # totais) em vez de 4 por passeador — elimina o N+1 residual da listagem.
     scores = calculate_walker_operational_scores([p.user_id for p in surviving], db)
+    # BG preload: carrega TODAS as certidoes em 1 query batch (evita N+1 de BG).
+    profile_ids = [p.id for p in surviving]
+    bg_certs_list = (
+        db.query(WalkerBackgroundCertificate)
+        .filter(WalkerBackgroundCertificate.walker_profile_id.in_(profile_ids))
+        .all()
+    ) if profile_ids else []
+    bg_certs_by_profile_id: dict[str, list] = {}
+    for cert in bg_certs_list:
+        bg_certs_by_profile_id.setdefault(cert.walker_profile_id, []).append(cert)
     for profile in surviving:
         rows.append(_serialize_walker_profile(
             profile, db, include_internal=include_internal,
             operational_score=scores.get(profile.user_id),
+            background_certs_by_profile_id=bg_certs_by_profile_id,
         ))
     return rows
 

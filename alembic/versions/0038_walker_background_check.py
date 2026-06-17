@@ -7,9 +7,9 @@ ADITIVA e IDEMPOTENTE (has_table / _has_column). Tudo com server_default seguro
 ("none" p/ status) => ZERO regressao; o efeito so aparece quando a flag de tenant
 `background_checks` for ligada (default-OFF).
 
-Revision ID: 0035_walker_background_check
-Revises: 0034_walker_max_dog_size
-Create Date: 2026-06-16
+Revision ID: 0038_walker_background_check
+Revises: 0037_user_token_version
+Create Date: 2026-06-17
 """
 from typing import Sequence, Union
 
@@ -17,8 +17,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0035_walker_background_check"
-down_revision: Union[str, None] = "0034_walker_max_dog_size"
+revision: str = "0038_walker_background_check"
+down_revision: Union[str, None] = "0037_user_token_version"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -71,7 +71,7 @@ from app.models import (
 )
 from app.models.support_ticket import SupportTicket  # noqa: F401 — garante tabela no metadata
 from app.models.walk_location_ping import WalkLocationPing  # noqa: F401 — garante tabela no metadata
-from app.routes import admin, admin_accounts, auth, complaints, contact, coupons, incentives, individual_walk_pricing, legal, matching, notifications, operational_walks, payments, pet_routine, pet_tour, pets, protected_chat, recurring_plans, referrals, reviews, shared_walks, support_tickets, tenant_app_config, tenant_branding, tenant_commercial, tenant_dedicated_app_readiness, tenant_features_runtime, tenant_launch_readiness, tenant_units_runtime, tenants, tutor, tutor_gamification, walker, walker_network, walker_quality, walker_trust, walk_locations, walks, weekly_missions
+from app.routes import admin, admin_accounts, auth, complaints, contact, coupons, incentives, individual_walk_pricing, legal, matching, notifications, operational_walks, partner_application, payments, pet_routine, pet_tour, pets, protected_chat, recurring_plans, referrals, reviews, shared_walks, support_tickets, tenant_app_config, tenant_branding, tenant_commercial, tenant_dedicated_app_readiness, tenant_features_runtime, tenant_launch_readiness, tenant_units_runtime, tenants, tutor, tutor_gamification, walker, walker_network, walker_quality, walker_trust, walk_locations, walks, weekly_missions
 from app.services.admin_seed_service import ensure_configured_admin_users
 from app.services.tenant_seed_service import ensure_default_tenant_links, ensure_network_profiles
 from app.services.operational_matching_service import ensure_operational_schema
@@ -468,7 +468,7 @@ app.include_router(operational_walks.router)
 app.include_router(operational_walks.api_router)
 app.include_router(walker.router)
 app.include_router(walker.api_public_router)
-app.include_router(walker.partner_router)
+app.include_router(partner_application.router)
 app.include_router(walker_network.router)
 app.include_router(walker_network.api_router)
 app.include_router(walker_network.walker_router)

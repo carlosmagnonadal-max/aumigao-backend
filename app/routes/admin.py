@@ -21,7 +21,7 @@ from app.services.app_settings_service import (
 )
 from app.dependencies.rbac import require_permission
 from app.services.audit_service import record_audit_log
-from app.services.payment_split_service import get_or_create_payment_config, update_payment_config
+from app.services.payment_split_service import build_payment_split, get_or_create_payment_config, update_payment_config
 from app.services.tenant_context import resolve_current_tenant_id
 from app.schemas.tenant_payment_config import TenantPaymentConfigResponse, TenantPaymentConfigUpdate
 from app.dependencies.tenant_scope import apply_tenant_filter, ensure_tenant_access, get_admin_tenant_scope
@@ -265,13 +265,21 @@ def _ensure_internal_walk_payment(walk: Walk, db: Session):
     ).first()
     if existing_paid:
         return existing_paid
+    # A-02: registra o split de comissão (antes ficava None -> saldo do walker e
+    # relatórios financeiros não tinham o repasse das finalizações manuais).
+    amount = float(walk.price or 0)
+    split = build_payment_split(db, walk.tenant_id, amount)
     payment = Payment(
         id=str(uuid4()),
+        tenant_id=walk.tenant_id,
         tutor_id=walk.tutor_id,
         walk_id=walk.id,
-        amount=float(walk.price or 0),
+        amount=amount,
         status="paid",
         provider="internal",
+        commission_percent=split["commission_percent"],
+        platform_amount=split["platform_amount"],
+        walker_amount=split["walker_amount"],
     )
     db.add(payment)
     return payment

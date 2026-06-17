@@ -27,6 +27,11 @@ from app.services.walker_operational_score_service import (
     calculate_walker_operational_score,
 )
 from app.services.operational_matching_service import serialize_operational_walk
+from app.models.walker_background_certificate import WalkerBackgroundCertificate
+from app.services.background_check_service import (
+    compute_background_status,
+    official_validation_url as background_official_validation_url,
+)
 
 _logger = logging.getLogger("aumigao.admin")
 
@@ -458,6 +463,34 @@ def _serialize_walker_profile(profile: WalkerProfile, db: Session, include_inter
     # operational_score pode vir pré-calculado em lote (evita N+1 nas listagens);
     # senão calcula sob demanda (detalhe de 1 perfil).
     payload.update(operational_score if operational_score is not None else calculate_walker_operational_score(profile.user_id, db))
+    # Background Check Fase 0 — certidoes de antecedentes (dormente ate ligar a flag).
+    background_certs = (
+        db.query(WalkerBackgroundCertificate)
+        .filter(WalkerBackgroundCertificate.walker_profile_id == profile.id)
+        .all()
+    )
+    payload["background_check_status"] = compute_background_status(profile, background_certs)
+    payload["background_verified_at"] = profile.background_verified_at
+    payload["background_consent_at"] = profile.background_consent_at
+    payload["background_consent_version"] = profile.background_consent_version
+    payload["background_certificates"] = [
+        {
+            "id": cert.id,
+            "cert_type": cert.cert_type,
+            "issuer_uf": cert.issuer_uf,
+            "cert_number": cert.cert_number,
+            "document_url": create_signed_upload_url(cert.document_url),
+            "status": cert.status,
+            "validated_by_admin_id": cert.validated_by_admin_id,
+            "validated_at": cert.validated_at,
+            "expires_at": cert.expires_at,
+            "official_validation_url": background_official_validation_url(cert.cert_type, cert.issuer_uf, cert.cert_number),
+            "notes": cert.notes or "",
+            "created_at": cert.created_at,
+            "updated_at": cert.updated_at,
+        }
+        for cert in background_certs
+    ]
     if include_internal:
         payload["internal_notes"] = profile.internal_notes or ""
     return payload

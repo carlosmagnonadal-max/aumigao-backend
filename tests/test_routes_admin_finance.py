@@ -227,3 +227,32 @@ def test_reject_withdrawal_forbidden_for_non_admin():
     assert r.status_code == 403
     db.expire_all()
     assert db.get(Payment, "pay-rej-403").status == "pending"
+
+
+# ----------------- B-02b: guard — nao-saque nao pode ser aprovado/rejeitado -----------------
+def _add_asaas_payment(db, pid="pay-asaas-1", status="pending"):
+    """Payment de tutor via Asaas (provider='asaas') — NAO e saque de passeador."""
+    db.add(Payment(
+        id=pid, tenant_id=TENANT_ID, tutor_id=TUTOR_ID, walk_id="walk-x",
+        amount=50.0, status=status, provider="asaas",
+    ))
+    db.commit()
+
+
+def test_approve_non_withdrawal_returns_400():
+    client, db = build()
+    _add_asaas_payment(db, pid="pay-asaas-approve")
+    r = client.post("/admin/withdrawals/pay-asaas-approve/approve")
+    assert r.status_code == 400, r.text
+    db.expire_all()
+    # status deve permanecer inalterado
+    assert db.get(Payment, "pay-asaas-approve").status == "pending"
+
+
+def test_reject_non_withdrawal_returns_400():
+    client, db = build()
+    _add_asaas_payment(db, pid="pay-asaas-reject")
+    r = client.post("/admin/withdrawals/pay-asaas-reject/reject")
+    assert r.status_code == 400, r.text
+    db.expire_all()
+    assert db.get(Payment, "pay-asaas-reject").status == "pending"

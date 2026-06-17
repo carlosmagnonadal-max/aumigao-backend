@@ -1077,9 +1077,41 @@ def _goals_evolution_payload(user: User, db: Session) -> dict:
     weekly_earnings = _sum_walk_values(week_walks) if has_real_data else 368.00
     monthly_earnings = _sum_walk_values(month_walks) if has_real_data else 1520.00
     active_days = len({(_walk_started_at(walk) or now).date().isoformat() for walk in week_walks}) if has_real_data else 4
-    rating_avg = 4.9
-    acceptance_rate = 88
-    cancellation_rate = 3
+
+    # M-05 fix: when the walker has real data, compute the three metrics from real
+    # sources (was hardcoded 4.9/88/3 even for real walkers). In demo mode (no
+    # completed walks) keep the demo values so the demo screen stays coherent with
+    # the other fabricated numbers above. Real-but-empty (completed walks but zero
+    # reviews/attempts) => 0, never a fabricated value. Queries run only in the
+    # real-data branch to avoid wasted work in demo mode.
+    if has_real_data:
+        # rating_avg: average of WalkReview.rating for this walker (0 when no reviews).
+        rating_avg = _walk_review_reputation_summary(user.id, db)["rating_avg"]
+
+        # acceptance_rate: accepted / (accepted + declined + expired) * 100.
+        # "skipped" and "pending" excluded — skipped was never offered, pending is open.
+        attempts = (
+            db.query(WalkMatchingAttempt)
+            .filter(
+                WalkMatchingAttempt.walker_id == user.id,
+                WalkMatchingAttempt.status.in_(("accepted", "declined", "expired")),
+            )
+            .all()
+        )
+        total_decided = len(attempts)
+        accepted_count = sum(1 for a in attempts if a.status == "accepted")
+        acceptance_rate = round((accepted_count / total_decided) * 100) if total_decided else 0
+
+        # cancellation_rate: cancelled walks / total walks * 100.
+        # Uses Walk.status == "Cancelado" (canonical value per behavior_score_service).
+        all_walks = db.query(Walk).filter(Walk.walker_id == user.id).all()
+        total_walks = len(all_walks)
+        cancelled_walks = sum(1 for w in all_walks if (w.status or "").strip().lower() == "cancelado")
+        cancellation_rate = round((cancelled_walks / total_walks) * 100) if total_walks else 0
+    else:
+        rating_avg = 4.9
+        acceptance_rate = 88
+        cancellation_rate = 3
     regularity = min(100, round((active_days / 5) * 100)) if active_days else 72
     total_completed = len(completed) if has_real_data else 38
     level = _walker_level(total_completed, rating_avg, acceptance_rate, cancellation_rate, regularity)

@@ -963,49 +963,99 @@ def _serialize_admin_payment(
 
 
 def _walker_program_rows(db: Session) -> list[dict]:
-    """F02: dados reais do banco; sem index%2 nem demo rows."""
-    from datetime import timedelta
-    from app.services.walker_operational_score_service import calculate_walker_operational_score
+    """F02: dados reais do banco; sem index%2 nem demo rows.
+
+    B-03: batch queries — um query por relação em vez de N por passeador.
+    """
+    from app.services.walker_operational_score_service import calculate_walker_operational_scores
 
     now = datetime.utcnow()
     week_start = datetime(now.year, now.month, now.day) - timedelta(days=now.weekday())
 
-    rows = []
     profiles = db.query(WalkerProfile).all()
-    for profile in (profiles or []):
-        user = _profile_user(profile, db)
-        if _is_fake_walker_profile(profile, user):
-            continue
 
-        completed = db.query(Walk).filter(Walk.walker_id == profile.user_id, Walk.status == "Finalizado").count()
+    # --- pré-filtragem de fake profiles (requer User) ---
+    # Batch: busca todos os users relevantes de uma vez.
+    all_user_ids = [p.user_id for p in profiles if p.user_id]
+    users_by_id: dict[str, User] = {
+        u.id: u
+        for u in db.query(User).filter(User.id.in_(all_user_ids)).all()
+    } if all_user_ids else {}
 
-        # Avaliações reais via WalkReview
-        reviews = db.query(WalkReview).filter(WalkReview.walker_id == profile.user_id).all()
+    real_profiles = [
+        p for p in profiles
+        if not _is_fake_walker_profile(p, users_by_id.get(p.user_id) if p.user_id else None)
+    ]
+    if not real_profiles:
+        return []
+
+    walker_user_ids = [p.user_id for p in real_profiles if p.user_id]
+    id_set = set(walker_user_ids)
+
+    # --- batch: passeios concluídos por walker ---
+    completed_by: dict[str, int] = {wid: 0 for wid in walker_user_ids}
+    for walk_id, count in (
+        db.query(Walk.walker_id, func.count(Walk.id))
+        .filter(Walk.walker_id.in_(id_set), Walk.status == "Finalizado")
+        .group_by(Walk.walker_id)
+        .all()
+    ):
+        completed_by[walk_id] = count
+
+    # --- batch: avaliações por walker ---
+    reviews_by: dict[str, list] = {wid: [] for wid in walker_user_ids}
+    for review in db.query(WalkReview).filter(WalkReview.walker_id.in_(id_set)).all():
+        if review.walker_id in reviews_by:
+            reviews_by[review.walker_id].append(review)
+
+    # --- batch: score operacional (já tem função de batch no serviço) ---
+    op_scores = calculate_walker_operational_scores(walker_user_ids, db)
+
+    # --- batch: kit submissions por walker ---
+    kit_by: dict[str, WalkerKitSubmission | None] = {wid: None for wid in walker_user_ids}
+    for kit in db.query(WalkerKitSubmission).filter(WalkerKitSubmission.walker_user_id.in_(id_set)).all():
+        # first() semântica: keep first seen (subsequent ignored)
+        if kit_by.get(kit.walker_user_id) is None:
+            kit_by[kit.walker_user_id] = kit
+
+    # --- batch: gorjetas da semana por walker ---
+    tips_by: dict[str, float] = {wid: 0.0 for wid in walker_user_ids}
+    for tip in db.query(WalkTip).filter(
+        WalkTip.walker_id.in_(id_set),
+        WalkTip.status == "paid",
+        WalkTip.created_at >= week_start,
+    ).all():
+        if tip.walker_id in tips_by:
+            tips_by[tip.walker_id] += float(tip.amount or 0)
+
+    # --- assembly ---
+    rows = []
+    for profile in real_profiles:
+        wid = profile.user_id
+        user = users_by_id.get(wid) if wid else None
+
+        # Avaliações
+        reviews = reviews_by.get(wid, [])
         rating_count = len(reviews)
         rating_avg = round(sum(r.rating for r in reviews) / rating_count, 2) if rating_count else None
 
-        # Score operacional real
-        op_score = calculate_walker_operational_score(profile.user_id, db)
-        score = op_score.get("score") if op_score else None
-        matching_score = op_score.get("score") if op_score else None  # mesmo score como proxy
+        # Score operacional — reusa _score_from_inputs via batch service
+        op_score = op_scores.get(wid) if wid else None
+        score = op_score.get("operational_score") if op_score else None
+        matching_score = score  # mesmo score como proxy
 
-        # Kit real
-        kit_sub = db.query(WalkerKitSubmission).filter(WalkerKitSubmission.walker_user_id == profile.user_id).first()
+        # Kit
+        kit_sub = kit_by.get(wid) if wid else None
         kit_audit_status = kit_sub.audit_status if kit_sub else "sem_kit"
         kit_level = None  # sem tabela de nível de kit calculado; kit_sub tem items_json mas não nível numérico
 
-        # Gorjetas da semana
-        tips_week_rows = db.query(WalkTip).filter(
-            WalkTip.walker_id == profile.user_id,
-            WalkTip.status == "paid",
-            WalkTip.created_at >= week_start,
-        ).all()
-        tips_week = sum(float(t.amount or 0) for t in tips_week_rows)
+        # Nome: user já carregado no batch
+        name = (user.full_name if user else None) or (user.email if user else None) or "Passeador"
 
         rows.append({
             "walker_id": profile.id,
-            "user_id": profile.user_id,
-            "name": _walker_name(profile, db),
+            "user_id": wid,
+            "name": name,
             "status": profile.status,
             "kit_level": kit_level,
             "kit_audit_status": kit_audit_status,
@@ -1015,9 +1065,9 @@ def _walker_program_rows(db: Session) -> list[dict]:
             "rating_count": rating_count,
             "score": score,
             "matching_score": matching_score,
-            "tips_week": tips_week,
+            "tips_week": tips_by.get(wid, 0.0),
             "tips_pending_review": 0,  # sem fila de revisão real implementada
-            "completed_walks": completed,
+            "completed_walks": completed_by.get(wid, 0),
             "schedule_conflicts_blocked": 0,  # sem tabela; honesto = 0
         })
     # F02: sem demo row de fallback — lista vazia é honesta
@@ -2491,6 +2541,10 @@ def review_tip(tip_id: str, payload: TipReviewActionRequest, db: Session = Depen
 def approve_withdrawal(payment_id: str, admin: User = Depends(require_permission("finance.manage")), db: Session = Depends(get_db)):
     payment = db.get(Payment, payment_id)
     if payment:
+        # B-02b: guard — só Payment rows criadas via /walker/withdrawals são saques.
+        # Discriminador canônico: provider == "pix" (walker.py:2791 cria com provider="pix").
+        if payment.provider != "pix":
+            raise HTTPException(status_code=400, detail="Payment nao e um saque de passeador.")
         # Isolamento multi-tenant: admin de tenant não aprova saque de outro tenant.
         ensure_tenant_access(payment.tenant_id, get_admin_tenant_scope(admin))
         payment.status = "paid"
@@ -2513,6 +2567,9 @@ def approve_withdrawal(payment_id: str, admin: User = Depends(require_permission
 def reject_withdrawal(payment_id: str, admin: User = Depends(require_permission("finance.manage")), db: Session = Depends(get_db)):
     payment = db.get(Payment, payment_id)
     if payment:
+        # B-02b: guard — mesmo discriminador do approve.
+        if payment.provider != "pix":
+            raise HTTPException(status_code=400, detail="Payment nao e um saque de passeador.")
         # Isolamento multi-tenant: admin de tenant não rejeita saque de outro tenant.
         ensure_tenant_access(payment.tenant_id, get_admin_tenant_scope(admin))
         payment.status = "rejected"

@@ -10,11 +10,11 @@ class Payment(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     tenant_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     tutor_id: Mapped[str] = mapped_column(String, index=True)
-    walk_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    walk_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     amount: Mapped[float] = mapped_column(Money)
     status: Mapped[str] = mapped_column(String, default="pending")
     provider: Mapped[str] = mapped_column(String, default="asaas")
-    provider_payment_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    provider_payment_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     # URL da fatura/checkout hospedado retornada pelo Asaas (invoiceUrl).
     # Persiste para exibição posterior sem nova chamada ao gateway.
     invoice_url: Mapped[str | None] = mapped_column(String, nullable=True)

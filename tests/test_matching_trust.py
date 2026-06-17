@@ -85,11 +85,12 @@ def test_matched_walker_payload_includes_trust():
     trust = payload["trust"]
     # walker_user_id correto.
     assert trust["walker_user_id"] == "walker-1"
-    # seals com as 3 chaves booleanas do contrato.
+    # seals com as chaves booleanas do contrato (inclui antecedentes_verificados, BG-3).
     assert set(trust["seals"].keys()) == {
         "cadastro_verificado",
         "identidade_verificada",
         "passeador_verificado",
+        "antecedentes_verificados",
     }
     assert all(isinstance(v, bool) for v in trust["seals"].values())
     # level nos rotulos novos.
@@ -129,5 +130,6 @@ def test_rank_walkers_public_payload_includes_trust():
             "cadastro_verificado",
             "identidade_verificada",
             "passeador_verificado",
+            "antecedentes_verificados",
         }
         assert walker["trust"]["level"] in {"Bronze", "Prata", "Ouro", "Diamante"}

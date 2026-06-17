@@ -26,6 +26,11 @@ from app.models.walk_review import WalkReview
 from app.models.walk_tip import WalkTip
 from app.models.walker_kit_submission import WalkerKitSubmission
 from app.models.walker_profile import WalkerProfile
+from app.models.walker_background_certificate import WalkerBackgroundCertificate
+from app.services.background_check_service import (
+    compute_background_status,
+    official_validation_url as background_check_official_url,
+)
 from app.models.walker_availability import WalkerAvailability
 from app.schemas.walker_availability import WalkerAvailabilityUpdate
 from app.schemas.walker_presence import WalkerOnlineUpdate
@@ -851,6 +856,151 @@ def update_profile(payload: WalkerProfileUpdate, user: User = Depends(get_curren
     db.commit()
     db.refresh(profile)
     return profile
+
+
+# --------------------------------------------------------------------------- #
+# Background Check Fase 0 — consentimento + envio de certidoes + status.        #
+# Tudo dormente em producao ate a flag de tenant `background_checks` ligar.     #
+# --------------------------------------------------------------------------- #
+BACKGROUND_CERT_TYPES = {"pf", "tj", "trf", "tse"}
+DEFAULT_BACKGROUND_CONSENT_VERSION = "v1"
+
+
+class BackgroundConsentPayload(BaseModel):
+    consent_version: str | None = None
+
+
+class BackgroundCertificatePayload(BaseModel):
+    cert_type: str
+    uf: str | None = None
+    cert_number: str
+    document_url: str | None = None
+
+
+def _walker_profile_for_user(user: User, db: Session) -> WalkerProfile:
+    profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == user.id).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Cadastro de passeador nao encontrado.")
+    return profile
+
+
+def _serialize_background_certificate(cert) -> dict:
+    return {
+        "id": cert.id,
+        "cert_type": cert.cert_type,
+        "issuer_uf": cert.issuer_uf,
+        "cert_number": cert.cert_number,
+        "document_url": cert.document_url,
+        "status": cert.status,
+        "validated_at": cert.validated_at,
+        "expires_at": cert.expires_at,
+        "official_validation_url": background_check_official_url(cert.cert_type, cert.issuer_uf, cert.cert_number),
+        "created_at": cert.created_at,
+        "updated_at": cert.updated_at,
+    }
+
+
+@router.post("/background/consent")
+def submit_background_consent(
+    payload: BackgroundConsentPayload | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    profile = _walker_profile_for_user(user, db)
+    version = (payload.consent_version if payload else None) or DEFAULT_BACKGROUND_CONSENT_VERSION
+    profile.background_consent_at = datetime.utcnow()
+    profile.background_consent_version = version
+    profile.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(profile)
+    return {
+        "consent_at": profile.background_consent_at,
+        "consent_version": profile.background_consent_version,
+    }
+
+
+@router.post("/background/certificate", status_code=201)
+def submit_background_certificate(
+    payload: BackgroundCertificatePayload,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    profile = _walker_profile_for_user(user, db)
+    if not profile.background_consent_at:
+        raise HTTPException(status_code=400, detail="Consentimento de antecedentes obrigatorio antes de enviar certidoes.")
+    cert_type = (payload.cert_type or "").strip().lower()
+    if cert_type not in BACKGROUND_CERT_TYPES:
+        raise HTTPException(status_code=400, detail="Tipo de certidao invalido.")
+    uf = (payload.uf or "").strip().upper() or None
+    cert_number = (payload.cert_number or "").strip()
+    if not cert_number:
+        raise HTTPException(status_code=400, detail="Numero da certidao obrigatorio.")
+
+    # 1 linha por cert_type/uf — cria ou atualiza. Reenvio volta a "pending".
+    existing = (
+        db.query(WalkerBackgroundCertificate)
+        .filter(
+            WalkerBackgroundCertificate.walker_profile_id == profile.id,
+            WalkerBackgroundCertificate.cert_type == cert_type,
+        )
+        .first()
+    )
+    if existing:
+        cert = existing
+        cert.issuer_uf = uf
+        cert.cert_number = cert_number
+        cert.document_url = payload.document_url
+        cert.status = "pending"
+        cert.validated_by_admin_id = None
+        cert.validated_at = None
+        cert.updated_at = datetime.utcnow()
+    else:
+        cert = WalkerBackgroundCertificate(
+            id=str(uuid4()),
+            walker_profile_id=profile.id,
+            cert_type=cert_type,
+            issuer_uf=uf,
+            cert_number=cert_number,
+            document_url=payload.document_url,
+            status="pending",
+        )
+        db.add(cert)
+    db.flush()
+
+    certificates = (
+        db.query(WalkerBackgroundCertificate)
+        .filter(WalkerBackgroundCertificate.walker_profile_id == profile.id)
+        .all()
+    )
+    aggregate = compute_background_status(profile, certificates)
+    db.commit()
+    db.refresh(cert)
+    return {
+        "certificate": _serialize_background_certificate(cert),
+        "background_check_status": aggregate,
+    }
+
+
+@router.get("/background")
+def get_background_status(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    profile = _walker_profile_for_user(user, db)
+    certificates = (
+        db.query(WalkerBackgroundCertificate)
+        .filter(WalkerBackgroundCertificate.walker_profile_id == profile.id)
+        .all()
+    )
+    aggregate = compute_background_status(profile, certificates)
+    db.commit()
+    return {
+        "background_check_status": aggregate,
+        "background_verified_at": profile.background_verified_at,
+        "consent_at": profile.background_consent_at,
+        "consent_version": profile.background_consent_version,
+        "certificates": [_serialize_background_certificate(c) for c in certificates],
+    }
 
 
 @router.get("/dashboard")

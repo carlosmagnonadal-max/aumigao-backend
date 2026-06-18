@@ -325,3 +325,23 @@ def test_update_account_cross_tenant_blocked_via_helper():
     with pytest.raises(HTTPException) as exc_info:
         _assert_can_manage_target(admin_a, TENANT_B, "admin")
     assert exc_info.value.status_code == 403
+
+
+# -------------------------------------------------------- B2: must_change_password ----
+
+def test_create_account_sets_must_change_password_true():
+    """Todo admin criado via POST /admin/accounts deve ter must_change_password=True."""
+    client, db = build(current=SUPER_ID)
+    r = client.post("/admin/accounts", json={
+        "email": "b2-admin@aumigao.app",
+        "full_name": "Admin B2",
+        "role": "admin",
+        "tenant_id": TENANT_A,
+        "password": "Senha@1234",
+    })
+    assert r.status_code == 201, r.text
+    body = r.json()
+
+    user = db.query(User).filter(User.email == "b2-admin@aumigao.app").first()
+    assert user is not None
+    assert user.must_change_password is True, "must_change_password deveria ser True para novo admin"

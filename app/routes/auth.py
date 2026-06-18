@@ -619,6 +619,8 @@ def change_password(
     current_user.password_hash = get_password_hash(payload.new_password)
     # B-ALT-011 (passo 2b): trocar a senha revoga TODAS as sessoes antigas.
     current_user.token_version = (current_user.token_version or 0) + 1
+    # B2: zera a flag de troca obrigatoria apos troca bem-sucedida.
+    current_user.must_change_password = False
     db.commit()
 
     _change_password_limiter.clear(limiter_key)

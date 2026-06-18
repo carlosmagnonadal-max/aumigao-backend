@@ -16,6 +16,9 @@ class User(Base):
     # B-ALT-011 (passo 2b): versao da sessao. O access token carrega "ver" = este valor;
     # incrementar (na troca/reset de senha) revoga TODAS as sessoes antigas do usuario.
     token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    # B2: flag de troca obrigatoria de senha no 1o login. Setada True ao criar conta
+    # admin via POST /admin/accounts; zerada apos troca bem-sucedida via /auth/change-password.
+    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     tutor_profile = relationship("TutorProfile", back_populates="user", uselist=False)

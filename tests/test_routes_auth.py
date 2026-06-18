@@ -308,3 +308,46 @@ def test_me_returns_current_user():
     assert body["id"] == "me-user"
     assert body["email"] == "me@test.com"
     assert body["role"] == "tutor"
+
+
+# -------------------------------------------------------- B2: must_change_password ----
+
+def test_login_exposes_must_change_password_flag():
+    """Login retorna must_change_password no objeto user — o admin-web usa para redirecionar."""
+    client, _ = build(users=[make_user(uid="admin-b2", email="admin-b2@test.com",
+                                       password="Senha@1234", role="admin",
+                                       must_change_password=True)])
+    r = client.post("/auth/login", json={"email": "admin-b2@test.com", "password": "Senha@1234"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "must_change_password" in body["user"], "campo must_change_password ausente no user do login"
+    assert body["user"]["must_change_password"] is True
+
+
+def test_login_must_change_password_false_for_normal_users():
+    """Usuarios normais (must_change_password=False) recebem a flag como False no login."""
+    client, _ = build(users=[make_user(uid="u-normal", email="normal@test.com",
+                                       password="senha1234", must_change_password=False)])
+    r = client.post("/auth/login", json={"email": "normal@test.com", "password": "senha1234"})
+    assert r.status_code == 200, r.text
+    assert r.json()["user"]["must_change_password"] is False
+
+
+def test_change_password_clears_must_change_password():
+    """Apos /auth/change-password, must_change_password deve ser False no banco."""
+    from app.core.security import get_password_hash as _hash
+
+    client, db = build(users=[make_user(uid="u-chpwd", email="chpwd@test.com",
+                                        password="Senha@1234", must_change_password=True)])
+    # Forca o usuario autenticado via override
+    client.app.dependency_overrides[get_current_user] = lambda: db.get(User, "u-chpwd")
+
+    r = client.post("/auth/change-password", json={
+        "current_password": "Senha@1234",
+        "new_password": "NovaSenh@5678",
+    })
+    assert r.status_code == 200, r.text
+
+    db.expire_all()
+    user = db.get(User, "u-chpwd")
+    assert user.must_change_password is False, "must_change_password deveria ser False apos troca"

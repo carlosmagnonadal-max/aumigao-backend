@@ -22,4 +22,8 @@ class UserResponse(ORMModel):
     full_name: str = ""
     role: str
     is_active: bool
+    # B2: flag de troca obrigatoria de senha no 1o login; exposta no login para o
+    # admin-web decidir o redirect sem bloquear o token. Default False: usuarios
+    # legados (sem coluna no DB ainda) e objetos criados sem persistir veem False.
+    must_change_password: bool | None = False
     created_at: datetime

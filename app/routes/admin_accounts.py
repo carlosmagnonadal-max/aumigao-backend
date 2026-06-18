@@ -149,6 +149,7 @@ def create_account(
         tenant_id=payload.tenant_id,
         password_hash=get_password_hash(payload.password),
         is_active=True,
+        must_change_password=True,  # B2: troca obrigatoria no 1o login
         created_at=datetime.utcnow(),
     )
     db.add(user)

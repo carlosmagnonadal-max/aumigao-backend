@@ -362,13 +362,13 @@ _cors_env = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
 if _cors_env:
     _cors_origins: list[str] = [o.strip() for o in _cors_env.split(",") if o.strip()]
 else:
-    # Fallback para domínios conhecidos + wildcard como último recurso
+    # Fallback para domínios conhecidos em produção (sem wildcard).
+    # Para dev local, sete CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8081
     _cors_origins = [
         "https://aumigaowalk.com.br",
         "https://www.aumigaowalk.com.br",
-        # Admin-web na Vercel — aceita qualquer subdomínio *.vercel.app
+        # Admin-web na Vercel
         "https://admin-aumigao.vercel.app",
-        "*",
     ]
 
 # Middlewares — ordem de add_middleware é de fora para dentro (LIFO na execução).

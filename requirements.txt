@@ -6,7 +6,7 @@ certifi==2026.4.22
 click==8.3.3
 colorama==0.4.6
 dnspython==2.8.0
-ecdsa==0.19.2
+ecdsa>=0.19.1
 email-validator==2.3.0
 fastapi==0.136.1
 greenlet==3.4.0
@@ -21,7 +21,6 @@ pydantic==2.13.3
 pydantic_core==2.46.3
 PyJWT[crypto]==2.12.1
 python-dotenv==1.2.2
-python-jose==3.5.0
 python-multipart==0.0.27
 rsa==4.9.1
 six==1.17.0

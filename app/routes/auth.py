@@ -79,6 +79,18 @@ from app.utils.registration_validation import normalize_cpf_or_raise, normalize_
 # Compartilhado com IP embedado na chave quando disponível.
 _forgot_password_limiter = InMemoryLoginRateLimiter(max_failures=3, window_seconds=900)
 
+# Rate limiters por IP para rotas sem autenticação prévia (A4 — auditoria 2026-06-17).
+# register: 10 cadastros por hora por IP.
+_register_rate_limiter = InMemoryLoginRateLimiter(max_failures=10, window_seconds=3600)
+# social: 20 tentativas por hora por IP (mais alto pois o fluxo pode ter retentativas legítimas).
+_social_rate_limiter = InMemoryLoginRateLimiter(max_failures=20, window_seconds=3600)
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extrai o IP do cliente respeitando X-Forwarded-For (proxy/Cloud Run)."""
+    forwarded = request.headers.get("X-Forwarded-For", "").strip()
+    return forwarded.split(",")[0].strip() if forwarded else (request.client.host or "unknown")
+
 _PASSWORD_RESET_TTL_MINUTES = 15
 _PASSWORD_RESET_MAX_ATTEMPTS = 5
 
@@ -114,6 +126,15 @@ def build_session(user: User) -> TokenResponse:
 
 @router.post("/register", response_model=TokenResponse)
 def register(payload: UserCreate, request: Request, db: Session = Depends(get_db)):
+    client_ip = _get_client_ip(request)
+    if _register_rate_limiter.is_blocked(client_ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Muitas tentativas de cadastro. Tente novamente em 1 hora.",
+            headers={"Retry-After": "3600"},
+        )
+    _register_rate_limiter.record_failure(client_ip)
+
     if len(payload.password or "") < 8 or not any(char.isalpha() for char in payload.password) or not any(char.isdigit() for char in payload.password):
         raise HTTPException(status_code=400, detail="A senha deve ter pelo menos 8 caracteres, incluindo 1 letra e 1 numero.")
     try:
@@ -320,6 +341,15 @@ def _decode_apple_jwt_payload(identity_token: str) -> dict:
 
 @router.post("/social", response_model=TokenResponse)
 async def social_login(payload: SocialLoginPayload, request: Request, db: Session = Depends(get_db)):
+    client_ip = _get_client_ip(request)
+    if _social_rate_limiter.is_blocked(client_ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Muitas tentativas de autenticação social. Tente novamente em 1 hora.",
+            headers={"Retry-After": "3600"},
+        )
+    _social_rate_limiter.record_failure(client_ip)
+
     if payload.provider == "google":
         info = await _google_user_info(payload.token)
         email = info.get("email", "").strip().lower()

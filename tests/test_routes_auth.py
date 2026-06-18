@@ -22,6 +22,7 @@ from app.middleware.tenant_resolver import TenantResolverMiddleware
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.routes import auth
+from app.routes.auth import _register_rate_limiter, _social_rate_limiter
 from app.services.login_rate_limiter import login_rate_limiter
 from app.services.tenant_seed_service import DEFAULT_TENANT_SLUG
 
@@ -97,10 +98,14 @@ def make_user(uid="u-existing", email="existing@test.com", password="senha1234",
 
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter():
-    # O limiter e um singleton de modulo: zera o estado entre testes.
+    # Os limiters são singletons de módulo: zera o estado entre testes.
     login_rate_limiter._failures.clear()
+    _register_rate_limiter._failures.clear()
+    _social_rate_limiter._failures.clear()
     yield
     login_rate_limiter._failures.clear()
+    _register_rate_limiter._failures.clear()
+    _social_rate_limiter._failures.clear()
 
 
 # ---------------------------------------------------------------- register ---

@@ -34,6 +34,23 @@ def _is_local_sqlite(url: str) -> bool:
     return host in {"localhost", "127.0.0.1", "::1"}
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _reset_ip_rate_limiters():
+    """Zera os rate limiters por IP entre testes (singletons de módulo — A4 hardening)."""
+    try:
+        from app.routes.auth import _register_rate_limiter, _social_rate_limiter
+        _register_rate_limiter._failures.clear()
+        _social_rate_limiter._failures.clear()
+        yield
+        _register_rate_limiter._failures.clear()
+        _social_rate_limiter._failures.clear()
+    except ImportError:
+        yield
+
+
 def pytest_configure(config):
     """Backstop: confirma que o app resolveu um banco local antes de rodar nada."""
     try:

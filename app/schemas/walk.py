@@ -3,17 +3,18 @@ from pydantic import BaseModel, Field
 from app.schemas.common import ORMModel
 
 class WalkCreate(BaseModel):
-    pet_id: str
-    walker_id: str | None = None
-    walker_selection_mode: str | None = None
-    scheduled_date: str
+    # Sec-P3: max_length defensivos — anti-DoS/log-injection. Limites generosos.
+    pet_id: str = Field(..., max_length=100)
+    walker_id: str | None = Field(None, max_length=100)
+    walker_selection_mode: str | None = Field(None, max_length=100)
+    scheduled_date: str = Field(..., max_length=50)
     duration_minutes: int
     price: float
-    pickup_method: str = "Buscar em casa"
-    modality: str = "standard"
-    destination: str = ""
-    address_snapshot: str = ""
-    notes: str = ""
+    pickup_method: str = Field("Buscar em casa", max_length=100)
+    modality: str = Field("standard", max_length=100)
+    destination: str = Field("", max_length=500)
+    address_snapshot: str = Field("", max_length=2000)
+    notes: str = Field("", max_length=2000)
 
 class WalkUpdateStatus(BaseModel):
     status: str

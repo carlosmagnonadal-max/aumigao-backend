@@ -15,8 +15,9 @@ ALLOWED_WALK_REVIEW_TAGS = {
 
 
 class WalkReviewCreate(BaseModel):
+    # Sec-P3: max_length defensivo no campo de texto livre.
     rating: int = Field(ge=1, le=5)
-    comment: str | None = None
+    comment: str | None = Field(None, max_length=2000)
     tags: list[str] = Field(default_factory=list)
 
 

@@ -384,6 +384,20 @@ app.add_middleware(
 app.add_middleware(TenantResolverMiddleware, session_factory=SessionLocal)
 app.add_middleware(RequestContextMiddleware)
 
+
+# Sec-P3: headers de segurança defensivos injetados em TODAS as respostas.
+# Colocado como @app.middleware após add_middleware (executa na camada de rota,
+# depois dos middlewares ASGI registrados acima) para não colidir com CORS.
+# NÃO inclui CSP — esta é uma API JSON; CSP pode interferir com /docs (Swagger).
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 
 # Guard de uploads: avisa se o volume persistente não estiver configurado ou
@@ -654,17 +668,16 @@ def root():
 
 @app.get("/health")
 def health():
-    database_status = "ok"
+    # Sec-P3: resposta mínima — o Cloud Run só precisa de HTTP 200.
+    # Campos "environment" e "database" foram removidos do endpoint PÚBLICO
+    # para não vazar informações de infraestrutura. Detalhes internos disponíveis
+    # apenas via /internal/health (autenticado) se necessário no futuro.
     try:
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
     except Exception:
-        database_status = "unavailable"
-
-    return {
-        "status": "ok",
-        "service": "aumigao-backend",
-        "environment": os.getenv("ENVIRONMENT") or os.getenv("RAILWAY_ENVIRONMENT") or "local",
-        "timestamp": datetime.utcnow().isoformat(),
-        "database": database_status,
-    }
+        # Banco indisponível: ainda retorna 200 para o health check do Cloud Run
+        # não derrubar a instância (o banco pode ser transitório); o alerta de
+        # indisponibilidade fica no Sentry/logs, não exposto publicamente.
+        pass
+    return {"status": "ok"}

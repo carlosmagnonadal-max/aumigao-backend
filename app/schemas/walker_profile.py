@@ -6,24 +6,25 @@ from app.schemas.common import ORMModel
 _VALID_MAX_DOG_SIZES = {"Pequeno", "Médio", "Grande"}
 
 class WalkerProfileBase(BaseModel):
-    full_name: str = ""
-    cpf: str = ""
-    phone: str = ""
-    birth_date: str = ""
-    city: str = ""
-    state: str = ""
-    experience: str = ""
-    bio: str = ""
-    rg: str = ""
-    document_url: str | None = None
-    identity_document_front_url: str | None = None
-    identity_document_back_url: str | None = None
-    selfie_url: str | None = None
-    proof_of_address_url: str | None = None
-    profile_photo_url: str | None = None
+    # Sec-P3: max_length defensivos — anti-DoS/log-injection. Limites generosos.
+    full_name: str = Field("", max_length=200)
+    cpf: str = Field("", max_length=20)
+    phone: str = Field("", max_length=30)
+    birth_date: str = Field("", max_length=30)
+    city: str = Field("", max_length=200)
+    state: str = Field("", max_length=100)
+    experience: str = Field("", max_length=2000)
+    bio: str = Field("", max_length=2000)
+    rg: str = Field("", max_length=30)
+    document_url: str | None = Field(None, max_length=2000)
+    identity_document_front_url: str | None = Field(None, max_length=2000)
+    identity_document_back_url: str | None = Field(None, max_length=2000)
+    selfie_url: str | None = Field(None, max_length=2000)
+    proof_of_address_url: str | None = Field(None, max_length=2000)
+    profile_photo_url: str | None = Field(None, max_length=2000)
     has_vehicle: bool = False
     # Wave 5 — porte máximo de cão aceito. Default permissivo "Grande".
-    max_dog_size: str = "Grande"
+    max_dog_size: str = Field("Grande", max_length=50)
 
     @field_validator("max_dog_size")
     @classmethod

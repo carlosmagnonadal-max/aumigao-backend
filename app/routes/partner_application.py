@@ -52,24 +52,25 @@ LOGGER = logging.getLogger("aumigao.walker_applications")
 # ---------------------------------------------------------------------------
 
 class PartnerApplicationCreate(BaseModel):
-    full_name: str
-    cpf: str
-    password: str = ""
-    phone: str = ""
-    email: str
-    neighborhood_region: str = ""
+    # Sec-P3: max_length defensivos — anti-DoS/log-injection. Limites generosos.
+    full_name: str = Field(..., max_length=200)
+    cpf: str = Field(..., max_length=20)
+    password: str = Field("", max_length=128)
+    phone: str = Field("", max_length=30)
+    email: str = Field(..., max_length=254)
+    neighborhood_region: str = Field("", max_length=200)
     has_pet_experience: bool = False
     has_third_party_experience: bool = False
-    experience_description: str = ""
-    bio: str = ""
+    experience_description: str = Field("", max_length=2000)
+    bio: str = Field("", max_length=2000)
     experience_options: list[str] = Field(default_factory=list)
-    availability: str = ""
-    profile_photo_url: str | None = None
-    document_url: str | None = None
-    identity_document_front_url: str | None = None
-    identity_document_back_url: str | None = None
-    proof_of_address_url: str | None = None
-    selfie_url: str | None = None
+    availability: str = Field("", max_length=500)
+    profile_photo_url: str | None = Field(None, max_length=2000)
+    document_url: str | None = Field(None, max_length=2000)
+    identity_document_front_url: str | None = Field(None, max_length=2000)
+    identity_document_back_url: str | None = Field(None, max_length=2000)
+    proof_of_address_url: str | None = Field(None, max_length=2000)
+    selfie_url: str | None = Field(None, max_length=2000)
     accepted_declaration: bool = Field(default=False)
 
 

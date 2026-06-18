@@ -1,10 +1,11 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from app.schemas.user import UserResponse
 
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    # Sec-P3: max_length defensivos — anti-DoS/log-injection.
+    email: str = Field(..., max_length=254)
+    password: str = Field(..., max_length=128)
 
 
 class TokenResponse(BaseModel):
@@ -15,8 +16,8 @@ class TokenResponse(BaseModel):
 
 
 class SocialLoginPayload(BaseModel):
-    provider: str        # "google" | "apple"
-    token: str           # access_token (Google) ou identity_token JWT (Apple)
-    email: str | None = None      # fallback: Apple não repete email após 1ª vez
-    full_name: str | None = None  # nome completo da Apple
-    app_target: str | None = None # "walker" | "tutor" | "combined" — define role na criação
+    provider: str = Field(..., max_length=50)   # "google" | "apple"
+    token: str = Field(..., max_length=4096)     # access_token (Google) ou identity_token JWT (Apple)
+    email: str | None = Field(None, max_length=254)      # fallback: Apple não repete email após 1ª vez
+    full_name: str | None = Field(None, max_length=200)  # nome completo da Apple
+    app_target: str | None = Field(None, max_length=50)  # "walker" | "tutor" | "combined" — define role na criação

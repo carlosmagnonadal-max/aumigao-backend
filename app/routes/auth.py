@@ -69,7 +69,7 @@ from app.models.walker_profile import WalkerProfile
 from app.schemas.auth import LoginRequest, SocialLoginPayload, TokenResponse
 from app.schemas.user import UserCreate, UserResponse
 from app.services.identity_uniqueness import ensure_unique_identity
-from app.services.login_rate_limiter import InMemoryLoginRateLimiter, login_rate_limiter
+from app.services.login_rate_limiter import InMemoryLoginRateLimiter, _make_rate_limiter, login_rate_limiter
 from app.services.tenant_seed_service import default_tenant_id
 from app.services.transactional_email_service import send_password_reset_email, send_welcome_email
 from app.services.walker_referrals import link_referral_to_user, validate_referral_code
@@ -77,13 +77,13 @@ from app.utils.registration_validation import normalize_cpf_or_raise, normalize_
 
 # Rate limiter dedicado para forgot-password: 3 tentativas por 15 min (por e-mail).
 # Compartilhado com IP embedado na chave quando disponível.
-_forgot_password_limiter = InMemoryLoginRateLimiter(max_failures=3, window_seconds=900)
+_forgot_password_limiter = _make_rate_limiter(max_failures=3, window_seconds=900, key_prefix="forgot")
 
 # Rate limiters por IP para rotas sem autenticação prévia (A4 — auditoria 2026-06-17).
 # register: 10 cadastros por hora por IP.
-_register_rate_limiter = InMemoryLoginRateLimiter(max_failures=10, window_seconds=3600)
+_register_rate_limiter = _make_rate_limiter(max_failures=10, window_seconds=3600, key_prefix="register")
 # social: 20 tentativas por hora por IP (mais alto pois o fluxo pode ter retentativas legítimas).
-_social_rate_limiter = InMemoryLoginRateLimiter(max_failures=20, window_seconds=3600)
+_social_rate_limiter = _make_rate_limiter(max_failures=20, window_seconds=3600, key_prefix="social")
 
 
 def _get_client_ip(request: Request) -> str:
@@ -115,7 +115,7 @@ class RefreshRequest(BaseModel):
 
 
 # Rate limiter dedicado para change-password: 5 tentativas por 15 min (por user_id).
-_change_password_limiter = InMemoryLoginRateLimiter(max_failures=5, window_seconds=900)
+_change_password_limiter = _make_rate_limiter(max_failures=5, window_seconds=900, key_prefix="chpwd")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 # api_router removido: estava declarado mas nunca registrado em main.py e sem rotas.

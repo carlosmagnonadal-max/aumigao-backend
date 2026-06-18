@@ -11,7 +11,7 @@ from uuid import uuid4
 import httpx
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 _apple_logger = logging.getLogger("aumigao.apple_auth")
@@ -60,7 +60,7 @@ def _apple_allowed_audiences() -> list[str]:
     return bases
 
 from app.core.database import get_db
-from app.core.security import create_access_token, get_password_hash, verify_password
+from app.core.security import create_access_token, create_refresh_token, get_password_hash, verify_password
 from app.dependencies.auth import get_current_user
 from app.models.password_reset_code import PasswordResetCode
 from app.models.user import User
@@ -110,6 +110,10 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(..., max_length=4096)
+
+
 # Rate limiter dedicado para change-password: 5 tentativas por 15 min (por user_id).
 _change_password_limiter = InMemoryLoginRateLimiter(max_failures=5, window_seconds=900)
 
@@ -121,8 +125,11 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 def build_session(user: User) -> TokenResponse:
     # B-ALT-011 (passo 2b): "ver" carrega o token_version do usuario; o get_current_user
     # rejeita tokens cujo "ver" ficou para tras (revogados na troca/reset de senha).
-    token = create_access_token(user.id, {"role": user.role, "ver": user.token_version or 0})
-    return TokenResponse(access_token=token, refresh_token=token, user=UserResponse.model_validate(user))
+    access_token = create_access_token(user.id, {"role": user.role, "ver": user.token_version or 0})
+    # sec/jwt-refresh: refresh token REAL (type=refresh, TTL longo). Antes era alias do access.
+    # O app mobile usa o ACCESS como Bearer — refresh só vai para /auth/refresh.
+    refresh_token = create_refresh_token(user)
+    return TokenResponse(access_token=access_token, refresh_token=refresh_token, user=UserResponse.model_validate(user))
 
 @router.post("/register", response_model=TokenResponse)
 def register(payload: UserCreate, request: Request, db: Session = Depends(get_db)):
@@ -253,6 +260,49 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 @router.get("/me", response_model=UserResponse)
 def me(user: User = Depends(get_current_user)):
     return user
+
+
+@router.post("/refresh")
+def refresh_token_endpoint(payload: RefreshRequest, db: Session = Depends(get_db)):
+    """Troca um refresh token válido por um novo access token.
+
+    sec/jwt-refresh: valida assinatura, exp, type==refresh e ver==token_version.
+    Retorna 401 para token inválido, expirado, tipo errado ou revogado por
+    troca/reset de senha (token_version bump).
+    """
+    from app.core.security import ALGORITHM, SECRET_KEY
+
+    invalid = HTTPException(status_code=401, detail="Refresh token invalido ou expirado")
+    try:
+        token_payload = jwt.decode(
+            payload.refresh_token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+            options={"verify_aud": False},
+        )
+    except Exception:
+        raise invalid
+
+    # Exige claim type=refresh — rejeita access tokens e tokens sem tipo.
+    if token_payload.get("type") != "refresh":
+        raise invalid
+
+    user_id = token_payload.get("sub")
+    if not user_id:
+        raise invalid
+
+    user = db.get(User, user_id)
+    if not user or not user.is_active:
+        raise invalid
+
+    # Revogação: ver deve bater com token_version atual do usuário.
+    token_ver = token_payload.get("ver")
+    if token_ver is not None and token_ver != (user.token_version or 0):
+        raise invalid
+
+    # Emite novo access token (mesma estrutura do build_session).
+    new_access = create_access_token(user.id, {"role": user.role, "ver": user.token_version or 0})
+    return {"access_token": new_access, "token_type": "bearer"}
 
 
 async def _google_user_info(access_token: str) -> dict:

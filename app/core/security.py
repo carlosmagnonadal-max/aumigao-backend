@@ -21,7 +21,8 @@ if not SECRET_KEY or len(SECRET_KEY) < 32:
     )
 
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 dias — NÃO alterar sem aprovação explícita
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS") or "30")
 # B-ALT-011: emissor/audiência do token (configuráveis por env). Identificam de quem é
 # o token e para qual app, e preparam o enforcement (passo 2) e a revogação (via jti).
 JWT_ISSUER = (os.getenv("JWT_ISSUER") or "aumigao-walk").strip()
@@ -43,6 +44,31 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return compare_digest(digest.hex(), digest_hex)
     except Exception:
         return False
+
+
+def create_refresh_token(user: Any) -> str:
+    """Emite um refresh token de longa duração (REFRESH_TOKEN_EXPIRE_DAYS dias).
+
+    Claims:
+    - type: "refresh"  — identifica o propósito; decode_access_token rejeita este tipo.
+    - sub: user.id
+    - ver: user.token_version  — permite revogar ao trocar/redefinir a senha.
+    - jti: UUID único  — base para revogação por token no futuro.
+    - exp: agora + REFRESH_TOKEN_EXPIRE_DAYS dias.
+
+    Usa o mesmo JWT_SECRET / HS256 do access token — o claim `type` distingue o uso.
+    """
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    payload: dict[str, Any] = {
+        "sub": user.id,
+        "type": "refresh",
+        "ver": user.token_version or 0,
+        "jti": uuid.uuid4().hex,
+        "iat": now,
+        "exp": expire,
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
 def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> str:
@@ -84,6 +110,11 @@ def decode_access_token(token: str) -> dict[str, Any]:
         algorithms=[ALGORITHM],
         options={"verify_aud": False},
     )
+    # sec/jwt-refresh: rejeita refresh tokens explicitamente.
+    # RETROCOMPAT: tokens legados/access NÃO têm claim `type` → aceitos normalmente.
+    # Só rejeita se `type == "refresh"` for explícito — nunca false-positive em tokens legados.
+    if payload.get("type") == "refresh":
+        raise jwt.InvalidTokenError("Refresh token nao pode ser usado como access token")
     aud = payload.get("aud")
     if aud is not None and aud != JWT_AUDIENCE:
         raise jwt.InvalidAudienceError("Audiencia do token invalida")

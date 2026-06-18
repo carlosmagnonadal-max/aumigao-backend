@@ -102,6 +102,9 @@ from app.lib.admin_serializers import (
     _serialize_walk_completion_review,
 )
 from app.models.walker_background_certificate import WalkerBackgroundCertificate
+from app.models.tenant import Tenant
+from app.models.tenant_onboarding import TenantOnboarding
+from app.models.walker_network_profile import WalkerNetworkProfile
 from app.services.background_check_service import (
     compute_background_status,
     official_validation_url as background_official_validation_url,
@@ -2262,4 +2265,247 @@ def set_walker_wallet(
         "ok": True,
         "user_id": user_id,
         "asaas_wallet_id": profile.asaas_wallet_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Platform Summary — super_admin only, is_global (sem apply_tenant_filter)
+# ---------------------------------------------------------------------------
+
+@router.get("/platform/summary")
+@api_router.get("/platform/summary")
+def platform_summary(
+    admin: User = Depends(require_permission("admin.access")),
+    db: Session = Depends(get_db),
+):
+    """Metricas agregadas da plataforma inteira. Restrito a super_admin."""
+    if admin.role != "super_admin":
+        raise HTTPException(status_code=403, detail="Restrito a super_admin")
+
+    now = datetime.utcnow()
+    cutoff_30d = now - timedelta(days=30)
+
+    # ── Tenants ──────────────────────────────────────────────────────────────
+    tenant_total = db.query(func.count(Tenant.id)).scalar() or 0
+
+    # by_status: {status: count}
+    by_status_rows = (
+        db.query(Tenant.status, func.count(Tenant.id))
+        .group_by(Tenant.status)
+        .all()
+    )
+    by_status = {row[0]: row[1] for row in by_status_rows}
+
+    # by_plan: {plan: count}
+    by_plan_rows = (
+        db.query(Tenant.plan, func.count(Tenant.id))
+        .group_by(Tenant.plan)
+        .all()
+    )
+    by_plan = {row[0]: row[1] for row in by_plan_rows}
+
+    # new_last_30d
+    tenant_new_30d = (
+        db.query(func.count(Tenant.id))
+        .filter(Tenant.created_at >= cutoff_30d)
+        .scalar() or 0
+    )
+
+    # ── Onboarding ───────────────────────────────────────────────────────────
+    onboarding_rows = (
+        db.query(TenantOnboarding.onboarding_status, func.count(TenantOnboarding.id))
+        .group_by(TenantOnboarding.onboarding_status)
+        .all()
+    )
+    by_onboarding_status = {row[0]: row[1] for row in onboarding_rows}
+
+    # Tenants com go_live_approved=True mas status do tenant != "active"
+    # (aprovados pelo admin mas ainda não "live")
+    go_live_approved_not_live = (
+        db.query(func.count(TenantOnboarding.id))
+        .join(Tenant, Tenant.id == TenantOnboarding.tenant_id)
+        .filter(
+            TenantOnboarding.go_live_approved.is_(True),
+            Tenant.status != "active",
+        )
+        .scalar() or 0
+    )
+
+    # ── Platform Revenue (todos os tenants, sem apply_tenant_filter) ─────────
+    total_paid_all_time = (
+        db.query(func.sum(Payment.amount))
+        .filter(Payment.status.in_(PAID_PAYMENT_STATUSES))
+        .scalar() or 0.0
+    )
+
+    total_paid_last_30d = (
+        db.query(func.sum(Payment.amount))
+        .filter(
+            Payment.status.in_(PAID_PAYMENT_STATUSES),
+            Payment.created_at >= cutoff_30d,
+        )
+        .scalar() or 0.0
+    )
+
+    platform_net_all_time = (
+        db.query(func.sum(Payment.platform_amount))
+        .filter(
+            Payment.status.in_(PAID_PAYMENT_STATUSES),
+            Payment.platform_amount.isnot(None),
+        )
+        .scalar() or 0.0
+    )
+
+    platform_net_last_30d = (
+        db.query(func.sum(Payment.platform_amount))
+        .filter(
+            Payment.status.in_(PAID_PAYMENT_STATUSES),
+            Payment.platform_amount.isnot(None),
+            Payment.created_at >= cutoff_30d,
+        )
+        .scalar() or 0.0
+    )
+
+    payments_with_split = (
+        db.query(func.count(Payment.id))
+        .filter(
+            Payment.status.in_(PAID_PAYMENT_STATUSES),
+            Payment.platform_amount.isnot(None),
+        )
+        .scalar() or 0
+    )
+
+    payments_without_split = (
+        db.query(func.count(Payment.id))
+        .filter(
+            Payment.status.in_(PAID_PAYMENT_STATUSES),
+            Payment.platform_amount.is_(None),
+        )
+        .scalar() or 0
+    )
+
+    # ── Walks (global, anti-fake via SQL) ─────────────────────────────────────
+    walk_fake_conditions = _not_fake_token_conditions([
+        Walk.id, Walk.tutor_id, Walk.walker_id, Walk.assigned_walker_id,
+        Walk.pet_id, Walk.address_snapshot, Walk.notes,
+    ])
+
+    total_walks = (
+        db.query(func.count(Walk.id))
+        .filter(*walk_fake_conditions)
+        .scalar() or 0
+    )
+
+    completed_walks = (
+        db.query(func.count(Walk.id))
+        .filter(
+            *walk_fake_conditions,
+            Walk.status.in_(DIRECT_COMPLETION_STATUSES),
+        )
+        .scalar() or 0
+    )
+
+    in_progress_walks = (
+        db.query(func.count(Walk.id))
+        .filter(
+            *walk_fake_conditions,
+            or_(
+                Walk.status.in_(IN_PROGRESS_WALK_STATUSES),
+                Walk.operational_status.in_(IN_PROGRESS_WALK_STATUSES),
+            ),
+        )
+        .scalar() or 0
+    )
+
+    scheduled_walks = (
+        db.query(func.count(Walk.id))
+        .filter(
+            *walk_fake_conditions,
+            Walk.status == "Agendado",
+        )
+        .scalar() or 0
+    )
+
+    critical_recovery_walks = (
+        db.query(func.count(Walk.id))
+        .filter(
+            *walk_fake_conditions,
+            or_(
+                Walk.status.in_(RECOVERY_WALK_STATUSES),
+                Walk.operational_status.in_(RECOVERY_WALK_STATUSES),
+            ),
+        )
+        .scalar() or 0
+    )
+
+    # ── Users (global, anti-fake) ─────────────────────────────────────────────
+    # Reutiliza _sql_count_real_tutors com escopo global (is_global=True)
+    from app.dependencies.tenant_scope import AdminTenantScope
+    global_scope = AdminTenantScope(user=admin, is_global=True, tenant_id=None, role="super_admin")
+    total_tutors = _sql_count_real_tutors(db, global_scope)
+    total_walkers_active = _sql_count_real_active_walkers(db)
+
+    walker_roles = ("walker", "passeador")
+    total_walkers_all = (
+        db.query(func.count(User.id))
+        .filter(User.role.in_(walker_roles))
+        .scalar() or 0
+    )
+
+    # ── Walker Network ────────────────────────────────────────────────────────
+    network_total = db.query(func.count(WalkerNetworkProfile.id)).scalar() or 0
+    network_active = (
+        db.query(func.count(WalkerNetworkProfile.id))
+        .filter(WalkerNetworkProfile.network_status == "active")
+        .scalar() or 0
+    )
+    network_restricted = (
+        db.query(func.count(WalkerNetworkProfile.id))
+        .filter(WalkerNetworkProfile.network_status.in_(["restricted", "suspended"]))
+        .scalar() or 0
+    )
+    network_enabled = (
+        db.query(func.count(WalkerNetworkProfile.id))
+        .filter(WalkerNetworkProfile.network_enabled.is_(True))
+        .scalar() or 0
+    )
+
+    return {
+        "tenants": {
+            "total": tenant_total,
+            "by_status": by_status,
+            "by_plan": by_plan,
+            "new_last_30d": tenant_new_30d,
+        },
+        "onboarding": {
+            "by_status": by_onboarding_status,
+            "go_live_approved_not_live": go_live_approved_not_live,
+        },
+        "platform_revenue": {
+            "total_paid_all_time": round(float(total_paid_all_time), 2),
+            "total_paid_last_30d": round(float(total_paid_last_30d), 2),
+            "platform_net_all_time": round(float(platform_net_all_time), 2),
+            "platform_net_last_30d": round(float(platform_net_last_30d), 2),
+            "payments_with_split": payments_with_split,
+            "payments_without_split": payments_without_split,
+        },
+        "walks": {
+            "total": total_walks,
+            "completed": completed_walks,
+            "in_progress": in_progress_walks,
+            "scheduled": scheduled_walks,
+            "critical_recovery": critical_recovery_walks,
+        },
+        "users": {
+            "total_tutors": total_tutors,
+            "total_walkers_active": total_walkers_active,
+            "total_walkers_all": total_walkers_all,
+        },
+        "walker_network": {
+            "total": network_total,
+            "active": network_active,
+            "restricted": network_restricted,
+            "enabled": network_enabled,
+        },
+        "generated_at": now.isoformat() + "Z",
     }

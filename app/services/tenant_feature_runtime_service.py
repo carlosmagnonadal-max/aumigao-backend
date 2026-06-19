@@ -41,6 +41,13 @@ PRODUCT_RUNTIME_FEATURE_KEYS = (
     # Background Check Fase 0 — gate de antecedentes do passeador. Default-OFF:
     # NAO esta em DEFAULT_ON_FEATURE_KEYS, entao parte desligada => ZERO regressao.
     "background_checks",
+    # Modalidades de plano (gated por plano Business+ e por TenantFeature). Default-OFF
+    # (NAO estao em DEFAULT_ON_FEATURE_KEYS). Precisam estar AQUI para o app-config
+    # expor o valor real da flag ao app — senao o app nunca sabe que estao ligadas e
+    # esconde os cards de Passeio Compartilhado / Pet Tour / Planos mensais.
+    "recurring_plans",
+    "shared_walks",
+    "pet_tour",
 )
 
 

@@ -13,10 +13,12 @@ def _script() -> ScriptDirectory:
     return ScriptDirectory.from_config(Config("alembic.ini"))
 
 
-def test_single_head_is_0038():
+def test_single_head_is_current():
+    # Head avanca conforme novas migrations entram. Hoje: 0039 (B2 must_change_password,
+    # encadeada na 0038). O importante e haver UM unico head (sem bifurcacao).
     script = _script()
     heads = list(script.get_heads())
-    assert heads == ["0038_walker_background_check"], heads
+    assert heads == ["0039_users_must_change_password"], heads
 
 
 def test_revision_id_within_32_chars():

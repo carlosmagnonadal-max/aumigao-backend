@@ -14,6 +14,7 @@ from app.schemas.tenant import (
     TENANT_PLANS,
     TENANT_STATUSES,
     TENANT_UNIT_STATUSES,
+    VALID_BACKGROUND_CHECK_PROVIDERS,
     TenantBrandingResponse,
     TenantBrandingUpdate,
     TenantCreate,
@@ -244,7 +245,22 @@ def update_tenant_settings(tenant_id: str, payload: TenantSettingsUpdate, admin:
     tenant = _tenant_or_404(tenant_id, db)
     settings = tenant.settings or _default_settings(tenant)
     db.add(settings)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    values = payload.model_dump(exclude_unset=True)
+    # Valida background_check_provider contra a lista de valores permitidos.
+    # TODO: ao implementar provedor pago, exigir background_check_provider_config
+    #       presente e cifrar credenciais com Fernet/KMS antes de salvar.
+    if "background_check_provider" in values:
+        provider_val = (values["background_check_provider"] or "").strip().lower()
+        if provider_val not in VALID_BACKGROUND_CHECK_PROVIDERS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Valor invalido para background_check_provider: '{provider_val}'. "
+                    f"Valores permitidos: {list(VALID_BACKGROUND_CHECK_PROVIDERS)}."
+                ),
+            )
+        values["background_check_provider"] = provider_val
+    for field, value in values.items():
         setattr(settings, field, value.strip() if isinstance(value, str) else value)
     settings.updated_at = datetime.utcnow()
     record_audit_log(

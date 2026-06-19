@@ -228,6 +228,41 @@ def test_platform_summary_revenue_aggregation():
     assert pr["platform_net_all_time"] == 12.0
     assert pr["payments_with_split"] == 1
     assert pr["payments_without_split"] == 1
+    # Novos campos: ambos os pagamentos pagos nao tem walk_id => tudo em plans
+    assert "gross_revenue_walks" in pr
+    assert "gross_revenue_plans" in pr
+    assert pr["gross_revenue_walks"] == 0.0
+    assert pr["gross_revenue_plans"] == 150.0
+    assert pr["gross_revenue_walks"] + pr["gross_revenue_plans"] == pr["total_paid_all_time"]
+
+
+def test_platform_summary_gross_revenue_breakdown():
+    """gross_revenue_walks + gross_revenue_plans == total_paid_all_time."""
+    client, db = _build(current_id=SUPER_ID)
+    # Pagamento vinculado a um passeio
+    db.add(Payment(
+        id="pw1", tenant_id=TENANT_A, tutor_id="u1", walk_id="walk-x",
+        amount=80.0, status="paid", provider="asaas",
+    ))
+    # Pagamento de plano (sem passeio)
+    db.add(Payment(
+        id="pp1", tenant_id=TENANT_A, tutor_id="u1", walk_id=None,
+        amount=197.0, status="paid", provider="internal",
+    ))
+    # Pagamento pendente: nao conta
+    db.add(Payment(
+        id="pp2", tenant_id=TENANT_A, tutor_id="u1", walk_id=None,
+        amount=999.0, status="pending", provider="internal",
+    ))
+    db.commit()
+
+    body = client.get("/admin/platform/summary").json()
+    pr = body["platform_revenue"]
+    assert pr["gross_revenue_walks"] == 80.0
+    assert pr["gross_revenue_plans"] == 197.0
+    assert pr["total_paid_all_time"] == 277.0
+    # invariante: walks + plans == total
+    assert pr["gross_revenue_walks"] + pr["gross_revenue_plans"] == pr["total_paid_all_time"]
 
 
 def test_platform_summary_walks_counters():

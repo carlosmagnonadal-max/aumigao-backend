@@ -91,12 +91,20 @@ class TenantFeatureResponse(ORMModel):
     updated_at: datetime
 
 
+VALID_BACKGROUND_CHECK_PROVIDERS = ("manual", "flagcheck", "idwall", "serpro")
+
+
 class TenantSettingsUpdate(BaseModel):
     timezone: str | None = None
     support_email: str | None = None
     support_phone: str | None = None
     whatsapp_number: str | None = None
     settings_json: str | None = None
+    # Provedor de background check plugavel (default "manual").
+    # Valores validos: "manual" | "flagcheck" | "idwall" | "serpro".
+    # TODO: ao implementar provedor pago, exigir background_check_provider_config
+    #       e cifrar as credenciais com Fernet/KMS antes de salvar.
+    background_check_provider: str | None = None
 
 
 class TenantSettingsResponse(ORMModel):
@@ -107,6 +115,7 @@ class TenantSettingsResponse(ORMModel):
     support_phone: str | None = None
     whatsapp_number: str | None = None
     settings_json: str | None = None
+    background_check_provider: str = "manual"
     created_at: datetime
     updated_at: datetime
 

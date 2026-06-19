@@ -2366,6 +2366,24 @@ def platform_summary(
         .scalar() or 0.0
     )
 
+    gross_revenue_walks = (
+        db.query(func.sum(Payment.amount))
+        .filter(
+            Payment.status.in_(PAID_PAYMENT_STATUSES),
+            Payment.walk_id.isnot(None),
+        )
+        .scalar() or 0.0
+    )
+
+    gross_revenue_plans = (
+        db.query(func.sum(Payment.amount))
+        .filter(
+            Payment.status.in_(PAID_PAYMENT_STATUSES),
+            Payment.walk_id.is_(None),
+        )
+        .scalar() or 0.0
+    )
+
     payments_with_split = (
         db.query(func.count(Payment.id))
         .filter(
@@ -2486,6 +2504,8 @@ def platform_summary(
             "total_paid_last_30d": round(float(total_paid_last_30d), 2),
             "platform_net_all_time": round(float(platform_net_all_time), 2),
             "platform_net_last_30d": round(float(platform_net_last_30d), 2),
+            "gross_revenue_walks": round(float(gross_revenue_walks), 2),
+            "gross_revenue_plans": round(float(gross_revenue_plans), 2),
             "payments_with_split": payments_with_split,
             "payments_without_split": payments_without_split,
         },

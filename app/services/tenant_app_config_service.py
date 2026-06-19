@@ -136,6 +136,26 @@ def _safe_capabilities(db: Session, tenant: Tenant | None) -> dict[str, Any]:
     return get_plan_capabilities(TENANT_PLAN_STARTER)
 
 
+def _safe_background_provider(db: Session, tenant: Any | None) -> str:
+    """Retorna o background_check_provider do tenant (default 'manual').
+
+    Expoe o provider ao app para que o cliente saiba qual fluxo de coleta
+    de antecedentes exibir. Com a flag background_checks OFF (default), o
+    app ignora este campo — mas e conveniente ja ter disponivel.
+    """
+    try:
+        if tenant:
+            from app.models.tenant import TenantSettings
+            settings = db.query(TenantSettings).filter(
+                TenantSettings.tenant_id == tenant.id
+            ).first()
+            if settings and settings.background_check_provider:
+                return settings.background_check_provider
+    except Exception:
+        _safe_rollback(db)
+    return "manual"
+
+
 def get_tenant_app_config(
     db: Session,
     tenant_id: str | None = None,
@@ -154,4 +174,5 @@ def get_tenant_app_config(
         "units": _safe_units(db, tenant),
         "commercial": _safe_commercial(db, tenant),
         "capabilities": _safe_capabilities(db, tenant),
+        "background_check_provider": _safe_background_provider(db, tenant),
     }

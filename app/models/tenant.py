@@ -81,6 +81,15 @@ class TenantSettings(Base):
     support_phone: Mapped[str | None] = mapped_column(String, nullable=True)
     whatsapp_number: Mapped[str | None] = mapped_column(String, nullable=True)
     settings_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Background check provider plugavel por tenant (migration 0040).
+    # Valores validos: "manual" | "flagcheck" | "idwall" | "serpro".
+    # Default "manual" — comportamento identico ao anterior (zero regressao).
+    background_check_provider: Mapped[str] = mapped_column(
+        String, nullable=False, default="manual", server_default="manual"
+    )
+    # Credenciais/config do provedor pago (JSON, nullable).
+    # TODO: cifrar com Fernet/KMS antes de habilitar provedor pago em producao.
+    background_check_provider_config: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

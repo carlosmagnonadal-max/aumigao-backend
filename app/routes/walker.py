@@ -31,6 +31,7 @@ from app.services.background_check_service import (
     compute_background_status,
     official_validation_url as background_check_official_url,
 )
+from app.services.background.registry import get_background_provider
 from app.models.walker_availability import WalkerAvailability
 from app.schemas.walker_availability import WalkerAvailabilityUpdate
 from app.schemas.walker_presence import WalkerOnlineUpdate
@@ -908,15 +909,8 @@ def submit_background_consent(
 ):
     profile = _walker_profile_for_user(user, db)
     version = (payload.consent_version if payload else None) or DEFAULT_BACKGROUND_CONSENT_VERSION
-    profile.background_consent_at = datetime.utcnow()
-    profile.background_consent_version = version
-    profile.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(profile)
-    return {
-        "consent_at": profile.background_consent_at,
-        "consent_version": profile.background_consent_version,
-    }
+    provider = get_background_provider(db, getattr(user, "tenant_id", None))
+    return provider.register_consent(profile, version, db)
 
 
 @router.post("/background/certificate", status_code=201)
@@ -926,59 +920,8 @@ def submit_background_certificate(
     db: Session = Depends(get_db),
 ):
     profile = _walker_profile_for_user(user, db)
-    if not profile.background_consent_at:
-        raise HTTPException(status_code=400, detail="Consentimento de antecedentes obrigatorio antes de enviar certidoes.")
-    cert_type = (payload.cert_type or "").strip().lower()
-    if cert_type not in BACKGROUND_CERT_TYPES:
-        raise HTTPException(status_code=400, detail="Tipo de certidao invalido.")
-    uf = (payload.uf or "").strip().upper() or None
-    cert_number = (payload.cert_number or "").strip()
-    if not cert_number:
-        raise HTTPException(status_code=400, detail="Numero da certidao obrigatorio.")
-
-    # 1 linha por cert_type/uf — cria ou atualiza. Reenvio volta a "pending".
-    existing = (
-        db.query(WalkerBackgroundCertificate)
-        .filter(
-            WalkerBackgroundCertificate.walker_profile_id == profile.id,
-            WalkerBackgroundCertificate.cert_type == cert_type,
-        )
-        .first()
-    )
-    if existing:
-        cert = existing
-        cert.issuer_uf = uf
-        cert.cert_number = cert_number
-        cert.document_url = payload.document_url
-        cert.status = "pending"
-        cert.validated_by_admin_id = None
-        cert.validated_at = None
-        cert.updated_at = datetime.utcnow()
-    else:
-        cert = WalkerBackgroundCertificate(
-            id=str(uuid4()),
-            walker_profile_id=profile.id,
-            cert_type=cert_type,
-            issuer_uf=uf,
-            cert_number=cert_number,
-            document_url=payload.document_url,
-            status="pending",
-        )
-        db.add(cert)
-    db.flush()
-
-    certificates = (
-        db.query(WalkerBackgroundCertificate)
-        .filter(WalkerBackgroundCertificate.walker_profile_id == profile.id)
-        .all()
-    )
-    aggregate = compute_background_status(profile, certificates)
-    db.commit()
-    db.refresh(cert)
-    return {
-        "certificate": _serialize_background_certificate(cert),
-        "background_check_status": aggregate,
-    }
+    provider = get_background_provider(db, getattr(user, "tenant_id", None))
+    return provider.submit_certificate(profile, payload, db)
 
 
 @router.get("/background")
@@ -992,15 +935,10 @@ def get_background_status(
         .filter(WalkerBackgroundCertificate.walker_profile_id == profile.id)
         .all()
     )
-    aggregate = compute_background_status(profile, certificates)
+    provider = get_background_provider(db, getattr(user, "tenant_id", None))
+    result = provider.get_background_status(profile, certificates)
     db.commit()
-    return {
-        "background_check_status": aggregate,
-        "background_verified_at": profile.background_verified_at,
-        "consent_at": profile.background_consent_at,
-        "consent_version": profile.background_consent_version,
-        "certificates": [_serialize_background_certificate(c) for c in certificates],
-    }
+    return result
 
 
 @router.get("/dashboard")

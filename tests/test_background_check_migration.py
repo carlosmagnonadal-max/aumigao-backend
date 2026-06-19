@@ -14,11 +14,11 @@ def _script() -> ScriptDirectory:
 
 
 def test_single_head_is_current():
-    # Head avanca conforme novas migrations entram. Hoje: 0039 (B2 must_change_password,
-    # encadeada na 0038). O importante e haver UM unico head (sem bifurcacao).
+    # Head avanca conforme novas migrations entram. Hoje: 0040 (tenant provider,
+    # encadeada na 0039). O importante e haver UM unico head (sem bifurcacao).
     script = _script()
     heads = list(script.get_heads())
-    assert heads == ["0039_users_must_change_password"], heads
+    assert heads == ["0040_bg_check_provider"], heads
 
 
 def test_revision_id_within_32_chars():

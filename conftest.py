@@ -49,6 +49,12 @@ def _reset_ip_rate_limiters():
         _social_rate_limiter._failures.clear()
     except ImportError:
         yield
+    try:
+        from app.services.upload_validation import application_rate_limiter, upload_rate_limiter
+        application_rate_limiter._failures.clear()
+        upload_rate_limiter._failures.clear()
+    except ImportError:
+        pass
 
 
 def pytest_configure(config):

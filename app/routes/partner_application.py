@@ -23,7 +23,7 @@ from app.services.identity_uniqueness import ensure_unique_identity
 from app.services.signed_uploads import create_signed_upload_url
 from app.services.tenant_seed_service import default_tenant_id
 from app.services.upload_registry import record_upload
-from app.services.upload_validation import enforce_upload_rate_limit, read_image_upload_safely
+from app.services.upload_validation import enforce_application_rate_limit, enforce_upload_rate_limit, read_image_upload_safely
 from app.services.walker_referrals import mark_referral_approved, mark_referral_rejected
 from app.utils.registration_validation import normalize_cpf_or_raise, normalize_email_or_raise, normalize_phone_or_raise
 
@@ -262,7 +262,8 @@ async def upload_partner_application_document(
 
 
 @router.post("", status_code=201)
-def create_partner_application(payload: PartnerApplicationCreate, response: Response, db: Session = Depends(get_db)):
+def create_partner_application(payload: PartnerApplicationCreate, response: Response, request: Request, db: Session = Depends(get_db)):
+    enforce_application_rate_limit(request)
     LOGGER.info("candidatura recebida", extra={"email": payload.email, "full_name": payload.full_name})
     _validate_password_or_raise(payload.password)
     if not payload.accepted_declaration:

@@ -32,6 +32,13 @@ upload_rate_limiter = InMemoryLoginRateLimiter(
     window_seconds=float(os.getenv("UPLOAD_RATE_WINDOW_SECONDS", "600")),
 )
 
+# Rate limiter por IP: 10 criações de candidatura / 10 min por origem.
+# Limite conservador: usuário legítimo envia 1 vez; bloqueia envio em massa fictício.
+application_rate_limiter = InMemoryLoginRateLimiter(
+    max_failures=int(os.getenv("APPLICATION_RATE_LIMIT", "10")),
+    window_seconds=float(os.getenv("APPLICATION_RATE_WINDOW_SECONDS", "600")),
+)
+
 
 def _looks_like_image(head: bytes) -> bool:
     if any(head.startswith(sig) for sig in _PREFIX_SIGNATURES):
@@ -55,6 +62,14 @@ def enforce_upload_rate_limit(request: Request) -> None:
     if upload_rate_limiter.is_blocked(client_ip):
         raise HTTPException(status_code=429, detail="Muitos envios. Tente novamente em alguns minutos.")
     upload_rate_limiter.record_failure(client_ip)
+
+
+def enforce_application_rate_limit(request: Request) -> None:
+    """Rate limit por IP para criação de candidaturas (anti-flood de candidaturas fictícias)."""
+    client_ip = (request.client.host if request and request.client else "") or "unknown"
+    if application_rate_limiter.is_blocked(client_ip):
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Tente novamente em alguns minutos.")
+    application_rate_limiter.record_failure(client_ip)
 
 
 async def read_image_upload_safely(file: UploadFile, max_bytes: int = MAX_UPLOAD_BYTES) -> bytes:

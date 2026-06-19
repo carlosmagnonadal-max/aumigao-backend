@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -18,12 +19,15 @@ class RecurringPlanResponse(ORMModel):
     updated_at: datetime
 
 
+_IntervalLiteral = Literal["weekly", "biweekly", "monthly", "quarterly", "semiannual", "yearly"]
+
+
 class RecurringPlanCreate(BaseModel):
     name: str = Field(min_length=1)
     description: str | None = None
     price: float = Field(ge=0)
     walks_per_cycle: int = Field(ge=0)
-    interval: str = "monthly"
+    interval: _IntervalLiteral = "monthly"
     active: bool = True
 
 
@@ -32,7 +36,7 @@ class RecurringPlanUpdate(BaseModel):
     description: str | None = None
     price: float | None = Field(default=None, ge=0)
     walks_per_cycle: int | None = Field(default=None, ge=0)
-    interval: str | None = None
+    interval: _IntervalLiteral | None = None
     active: bool | None = None
 
 

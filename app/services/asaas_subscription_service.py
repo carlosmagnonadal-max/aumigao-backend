@@ -4,11 +4,12 @@ Cria e cancela subscriptions via API nativa `POST /subscriptions` do Asaas.
 Usa a mesma configuração de ambiente de app/routes/payments.py (_get_asaas_config).
 
 Mapeamento de interval → cycle do Asaas:
-  monthly   → MONTHLY
-  weekly    → WEEKLY
-  biweekly  → BIWEEKLY
-  quarterly → QUARTERLY
-  yearly    → YEARLY
+  monthly    → MONTHLY
+  weekly     → WEEKLY
+  biweekly   → BIWEEKLY
+  quarterly  → QUARTERLY
+  semiannual → SEMIANNUALLY
+  yearly     → YEARLY
 
 Regra de criação sem zumbi: a subscription local só é gravada APÓS sucesso
 remoto no Asaas. Se o Asaas retornar erro, levanta HTTPException 502 PT
@@ -30,6 +31,7 @@ INTERVAL_TO_ASAAS_CYCLE: dict[str, str] = {
     "biweekly": "BIWEEKLY",
     "monthly": "MONTHLY",
     "quarterly": "QUARTERLY",
+    "semiannual": "SEMIANNUALLY",
     "yearly": "YEARLY",
 }
 

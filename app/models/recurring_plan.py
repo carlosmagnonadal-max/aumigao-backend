@@ -38,7 +38,7 @@ class RecurringPlan(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Preço mensal do plano (na moeda do tenant).
     price: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    # Quantidade de passeios incluídos por ciclo (mês).
+    # Quantidade de passeios incluídos por ciclo (mês/semestre/ano conforme interval).
     walks_per_cycle: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     interval: Mapped[str] = mapped_column(String, nullable=False, default="monthly")
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

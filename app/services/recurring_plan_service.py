@@ -20,9 +20,44 @@ from app.models.recurring_plan import (
 from app.models.tenant import Tenant
 from app.services.tenant_plan_service import enforce_tenant_product_feature, tenant_has_feature
 
-CYCLE_DAYS = 30
 FEATURE_LABEL = "Planos recorrentes"
 logger = logging.getLogger("aumigao.recurring_plan_service")
+
+
+def _period_end(now: datetime, interval: str) -> datetime:
+    """Retorna a data de fim do período baseada no interval do plano.
+
+    Suporta: monthly (+1 mês), semiannual (+6 meses), yearly (+12 meses),
+    quarterly (+3 meses), weekly (+7 dias), biweekly (+14 dias).
+    Default: +1 mês (mesmo que monthly).
+
+    Não usa python-dateutil; soma meses manualmente com tratamento correto de
+    overflow (ex.: 31 de janeiro + 1 mês → 28/29 de fevereiro).
+    """
+    if interval in ("weekly",):
+        return now + timedelta(days=7)
+    if interval in ("biweekly",):
+        return now + timedelta(days=14)
+
+    # Intervalos baseados em meses
+    month_offsets = {
+        "monthly": 1,
+        "quarterly": 3,
+        "semiannual": 6,
+        "yearly": 12,
+    }
+    months = month_offsets.get(interval, 1)  # default: mensal
+
+    target_month = now.month + months
+    target_year = now.year + (target_month - 1) // 12
+    target_month = (target_month - 1) % 12 + 1
+
+    # Overflow de dia: ex. 31/jan + 1m → clamp para último dia do mês alvo
+    import calendar
+    max_day = calendar.monthrange(target_year, target_month)[1]
+    target_day = min(now.day, max_day)
+
+    return now.replace(year=target_year, month=target_month, day=target_day)
 
 # Importações lazy-safe: podem ser sobrescritas em testes via patch no namespace deste módulo.
 try:
@@ -112,7 +147,7 @@ def subscribe(db: Session, tenant: Tenant, tutor_id: str, plan_id: str) -> Tutor
         walks_per_cycle=plan.walks_per_cycle,
         credits_remaining=plan.walks_per_cycle,
         current_period_start=now,
-        current_period_end=now + timedelta(days=CYCLE_DAYS),
+        current_period_end=_period_end(now, plan.interval),
     )
     db.add(subscription)
     db.commit()
@@ -179,7 +214,7 @@ async def subscribe_async(
         walks_per_cycle=plan.walks_per_cycle,
         credits_remaining=plan.walks_per_cycle,
         current_period_start=now,
-        current_period_end=now + timedelta(days=CYCLE_DAYS),
+        current_period_end=_period_end(now, plan.interval),
     )
     db.add(subscription)
     db.flush()  # Gera ID sem commit

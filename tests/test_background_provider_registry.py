@@ -250,14 +250,14 @@ def test_zero_regression_no_consent_blocks_certificate():
 
 def test_migration_0040_single_head():
     """A arvore de migrations tem UM unico head (sem bifurcacao).
-    Hoje: 0042_backfill_encrypt_cpf_rg (encadeada na 0041_encrypt_cpf_rg → 0040_bg_check_provider).
+    Hoje: 0043_enable_rls (encadeada na 0042_backfill_encrypt_cpf_rg → 0041 → 0040).
     """
     from alembic.config import Config
     from alembic.script import ScriptDirectory
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     heads = list(script.get_heads())
     assert len(heads) == 1, f"Esperado 1 head, obteve: {heads}"
-    assert heads == ["0042_backfill_encrypt_cpf_rg"], heads
+    assert heads == ["0043_enable_rls"], heads
 
 
 def test_migration_0040_revision_id_within_32_chars():

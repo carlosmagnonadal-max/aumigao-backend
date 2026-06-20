@@ -14,11 +14,11 @@ def _script() -> ScriptDirectory:
 
 
 def test_single_head_is_current():
-    # Head avanca conforme novas migrations entram. Hoje: 0042 (backfill encrypt
-    # CPF/RG, encadeada na 0041→0040). O importante e haver UM unico head (sem bifurcacao).
+    # Head avanca conforme novas migrations entram. Hoje: 0043 (enable RLS,
+    # encadeada na 0042→0041→0040). O importante e haver UM unico head (sem bifurcacao).
     script = _script()
     heads = list(script.get_heads())
-    assert heads == ["0042_backfill_encrypt_cpf_rg"], heads
+    assert heads == ["0043_enable_rls"], heads
 
 
 def test_revision_id_within_32_chars():

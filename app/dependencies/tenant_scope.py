@@ -10,6 +10,15 @@ from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
+# Import lazy para evitar ciclo (database → tenant_scope → database).
+# set_session_tenant é chamado apenas em runtime, nunca em import-time.
+def _set_session_tenant(db, tenant: str) -> None:
+    """Wrapper de import tardio para set_session_tenant (evita ciclo circular)."""
+    if db is None:
+        return
+    from app.core.database import set_session_tenant  # noqa: PLC0415
+    set_session_tenant(db, tenant)
+
 
 @dataclass(frozen=True)
 class AdminTenantScope:
@@ -40,7 +49,13 @@ def _log_super_admin_bypass_once(user: User) -> None:
         pass
 
 
-def get_admin_tenant_scope(user: User) -> AdminTenantScope:
+def get_admin_tenant_scope(user: User, db=None) -> AdminTenantScope:
+    """Resolve o escopo de tenant do admin e injeta o GUC RLS na sessão.
+
+    db é opcional: quando fornecido, set_session_tenant é chamado para garantir
+    que a policy RLS do PostgreSQL receba o valor correto ANTES de qualquer query.
+    Callers que não passam db mantêm o comportamento anterior (sem RLS injection).
+    """
     role = getattr(user, "role", "")
 
     if is_super_admin(user):
@@ -56,20 +71,26 @@ def get_admin_tenant_scope(user: User) -> AdminTenantScope:
                     "act_as_tenant_id": act,
                 },
             )
-            return AdminTenantScope(
+            scope = AdminTenantScope(
                 user=user,
                 tenant_id=act.strip(),
                 is_global=False,
                 role=role,
             )
+            # Fase 2b: injeta tenant específico (act-as) no GUC RLS da sessão.
+            _set_session_tenant(db, act.strip())
+            return scope
         # Sem header — comportamento global padrão
         _log_super_admin_bypass_once(user)
-        return AdminTenantScope(
+        scope = AdminTenantScope(
             user=user,
             tenant_id=None,
             is_global=True,
             role=role,
         )
+        # Fase 2b: super_admin global vê tudo — sentinel "*".
+        _set_session_tenant(db, "*")
+        return scope
 
     # Admin de tenant: NUNCA permite personificação via header.
     # O _act_as_tenant_id é completamente ignorado aqui — segurança à prova de bala.
@@ -80,12 +101,15 @@ def get_admin_tenant_scope(user: User) -> AdminTenantScope:
     if not tenant_id:
         raise HTTPException(status_code=400, detail="Admin sem tenant_id configurado")
 
-    return AdminTenantScope(
+    scope = AdminTenantScope(
         user=user,
         tenant_id=tenant_id,
         is_global=False,
         role=role,
     )
+    # Fase 2b: admin de tenant — restringe RLS ao tenant_id do usuário.
+    _set_session_tenant(db, tenant_id)
+    return scope
 
 
 def ensure_tenant_access(obj_tenant_id: str | None, scope: AdminTenantScope) -> None:

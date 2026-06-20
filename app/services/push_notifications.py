@@ -116,6 +116,8 @@ def _do_send(messages: list[dict], notification_id: str, notification_type: str,
     from app.core.database import SessionLocal as _SessionLocal  # import local para evitar ciclo na inicializacao
     factory = session_factory or _SessionLocal
     db = factory()
+    # Fase 2c: envio de push é operação de plataforma (cross-tenant) → acesso irrestrito.
+    db.info["rls_tenant"] = "*"
     try:
         try:
             request = urllib.request.Request(

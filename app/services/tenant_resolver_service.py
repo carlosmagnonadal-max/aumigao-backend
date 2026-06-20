@@ -142,6 +142,9 @@ def resolve_tenant_identity(
                     return hit[1]
 
     with session_factory() as db:
+        # Fase 2c: resolver de tenant lê a tabela tenants (sem tenant_id/RLS).
+        # Define "*" por segurança — garante visibilidade mesmo após cutover.
+        db.info["rls_tenant"] = "*"
         tenant = resolve_tenant_from_request(request, db)
         identity = (tenant.id, tenant.slug) if tenant else None
 

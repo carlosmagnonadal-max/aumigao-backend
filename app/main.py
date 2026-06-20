@@ -306,6 +306,8 @@ else:
 if _run_startup_admin_seed:
     print("[startup] admin seed enabled")
     with SessionLocal() as db:
+        # Fase 2c: seed é operação global de plataforma → acesso irrestrito.
+        db.info["rls_tenant"] = "*"
         ensure_configured_admin_users(db)
         ensure_default_tenant_links(db)
         ensure_network_profiles(db)
@@ -331,6 +333,8 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     try:
         from app.services.operational_observability_service import record_operational_exception
         with SessionLocal() as _db:
+            # Fase 2c: exception handler é operação global de plataforma → acesso irrestrito.
+            _db.info["rls_tenant"] = "*"
             record_operational_exception(
                 _db,
                 event_type="unhandled_exception",

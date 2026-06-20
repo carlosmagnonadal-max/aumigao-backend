@@ -111,6 +111,8 @@ def _recent_log_exists(
 
 def _run_task(session_factory, name: str, task) -> int:
     db = session_factory()
+    # Fase 2c: scheduler roda tarefas de plataforma (cross-tenant) → acesso irrestrito.
+    db.info["rls_tenant"] = "*"
     try:
         result = int(task(db) or 0)
         db.commit()
@@ -275,6 +277,8 @@ def _task_push_retry(db: Session) -> int:
 
 def _record_skipped_cycle(session_factory) -> None:
     db = session_factory()
+    # Fase 2c: log de plataforma → acesso irrestrito.
+    db.info["rls_tenant"] = "*"
     try:
         record_operational_log(
             db,
@@ -342,6 +346,8 @@ async def run_operational_scheduler_cycle(session_factory) -> dict:
         # roda o ciclo; os demais pulam (evita push/sinais duplicados). Em sqlite
         # (testes) acquired=None → roda normalmente, pois é processo único.
         lock_db = session_factory()
+        # Fase 2c: lock de plataforma (cross-tenant) → acesso irrestrito.
+        lock_db.info["rls_tenant"] = "*"
         acquired = _try_acquire_cross_process_lock(lock_db)
         if acquired is False:
             lock_db.close()

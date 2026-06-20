@@ -3,8 +3,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from starlette.requests import Request
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 ENV_PATH = ROOT_DIR / ".env"
@@ -60,8 +61,70 @@ class Base(DeclarativeBase):
     pass
 
 
-def get_db():
+# ---------------------------------------------------------------------------
+# Fase 2 — RLS: injeção do tenant na sessão via event listener.
+#
+# O listener after_begin é chamado a cada início de transação. Em SQLite
+# (CI/testes) é NO-OP imediato — só age em PostgreSQL. Em PG, aplica o GUC
+# app.current_tenant com escopo de transação (is_local=true), de forma
+# parametrizada (sem interpolação de string).
+#
+# O valor lido vem de session.info["rls_tenant"]:
+#   "*"  → super_admin / caller interno global (vê todas as linhas)
+#   ""   → tenant não resolvido; fail-closed (policy retorna 0 linhas em PG)
+#   str  → tenant_id específico
+# ---------------------------------------------------------------------------
+@event.listens_for(Session, "after_begin")
+def _set_rls_tenant_on_begin(session: Session, transaction, connection) -> None:
+    """Injeta app.current_tenant na transação PostgreSQL via set_config.
+
+    NO-OP em qualquer dialeto diferente de postgresql (ex.: sqlite em testes).
+    Parametrizado — jamais interpola strings no SQL.
+    """
+    if connection.dialect.name != "postgresql":
+        return
+    tenant = session.info.get("rls_tenant")
+    # None → fail-closed: sem tenant definido, o GUC fica vazio e a policy
+    # bloqueia todas as linhas. Callers internos devem setar "*" explicitamente.
+    conn_tenant = tenant if tenant is not None else ""
+    connection.exec_driver_sql(
+        "SELECT set_config('app.current_tenant', %s, true)",
+        (conn_tenant,),
+    )
+
+
+def set_session_tenant(db: Session, tenant: str) -> None:
+    """Seta o tenant RLS na sessão de forma imediata e persistente na transação.
+
+    Use para super_admin e act-as: garante que mudanças de tenant mid-request
+    também sejam refletidas em transações já abertas.
+
+    NO-OP em dialetos diferentes de postgresql (ex.: SQLite em testes).
+    Em PostgreSQL aplica set_config para a transação corrente.
+    """
+    db.info["rls_tenant"] = tenant
+    # Se já há uma transação ativa, reaplicar via SQL (o after_begin já passou).
+    # Em SQLite (testes) pula o execute — set_config não existe no SQLite.
+    bind = db.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        return
+    db.execute(text("SELECT set_config('app.current_tenant', :t, true)"), {"t": tenant})
+
+
+def get_db(request: Request = None):  # type: ignore[assignment]
+    """FastAPI dependency que fornece uma sessão do banco com tenant RLS injetado.
+
+    Quando chamado pelo FastAPI (request != None): lê tenant_id de request.state.
+    Quando chamado diretamente sem request (callers internos/testes): usa "*"
+    (acesso global), pois callers diretos são operações de plataforma.
+    """
     db = SessionLocal()
+    if request is not None:
+        tenant_id = getattr(getattr(request, "state", None), "tenant_id", None)
+        db.info["rls_tenant"] = tenant_id or ""
+    else:
+        # Caller interno ou teste: acesso global (sem RLS restritivo).
+        db.info["rls_tenant"] = "*"
     try:
         yield db
     finally:

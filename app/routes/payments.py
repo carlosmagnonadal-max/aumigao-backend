@@ -312,7 +312,8 @@ async def create_asaas_customer(
         "notificationDisabled": True,
     }
     mode_label = "Live" if is_live else "Sandbox"
-    logger.warning("Asaas %s request customers payload=%s", mode_label, sanitize_for_log(payload))
+    _log_payload = {**sanitize_for_log(payload), "email": "***"}
+    logger.warning("Asaas %s request customers payload=%s", mode_label, _log_payload)
     response = await client.post("/customers", json=payload)
     if response.status_code >= 400:
         raise_asaas_error("customers.create", response, payload)

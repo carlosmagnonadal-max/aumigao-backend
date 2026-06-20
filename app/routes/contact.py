@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.rbac import require_permission
+from app.dependencies.tenant_scope import apply_tenant_filter, get_admin_tenant_scope
 from app.models.contact_message import ContactMessage
 from app.models.user import User
 from app.services.contact_notification_service import notify_new_contact
@@ -102,9 +103,11 @@ def create_contact(payload: ContactCreate, request: Request, db: Session = Depen
 @router.get("")
 def list_contacts(
     db: Session = Depends(get_db),
-    _admin: User = Depends(require_permission("tenants.read")),
+    admin: User = Depends(require_permission("tenants.read")),
 ):
-    rows = db.query(ContactMessage).order_by(ContactMessage.created_at.desc()).all()
+    scope = get_admin_tenant_scope(admin)
+    query = db.query(ContactMessage).order_by(ContactMessage.created_at.desc())
+    rows = apply_tenant_filter(query, ContactMessage, scope).all()
     return [
         {
             "id": c.id,

@@ -18,7 +18,7 @@ def test_single_head_is_current():
     # encadeada na 0042→0041→0040). O importante e haver UM unico head (sem bifurcacao).
     script = _script()
     heads = list(script.get_heads())
-    assert heads == ["0043_enable_rls"], heads
+    assert heads == ["0044_rls_allow_null_tenant"], heads
 
 
 def test_revision_id_within_32_chars():

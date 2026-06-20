@@ -625,3 +625,19 @@ def change_password(
 
     _change_password_limiter.clear(limiter_key)
     return {"message": "Senha alterada com sucesso."}
+
+
+@router.post("/logout")
+def logout(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Revoga todas as sessões do usuário incrementando token_version.
+
+    Qualquer access/refresh token emitido antes deste logout passa a retornar 401.
+    Comportamento "sair de todos os dispositivos" — intencional.
+    """
+    # B-ALT-011 (passo 2b): mesmo mecanismo de change-password/reset-password.
+    current_user.token_version = (current_user.token_version or 0) + 1
+    db.commit()
+    return {"ok": True}

@@ -49,14 +49,17 @@ def _get_client():
                 import boto3
                 from botocore.config import Config
 
+                # signature_version e region por env: R2/Cloudflare usa s3v4+auto;
+                # GCS S3-compat (storage.googleapis.com) exige s3 (SigV2). Defaults
+                # preservam o comportamento R2.
                 _client = boto3.client(
                     "s3",
                     endpoint_url=_env("R2_ENDPOINT"),
                     aws_access_key_id=_env("R2_ACCESS_KEY_ID"),
                     aws_secret_access_key=_env("R2_SECRET_ACCESS_KEY"),
-                    region_name="auto",
+                    region_name=_env("R2_REGION") or "auto",
                     config=Config(
-                        signature_version="s3v4",
+                        signature_version=_env("R2_SIGNATURE_VERSION") or "s3v4",
                         retries={"max_attempts": 3, "mode": "standard"},
                     ),
                 )

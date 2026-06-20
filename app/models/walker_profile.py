@@ -1,7 +1,8 @@
 ﻿from datetime import datetime
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
+from app.core.pii_crypto import EncryptedString, blind_index
 
 class WalkerProfile(Base):
     __tablename__ = "walker_profiles"
@@ -9,7 +10,8 @@ class WalkerProfile(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), unique=True)
     full_name: Mapped[str] = mapped_column(String, default="")
-    cpf: Mapped[str] = mapped_column(String, default="")
+    cpf: Mapped[str] = mapped_column(EncryptedString, default="")
+    cpf_bidx: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     phone: Mapped[str] = mapped_column(String, default="")
     birth_date: Mapped[str] = mapped_column(String, default="")
     city: Mapped[str] = mapped_column(String, default="")
@@ -17,7 +19,7 @@ class WalkerProfile(Base):
     experience: Mapped[str] = mapped_column(Text, default="")
     bio: Mapped[str] = mapped_column(Text, default="")
     profile_photo_url: Mapped[str | None] = mapped_column(String, nullable=True)
-    rg: Mapped[str] = mapped_column(String, default="")
+    rg: Mapped[str] = mapped_column(EncryptedString, default="")
     document_url: Mapped[str | None] = mapped_column(String, nullable=True)
     identity_document_back_url: Mapped[str | None] = mapped_column(String, nullable=True)
     selfie_url: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -55,3 +57,15 @@ class WalkerProfile(Base):
     background_consent_version: Mapped[str | None] = mapped_column(String, nullable=True)
 
     user = relationship("User", back_populates="walker_profile")
+
+
+# ---------------------------------------------------------------------------
+# Event listeners: preenche cpf_bidx automaticamente antes de insert/update.
+# target.cpf é texto puro aqui (TypeDecorator cifra no bind_param).
+# RG não tem blind index — não é usado em pesquisa/unicidade.
+# ---------------------------------------------------------------------------
+
+@event.listens_for(WalkerProfile, "before_insert")
+@event.listens_for(WalkerProfile, "before_update")
+def _walker_set_cpf_bidx(mapper, connection, target):  # noqa: ARG001
+    target.cpf_bidx = blind_index(target.cpf)

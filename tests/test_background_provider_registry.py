@@ -249,12 +249,15 @@ def test_zero_regression_no_consent_blocks_certificate():
 # ----------------------------------------------- migration 0040 (idempotencia) ---
 
 def test_migration_0040_single_head():
-    """Migration 0040 e o unico head da arvore (sem bifurcacao)."""
+    """A arvore de migrations tem UM unico head (sem bifurcacao).
+    Hoje: 0041_encrypt_cpf_rg (encadeada na 0040_bg_check_provider).
+    """
     from alembic.config import Config
     from alembic.script import ScriptDirectory
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     heads = list(script.get_heads())
-    assert heads == ["0040_bg_check_provider"], heads
+    assert len(heads) == 1, f"Esperado 1 head, obteve: {heads}"
+    assert heads == ["0041_encrypt_cpf_rg"], heads
 
 
 def test_migration_0040_revision_id_within_32_chars():

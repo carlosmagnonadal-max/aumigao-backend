@@ -182,3 +182,27 @@ def test_email_checked_first_takes_priority():
     with pytest.raises(HTTPException) as exc:
         ensure_unique_identity(db, email="taken@a.com", cpf="123")
     assert "e-mail" in exc.value.detail.lower()
+
+
+# ---------- CPF normalizado: mascarado vs sem máscara = duplicata ----------
+
+
+def test_cpf_masked_vs_plain_is_duplicate_in_tutor():
+    """CPF '123.456.789-00' e '12345678900' são o mesmo — deve barrar como duplicata."""
+    db = _db()
+    # Cadastra CPF sem máscara
+    _tutor(db, id="tp1", user_id="u1", cpf="12345678900")
+    # Tenta cadastrar CPF com máscara — deve colidir
+    with pytest.raises(HTTPException) as exc:
+        ensure_unique_identity(db, cpf="123.456.789-00")
+    assert exc.value.status_code == 409
+    assert "cpf" in exc.value.detail.lower()
+
+
+def test_cpf_masked_vs_plain_is_duplicate_in_walker():
+    """CPF mascarado bate com CPF sem máscara no walker."""
+    db = _db()
+    _walker(db, id="wp1", user_id="u2", cpf="123.456.789-00")
+    with pytest.raises(HTTPException) as exc:
+        ensure_unique_identity(db, cpf="12345678900")
+    assert exc.value.status_code == 409

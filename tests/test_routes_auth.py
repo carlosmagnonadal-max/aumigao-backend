@@ -207,6 +207,7 @@ def test_register_duplicate_email_returns_409():
 
 
 def test_register_tutor_with_valid_cpf_creates_profile():
+    from app.core.pii_crypto import blind_index
     from app.models.tutor_profile import TutorProfile
     client, db = build()
     r = client.post("/auth/register", json={
@@ -214,8 +215,13 @@ def test_register_tutor_with_valid_cpf_creates_profile():
         "full_name": "Tutor Com CPF", "cpf": VALID_CPF, "phone": VALID_PHONE,
     })
     assert r.status_code == 200, r.text
-    profile = db.query(TutorProfile).filter(TutorProfile.cpf == VALID_CPF).first()
+    # CPF é cifrado no banco — buscar pelo blind index (determinístico).
+    profile = db.query(TutorProfile).filter(
+        TutorProfile.cpf_bidx == blind_index(VALID_CPF)
+    ).first()
     assert profile is not None
+    # ORM decifra o CPF ao ler — deve retornar o valor original.
+    assert profile.cpf == VALID_CPF
     assert profile.phone == VALID_PHONE
 
 

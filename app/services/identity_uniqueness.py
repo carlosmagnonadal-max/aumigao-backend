@@ -1,6 +1,7 @@
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.pii_crypto import blind_index
 from app.models.tutor_profile import TutorProfile
 from app.models.user import User
 from app.models.walker_profile import WalkerProfile
@@ -20,8 +21,9 @@ def ensure_unique_identity(
             raise HTTPException(status_code=409, detail="Este e-mail já está cadastrado.")
 
     if cpf:
-        tutor_query = db.query(TutorProfile).filter(TutorProfile.cpf == cpf)
-        walker_query = db.query(WalkerProfile).filter(WalkerProfile.cpf == cpf)
+        _bidx = blind_index(cpf)
+        tutor_query = db.query(TutorProfile).filter(TutorProfile.cpf_bidx == _bidx)
+        walker_query = db.query(WalkerProfile).filter(WalkerProfile.cpf_bidx == _bidx)
         if current_user_id:
             tutor_query = tutor_query.filter(TutorProfile.user_id != current_user_id)
             walker_query = walker_query.filter(WalkerProfile.user_id != current_user_id)

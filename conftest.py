@@ -23,6 +23,11 @@ os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.setdefault("RUN_STARTUP_ADMIN_SEED", "false")
 os.environ.setdefault("RUN_LEGACY_ID_COMPAT", "false")
 
+# 3) Chave fixa de cifragem de PII (CPF/RG) para os testes — Fernet key válida de 32 bytes.
+#    NUNCA usar em produção (lá vem de PII_ENCRYPTION_KEY no ambiente).
+#    Gerada com: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+os.environ.setdefault("PII_ENCRYPTION_KEY", "sI9VJYXwVrM29Mykh649L9MzxjbneiYu3dI9X6k29ws=")
+
 
 def _is_local_sqlite(url: str) -> bool:
     if not url:
@@ -35,6 +40,22 @@ def _is_local_sqlite(url: str) -> bool:
 
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _reset_pii_crypto_cache():
+    """Limpa o cache do _fernet() entre testes para evitar contaminação de chaves."""
+    try:
+        from app.core.pii_crypto import _fernet
+        _fernet.cache_clear()
+    except ImportError:
+        pass
+    yield
+    try:
+        from app.core.pii_crypto import _fernet
+        _fernet.cache_clear()
+    except ImportError:
+        pass
 
 
 @pytest.fixture(autouse=True)

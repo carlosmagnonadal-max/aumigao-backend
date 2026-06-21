@@ -115,14 +115,14 @@ def test_create_refresh_token_has_long_expiry():
     exp = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
     now = datetime.now(timezone.utc)
     days_left = (exp - now).days
-    # Deve ser significativamente maior que o access token (7 dias)
+    # Deve ser significativamente maior que o access token (24h após EPIC 4.1)
     assert days_left >= 25, f"refresh expiry muito curto: {days_left} dias"
 
 
-def test_access_token_ttl_unchanged():
-    """ACCESS_TOKEN_EXPIRE_MINUTES NÃO deve ter mudado (continua 7 dias = 10080 min)."""
-    assert ACCESS_TOKEN_EXPIRE_MINUTES == 60 * 24 * 7, (
-        f"TTL do access token mudou! Esperado 10080, got {ACCESS_TOKEN_EXPIRE_MINUTES}"
+def test_access_token_ttl_is_24h():
+    """ACCESS_TOKEN_EXPIRE_MINUTES deve ser 24h = 1440 min (EPIC 4.1 — reduzido de 7 dias)."""
+    assert ACCESS_TOKEN_EXPIRE_MINUTES == 60 * 24, (
+        f"TTL do access token inesperado. Esperado 1440 (24h), got {ACCESS_TOKEN_EXPIRE_MINUTES}"
     )
 
 

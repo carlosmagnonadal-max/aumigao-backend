@@ -484,6 +484,14 @@ async def create_payment(payload: PaymentCreate, user: User = Depends(get_curren
     cfg = _get_asaas_config()
     is_live = cfg["is_live"]
 
+    # IDOR-1: valida ownership do walk ANTES de qualquer cobrança.
+    # Se o walk existe no banco e pertence a outro tutor → 404 (bloqueia IDOR).
+    # Se o walk nao existe (ex.: referencia de idempotencia legada) → permite seguir.
+    if payload.walk_id:
+        _walk_ref = db.get(Walk, payload.walk_id)
+        if _walk_ref is not None and _walk_ref.tutor_id != user.id:
+            raise HTTPException(status_code=404, detail="Passeio nao encontrado.")
+
     # Idempotencia: se ja existe um pagamento em aberto para este walk_id,
     # devolve o existente sem criar novo no Asaas.
     if payload.walk_id:

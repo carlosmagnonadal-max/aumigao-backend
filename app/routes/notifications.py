@@ -384,6 +384,18 @@ def create_notification(
     if not _is_admin_role(current_user.role):
         raise HTTPException(status_code=403, detail="Apenas admin pode criar notificações manualmente.")
 
+    # Isolamento: admin de tenant nao pode criar notificacoes para tenant arbitrario.
+    # super_admin pode criar para qualquer tenant (payload.tenant_id livre).
+    if current_user.role not in {"super_admin", "superadmin"}:
+        admin_tenant = current_user.tenant_id or _current_tenant_id(current_user, db)
+        if payload.tenant_id and payload.tenant_id != admin_tenant:
+            raise HTTPException(
+                status_code=403,
+                detail="Admin de tenant nao pode criar notificacoes para outro tenant.",
+            )
+        # Sobrescreve silenciosamente para garantir isolamento.
+        payload = payload.model_copy(update={"tenant_id": admin_tenant})
+
     notification = _create_notification(db, payload)
     db.commit()
     db.refresh(notification)
@@ -396,6 +408,10 @@ def seed_demo_notifications(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Restringir seed-demo a admin/super_admin: tutores e walkers nao devem poder
+    # popular dados de demonstracao (poderia ser usado para spam ou reconhecimento).
+    if not _is_admin_role(current_user.role):
+        raise HTTPException(status_code=403, detail="Apenas admin pode gerar notificações de demonstração.")
     notifications = _seed_demo_notifications(db, current_user)
     db.commit()
     return notifications

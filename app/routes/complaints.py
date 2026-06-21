@@ -157,7 +157,15 @@ def admin_decide_case(complaint_id: str, payload: ComplaintDecisionReview, admin
 
 @admin_router.get("/risk-scores/list", response_model=list[RiskScoreResponse])
 @api_admin_router.get("/risk-scores/list", response_model=list[RiskScoreResponse])
-def admin_risk_scores(subject_type: str | None = Query(None), db: Session = Depends(get_db)):
+def admin_risk_scores(
+    subject_type: str | None = Query(None),
+    admin: User = Depends(require_permission("occurrences.read")),
+    db: Session = Depends(get_db),
+):
+    # RiskScore nao tem tenant_id proprio — filtrar via Complaint.tenant_id
+    # seria join complexo sem ganho real (scores sao globais de passeador).
+    # A permissão occurrences.read + o scope do admin no router ja protegem o acesso.
+    # super_admin ve todos; admin de tenant so ve se tiver a permissao do router.
     query = db.query(RiskScore)
     if subject_type:
         query = query.filter(RiskScore.subject_type == subject_type)
@@ -172,9 +180,11 @@ def admin_legacy_occurrences(
     date: str | None = Query(None),
     region: str | None = Query(None),
     walker_id: str | None = Query(None),
+    admin: User = Depends(require_permission("occurrences.read")),
     db: Session = Depends(get_db),
 ):
-    cases = db.query(Complaint)
+    scope = get_admin_tenant_scope(admin, db)
+    cases = apply_tenant_filter(db.query(Complaint), Complaint, scope)
     if status and status != "all":
         cases = cases.filter(Complaint.status == status)
     if walker_id:

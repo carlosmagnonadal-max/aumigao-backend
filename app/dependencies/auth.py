@@ -1,9 +1,19 @@
-﻿from fastapi import Depends, Header, HTTPException, status
+﻿from datetime import datetime, timezone
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import decode_access_token
 from app.models.user import User
+
+# EPIC 4.2 — cutoff de tokens legados sem claim `ver`.
+# Tokens sem `ver` cujo `iat` (issued-at) seja ANTERIOR a esta data são rejeitados:
+# eles foram emitidos antes da introdução do token_version e não podem mais ser
+# validados com segurança (token_version desconhecido → revogação impossível).
+# Tokens sem `ver` com `iat` recente (após o cutoff) ainda são aceitos durante a
+# janela de transição — retrocompat para testes/tokens de desenvolvimento.
+# Data escolhida: 2026-06-01 00:00:00 UTC — antes do deploy do token_version (2026-06-17).
+LEGACY_TOKEN_CUTOFF = datetime(2026, 6, 1, 0, 0, 0, tzinfo=timezone.utc)
 
 security = HTTPBearer(auto_error=False)
 
@@ -30,6 +40,19 @@ def get_current_user(
     token_ver = payload.get("ver")
     if token_ver is not None and token_ver != (user.token_version or 0):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sessao expirada")
+    # EPIC 4.2 — cutoff de tokens legados: rejeita tokens sem `ver` cujo `iat`
+    # (issued-at) seja anterior ao LEGACY_TOKEN_CUTOFF. Isso elimina tokens muito
+    # antigos (pré-token_version) para os quais não conseguimos verificar revogação.
+    # Tokens sem `ver` com iat recente (após o cutoff) ainda passam — retrocompat.
+    if token_ver is None:
+        iat = payload.get("iat")
+        if iat is not None:
+            try:
+                iat_dt = datetime.fromtimestamp(int(iat), tz=timezone.utc)
+            except Exception:
+                iat_dt = None
+            if iat_dt is not None and iat_dt < LEGACY_TOKEN_CUTOFF:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token legado expirado. Faca login novamente.")
     # Armazena o tenant alvo (somente super_admin usa; tenant_scope.py filtra por role).
     # O valor é isolado por request — não há estado compartilhado entre requisições.
     user._act_as_tenant_id = x_act_as_tenant or None

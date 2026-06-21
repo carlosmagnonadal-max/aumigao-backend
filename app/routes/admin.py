@@ -186,9 +186,19 @@ def list_operational_events(
     event_type: str | None = Query(None),
     severity: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
+    admin: User = Depends(require_permission("admin.access")),
     db: Session = Depends(get_db),
 ):
+    # AdminOperationalEvent nao possui tenant_id — e um log operacional global.
+    # O scope de tenant e aplicado implicitamente pelo router (admin.access) +
+    # pelo actor_user_id gravado em cada evento; admin de tenant so vera eventos
+    # gerados pela sua operacao. Para isolamento adicional basta filtrar por
+    # actor_user_id quando o admin nao for global.
+    scope = get_admin_tenant_scope(admin, db)
     query = db.query(AdminOperationalEvent)
+    if not scope.is_global:
+        # Admin de tenant: restringe aos eventos que ELE mesmo gerou.
+        query = query.filter(AdminOperationalEvent.actor_user_id == admin.id)
     if entity_type:
         query = query.filter(AdminOperationalEvent.entity_type == entity_type)
     if entity_id:
@@ -1082,10 +1092,23 @@ def partner_applications(_admin: User = Depends(require_permission("walkers.read
 
 @router.get("/partner-applications/{candidate_id}")
 @api_router.get("/partner-applications/{candidate_id}")
-def partner_application_detail(candidate_id: str, db: Session = Depends(get_db)):
+def partner_application_detail(
+    candidate_id: str,
+    admin: User = Depends(require_permission("walkers.read")),
+    db: Session = Depends(get_db),
+):
+    # PII exposta: exige permissão explícita + auditoria de scope (PRIORIDADE).
+    # WalkerProfile nao tem tenant_id (walkers sao globais), mas o admin de tenant
+    # so pode ver candidatos do seu proprio tenant via user.tenant_id do walker.
     profile = db.get(WalkerProfile, candidate_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Candidatura nao encontrada")
+    scope = get_admin_tenant_scope(admin, db)
+    if not scope.is_global:
+        # Admin de tenant: so ve candidatos cujo user.tenant_id bate com o seu tenant.
+        walker_user = db.get(User, profile.user_id)
+        if not walker_user or walker_user.tenant_id != scope.tenant_id:
+            raise HTTPException(status_code=404, detail="Candidatura nao encontrada")
     return _serialize_walker_profile(profile, db)
 
 
@@ -1905,7 +1928,13 @@ def reject_walk_completion(review_id: str, payload: WalkCompletionDecisionReques
 
 @router.get("/walker-kits/pending")
 @api_router.get("/walker-kits/pending")
-def pending_walker_kits(db: Session = Depends(get_db)):
+def pending_walker_kits(
+    admin: User = Depends(require_permission("walkers.read")),
+    db: Session = Depends(get_db),
+):
+    # WalkerKitSubmission nao possui tenant_id; walkers sao globais da plataforma.
+    # A permissao walkers.read (ja presente no router) e suficiente.
+    # super_admin ve todos; admin de tenant so ve se tiver a permissao.
     rows = db.query(WalkerKitSubmission).filter(
         WalkerKitSubmission.audit_status == "pending_review"
     ).order_by(WalkerKitSubmission.updated_at.desc()).all()
@@ -1982,6 +2011,7 @@ def reject_walker_kit(submission_id: str, payload: RejectWalkerKitRequest | None
 
 
 @router.get("/walker-operations")
+@api_router.get("/walker-operations")
 def walker_operations(admin: User = Depends(require_permission("walkers.read")), db: Session = Depends(get_db)):
     scope = get_admin_tenant_scope(admin, db)
     # F09: WalkerProfile não possui tenant_id — walkers são globais da plataforma
@@ -2060,7 +2090,11 @@ def update_referral_program_settings(payload: ReferralProgramSettingsUpdate, adm
 
 
 @router.get("/referrals")
-def referrals(limit: int = 20):
+@api_router.get("/referrals")
+def referrals(
+    limit: int = 20,
+    admin: User = Depends(require_permission("admin.access")),
+):
     items = REFERRAL_RECORDS[: max(0, limit)]
     return {"items": items, "total": len(REFERRAL_RECORDS)}
 
@@ -2072,7 +2106,12 @@ class ReferralStatusRequest(BaseModel):
 
 
 @router.post("/referrals/{referral_id}/status")
-def update_referral_status(referral_id: str, payload: ReferralStatusRequest):
+@api_router.post("/referrals/{referral_id}/status")
+def update_referral_status(
+    referral_id: str,
+    payload: ReferralStatusRequest,
+    admin: User = Depends(require_permission("admin.access")),
+):
     status = payload.status
     note = payload.note or ""
     for item in REFERRAL_RECORDS:
@@ -2170,7 +2209,12 @@ class AdjustWalkerCrRequest(BaseModel):
 
 
 @router.post("/walker-programs/walkers/{walker_id}/cr")
-def adjust_walker_cr(walker_id: str, payload: AdjustWalkerCrRequest, db: Session = Depends(get_db)):
+def adjust_walker_cr(
+    walker_id: str,
+    payload: AdjustWalkerCrRequest,
+    admin: User = Depends(require_permission("walkers.validate")),
+    db: Session = Depends(get_db),
+):
     action = {
         "id": str(uuid4()),
         "type": "cr_adjustment",
@@ -2178,8 +2222,18 @@ def adjust_walker_cr(walker_id: str, payload: AdjustWalkerCrRequest, db: Session
         "amount": int(payload.amount),
         "reason": payload.reason or "Ajuste administrativo",
         "created_at": _now(),
+        "actor_id": admin.id,
     }
     append_walker_program_action(db, action_type="cr", walker_id=walker_id, payload=action)
+    record_audit_log(
+        db,
+        action="walker_program.cr_adjusted",
+        entity_type="walker",
+        entity_id=walker_id,
+        actor=admin,
+        after={"amount": payload.amount, "reason": payload.reason},
+    )
+    db.commit()
     return {"ok": True, "action": action}
 
 
@@ -2190,7 +2244,12 @@ class KitAuditActionRequest(BaseModel):
 
 
 @router.post("/walker-programs/walkers/{walker_id}/kit-audit")
-def audit_walker_kit(walker_id: str, payload: KitAuditActionRequest, db: Session = Depends(get_db)):
+def audit_walker_kit(
+    walker_id: str,
+    payload: KitAuditActionRequest,
+    admin: User = Depends(require_permission("walkers.validate")),
+    db: Session = Depends(get_db),
+):
     action = {
         "id": str(uuid4()),
         "type": "kit_audit",
@@ -2198,8 +2257,18 @@ def audit_walker_kit(walker_id: str, payload: KitAuditActionRequest, db: Session
         "status": payload.status,
         "note": payload.note,
         "created_at": _now(),
+        "actor_id": admin.id,
     }
     append_walker_program_action(db, action_type="kit", walker_id=walker_id, payload=action)
+    record_audit_log(
+        db,
+        action="walker_program.kit_audited",
+        entity_type="walker",
+        entity_id=walker_id,
+        actor=admin,
+        after={"status": payload.status, "note": payload.note},
+    )
+    db.commit()
     return {"ok": True, "action": action}
 
 
@@ -2210,7 +2279,12 @@ class TipReviewActionRequest(BaseModel):
 
 
 @router.post("/walker-programs/tips/{tip_id}/review")
-def review_tip(tip_id: str, payload: TipReviewActionRequest, db: Session = Depends(get_db)):
+def review_tip(
+    tip_id: str,
+    payload: TipReviewActionRequest,
+    admin: User = Depends(require_permission("walkers.validate")),
+    db: Session = Depends(get_db),
+):
     action = {
         "id": str(uuid4()),
         "type": "tip_review",
@@ -2218,8 +2292,18 @@ def review_tip(tip_id: str, payload: TipReviewActionRequest, db: Session = Depen
         "status": payload.status,
         "note": payload.note,
         "created_at": _now(),
+        "actor_id": admin.id,
     }
     append_walker_program_action(db, action_type="tip", walker_id=None, payload=action)
+    record_audit_log(
+        db,
+        action="walker_program.tip_reviewed",
+        entity_type="walk_tip",
+        entity_id=tip_id,
+        actor=admin,
+        after={"status": payload.status, "note": payload.note},
+    )
+    db.commit()
     return {"ok": True, "action": action}
 
 @router.post("/withdrawals/{payment_id}/approve")

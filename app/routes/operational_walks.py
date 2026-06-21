@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_admin
 from app.dependencies.rbac import require_permission
+from app.dependencies.tenant_scope import apply_tenant_filter, get_admin_tenant_scope
 from app.models.user import User
 from app.models.walk import Walk, WalkOperationalLog
 from app.services.operational_matching_service import (
@@ -115,16 +116,29 @@ def get_operational_status(walk_id: str, user: User = Depends(get_current_user),
 
 @admin_router.get("/operational-metrics")
 @api_admin_router.get("/operational-metrics")
-def admin_operational_metrics(db: Session = Depends(get_db)):
+def admin_operational_metrics(
+    admin: User = Depends(require_permission("walks.read")),
+    db: Session = Depends(get_db),
+):
+    # operational_metrics retorna dados agregados — sem tenant filter (e por design global).
+    # A permissao walks.read (no router) + autenticacao e suficiente.
     process_expired_attempts(db)
     return operational_metrics(db)
 
 
 @admin_router.get("/{walk_id}/operational-logs")
 @api_admin_router.get("/{walk_id}/operational-logs")
-def admin_operational_logs(walk_id: str, db: Session = Depends(get_db)):
+def admin_operational_logs(
+    walk_id: str,
+    admin: User = Depends(require_permission("walks.read")),
+    db: Session = Depends(get_db),
+):
     process_expired_attempts(db)
-    _ = _get_walk(walk_id, db)
+    walk = _get_walk(walk_id, db)
+    # Isolamento: admin de tenant so ve logs de walks do seu tenant.
+    scope = get_admin_tenant_scope(admin, db)
+    from app.dependencies.tenant_scope import ensure_tenant_access
+    ensure_tenant_access(walk.tenant_id, scope)
     logs = (
         db.query(WalkOperationalLog)
         .filter(WalkOperationalLog.walk_id == walk_id)

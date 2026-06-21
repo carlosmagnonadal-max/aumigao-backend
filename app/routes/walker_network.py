@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, require_admin
 from app.dependencies.rbac import require_permission
+from app.dependencies.tenant_scope import ensure_tenant_access, get_admin_tenant_scope
 from app.models.tenant import Tenant
 from app.models.tenant_walker_access import TenantWalkerAccess
 from app.models.user import User
@@ -58,14 +59,24 @@ def _ensure_network_profile(walker_user_id: str, db: Session) -> WalkerNetworkPr
 
 @router.get("", response_model=list[WalkerNetworkProfileResponse])
 @api_router.get("", response_model=list[WalkerNetworkProfileResponse])
-def list_walker_network(db: Session = Depends(get_db)):
+def list_walker_network(
+    admin: User = Depends(require_permission("walkers.read")),
+    db: Session = Depends(get_db),
+):
+    # WalkerNetworkProfile nao tem tenant_id — walkers sao globais da plataforma.
     return db.query(WalkerNetworkProfile).order_by(WalkerNetworkProfile.created_at.desc()).all()
 
 
 @router.get("/tenants/{tenant_id}", response_model=list[TenantWalkerAccessResponse])
 @api_router.get("/tenants/{tenant_id}", response_model=list[TenantWalkerAccessResponse])
-def list_tenant_walkers(tenant_id: str, db: Session = Depends(get_db)):
+def list_tenant_walkers(
+    tenant_id: str,
+    admin: User = Depends(require_permission("walkers.read")),
+    db: Session = Depends(get_db),
+):
     _tenant_or_404(tenant_id, db)
+    # Admin de tenant so pode ver walkers do seu proprio tenant.
+    ensure_tenant_access(tenant_id, get_admin_tenant_scope(admin, db))
     return (
         db.query(TenantWalkerAccess)
         .filter(TenantWalkerAccess.tenant_id == tenant_id)
@@ -76,8 +87,15 @@ def list_tenant_walkers(tenant_id: str, db: Session = Depends(get_db)):
 
 @router.post("/tenants/{tenant_id}", response_model=TenantWalkerAccessResponse)
 @api_router.post("/tenants/{tenant_id}", response_model=TenantWalkerAccessResponse)
-def link_walker_to_tenant(tenant_id: str, payload: TenantWalkerAccessCreate, db: Session = Depends(get_db)):
+def link_walker_to_tenant(
+    tenant_id: str,
+    payload: TenantWalkerAccessCreate,
+    admin: User = Depends(require_permission("walkers.manage")),
+    db: Session = Depends(get_db),
+):
     tenant = _tenant_or_404(tenant_id, db)
+    # Escrita: admin de tenant so pode vincular walkers ao seu proprio tenant.
+    ensure_tenant_access(tenant_id, get_admin_tenant_scope(admin, db))
     enforce_network_access_allowed(tenant, db)
     _walker_or_404(payload.walker_user_id, db)
     _ensure_choice(payload.access_type, TENANT_WALKER_ACCESS_TYPES, "access_type")
@@ -107,9 +125,12 @@ def update_tenant_walker_access(
     tenant_id: str,
     walker_user_id: str,
     payload: TenantWalkerAccessUpdate,
+    admin: User = Depends(require_permission("walkers.manage")),
     db: Session = Depends(get_db),
 ):
     tenant = _tenant_or_404(tenant_id, db)
+    # Escrita: admin de tenant so pode gerir vinculos do seu proprio tenant.
+    ensure_tenant_access(tenant_id, get_admin_tenant_scope(admin, db))
     # Consistente com o POST: gerir vinculos da Rede exige que o plano libere network_access.
     enforce_network_access_allowed(tenant, db)
     _walker_or_404(walker_user_id, db)

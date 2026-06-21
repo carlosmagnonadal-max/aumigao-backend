@@ -131,8 +131,12 @@ def admin_referral_metrics(
 def admin_walker_referrals(
     status: str | None = Query(default=None),
     search: str | None = Query(default=None),
+    admin: User = Depends(require_permission("referrals.read")),
     db: Session = Depends(get_db),
 ):
+    # WalkerReferral nao possui tenant_id — indicacoes sao globais da plataforma.
+    # A permissao referrals.read e suficiente; scope resolvido para log/auditoria.
+    _scope = get_admin_tenant_scope(admin, db)
     query = db.query(WalkerReferral)
     if status and status != "all":
         query = query.filter(WalkerReferral.status == status)
@@ -150,7 +154,12 @@ def admin_walker_referrals(
 
 @admin_router.patch("/walkers/{referral_id}/status", response_model=AdminWalkerReferralResponse)
 @api_admin_router.patch("/walkers/{referral_id}/status", response_model=AdminWalkerReferralResponse)
-def admin_update_walker_referral_status(referral_id: str, payload: AdminWalkerReferralStatusUpdate, db: Session = Depends(get_db)):
+def admin_update_walker_referral_status(
+    referral_id: str,
+    payload: AdminWalkerReferralStatusUpdate,
+    admin: User = Depends(require_permission("referrals.manage")),
+    db: Session = Depends(get_db),
+):
     referral = db.get(WalkerReferral, referral_id)
     if not referral:
         raise HTTPException(status_code=404, detail="Indicacao nao encontrada.")

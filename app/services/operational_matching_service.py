@@ -24,6 +24,7 @@ from app.services.operational_observability_service import record_operational_ex
 from app.services.operational_reliability_service import serialize_operational_event
 from app.services.walker_operational_score_service import calculate_walker_operational_score
 from app.services.walker_network_matching_service import get_matching_pool_for_tenant, is_walker_eligible_for_tenant
+from app.services.reputation_service import reputation_summary as _reputation_summary
 from app.routes.notifications import NotificationCreate, _create_notification
 
 logger = logging.getLogger(__name__)
@@ -380,6 +381,9 @@ def serialize_operational_walk(
     )
     visible_tip = paid_tip or latest_tip
     walker_operational_score = calculate_walker_operational_score(walker_id, db) if walker_id else None
+    # BUG 1 fix: rating médio do walker atribuído ao passeio, reutilizando reputation_summary
+    _walker_rep = _reputation_summary(walker_id, db) if walker_id else None
+    walker_rating_avg = _walker_rep["rating_average"] if _walker_rep and _walker_rep["reviews_count"] > 0 else None
     walk_date, _, walk_time = (walk.scheduled_date or "").partition("T")
     can_see_full = include_private or should_release_address(walk, user)
     address_payload = {"address_snapshot": walk.address_snapshot, "notes": walk.notes} if can_see_full else coarse_pickup_payload(walk)
@@ -402,6 +406,7 @@ def serialize_operational_walk(
         "profile_photo_url": walker_photo_url,
         "photo_url": walker_photo_url,
         "walker_operational_score": walker_operational_score,
+        "walker_rating_avg": walker_rating_avg,
         "scheduled_date": walk.scheduled_date,
         "walk_date": walk_date or None,
         "walk_time": (walk_time[:5] if walk_time else None),

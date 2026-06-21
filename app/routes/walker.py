@@ -949,6 +949,8 @@ def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_
     day_start = datetime(now.year, now.month, now.day)
     today_walks = _period_walks(completed, day_start, day_start + timedelta(days=1))
     today_total = _sum_walk_values(today_walks)
+    # BUG 2 fix: contagem de passeios concluídos hoje usando conjunto canônico de status
+    completed_walks_today = sum(1 for w in today_walks if w.status in _WALK_COMPLETED_STATUSES)
 
     # Gorjetas reais da semana
     tips_week = _walker_tips_week(user.id, db)
@@ -998,6 +1000,7 @@ def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_
         "available_requests": len(available),
         "active_walks": len(active),
         "accepted_walks": len(accepted),
+        "completed_walks_today": completed_walks_today,
         "today_earnings": today_total,
         "walk_earnings_today": today_total,
         "tips_today": 0.0,

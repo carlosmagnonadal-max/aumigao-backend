@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
-from app.services.upload_validation import read_image_upload_safely
+from app.services.upload_validation import enforce_upload_rate_limit, read_image_upload_safely
 from app.services.upload_registry import record_upload
 from app.models.pet import Pet
 from app.models.walk import Walk
@@ -36,7 +36,10 @@ def _safe_upload_extension(filename: str | None, content_type: str | None) -> st
         return ".webp"
     if content_type in {"image/heic", "image/heif"}:
         return ".heic"
-    return ".jpg"
+    if content_type == "image/jpeg":
+        return ".jpg"
+    # G3: extensão/tipo não reconhecido — rejeitar explicitamente.
+    raise HTTPException(status_code=400, detail="Tipo de arquivo nao suportado.")
 
 
 def _public_upload_url(request: Request, path: Path) -> str:
@@ -104,6 +107,8 @@ async def upload_pet_photo(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # U3/G2: rate limit em endpoint autenticado de upload de foto.
+    enforce_upload_rate_limit(request)
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Envie uma imagem valida.")
 
@@ -113,7 +118,8 @@ async def upload_pet_photo(
     extension = _safe_upload_extension(file.filename, file.content_type)
     destination = destination_dir / f"pet-{uuid4().hex}{extension}"
 
-    content = await read_image_upload_safely(file)
+    # G7: fotos de pet limitadas a 5 MB.
+    content = await read_image_upload_safely(file, max_bytes=5 * 1024 * 1024)
 
     object_storage.save(destination, content, file.content_type)
 

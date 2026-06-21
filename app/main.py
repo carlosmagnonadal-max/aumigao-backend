@@ -487,6 +487,19 @@ except Exception:
     )
 
 
+def _is_document_upload_path(upload_path: str) -> bool:
+    """G5: documentos sensíveis recebem Content-Disposition: attachment.
+
+    Prefixos que são documentos (não devem ser renderizados inline no browser):
+    walker-documents (RG/CPF/endereço/selfie) e walk-completions (fotos de
+    finalização — contêm dados do passeio). Fotos de perfil/pet ficam inline.
+    """
+    normalized = (upload_path or "").replace("\\", "/").lstrip("/")
+    if normalized.startswith("uploads/"):
+        normalized = normalized[len("uploads/"):]
+    return normalized.startswith(("walker-documents/", "walk-completions/"))
+
+
 @app.api_route("/uploads/{upload_path:path}", methods=["GET", "HEAD"])
 def serve_upload(upload_path: str, request: Request):
     # Com R2 ligado (Cloud Run), serve do bucket; senão, do disco local (Railway/dev).
@@ -497,13 +510,20 @@ def serve_upload(upload_path: str, request: Request):
         if is_sensitive_upload_path(upload_path) and not has_valid_upload_signature(upload_path, request.url.query):
             raise HTTPException(status_code=403, detail="Assinatura invalida ou expirada")
         body, content_type = fetched
-        return Response(content=body, media_type=content_type)
+        # G5: documentos forçam download; fotos de perfil/pet ficam inline.
+        headers = {}
+        if _is_document_upload_path(upload_path):
+            headers["Content-Disposition"] = "attachment"
+        return Response(content=body, media_type=content_type, headers=headers)
 
     file_path = upload_file_path(upload_path)
     if not file_path or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Arquivo nao encontrado")
     if is_sensitive_upload_path(upload_path) and not has_valid_upload_signature(upload_path, request.url.query):
         raise HTTPException(status_code=403, detail="Assinatura invalida ou expirada")
+    # G5: documentos forçam download; fotos de perfil/pet ficam inline.
+    if _is_document_upload_path(upload_path):
+        return FileResponse(file_path, headers={"Content-Disposition": "attachment"})
     return FileResponse(file_path)
 
 

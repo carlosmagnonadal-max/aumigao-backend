@@ -23,7 +23,7 @@ from app.services.identity_uniqueness import ensure_unique_identity
 from app.services.signed_uploads import create_signed_upload_url
 from app.services.tenant_seed_service import default_tenant_id
 from app.services.upload_registry import record_upload
-from app.services.upload_validation import enforce_application_rate_limit, enforce_upload_rate_limit, read_image_upload_safely
+from app.services.upload_validation import enforce_application_rate_limit, enforce_upload_rate_limit, read_document_upload_safely, read_image_upload_safely
 from app.services.walker_referrals import mark_referral_approved, mark_referral_rejected
 from app.utils.registration_validation import normalize_cpf_or_raise, normalize_email_or_raise, normalize_phone_or_raise
 
@@ -46,6 +46,33 @@ from app.lib.admin_serializers import _document_key_list
 router = APIRouter(prefix="/api/partner-applications", tags=["partner-applications"])
 
 LOGGER = logging.getLogger("aumigao.walker_applications")
+
+# G6: extensões permitidas para documentos (identidade/endereço) incluem PDF.
+_DOCUMENT_TYPES_ALLOW_PDF = {"identity_front", "identity_back", "address_proof"}
+_DOCUMENT_UPLOAD_EXTENSIONS = ALLOWED_UPLOAD_EXTENSIONS | {".pdf"}
+
+
+def _safe_document_extension(filename: str | None, content_type: str | None) -> str:
+    """Variante de _safe_upload_extension que também aceita .pdf para documentos.
+
+    Chamada apenas para uploads de identidade/endereço (G6). Para fotos, o
+    _safe_upload_extension original (imagens apenas) continua sendo usado.
+    """
+    from pathlib import Path as _Path
+    suffix = _Path(filename or "").suffix.lower()
+    if suffix in _DOCUMENT_UPLOAD_EXTENSIONS:
+        return suffix
+    if content_type == "application/pdf":
+        return ".pdf"
+    if content_type == "image/png":
+        return ".png"
+    if content_type == "image/webp":
+        return ".webp"
+    if content_type in {"image/heic", "image/heif"}:
+        return ".heic"
+    if content_type == "image/jpeg":
+        return ".jpg"
+    raise HTTPException(status_code=400, detail="Tipo de arquivo nao suportado.")
 
 
 # ---------------------------------------------------------------------------
@@ -229,15 +256,26 @@ async def upload_partner_application_document(
     normalized_type = document_type.strip().lower()
     if normalized_type not in ALLOWED_UPLOAD_TYPES:
         raise HTTPException(status_code=400, detail="Tipo de documento invalido.")
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Envie uma imagem valida.")
 
-    validated_bytes = await read_image_upload_safely(file)
+    # G6: documentos de identidade/endereço aceitam PDF ou imagem (até 10 MB).
+    # Fotos de perfil e selfie aceitam apenas imagem (até 5 MB).
+    if normalized_type in _DOCUMENT_TYPES_ALLOW_PDF:
+        # G7: limite de 10 MB para documentos (PDF ou imagem).
+        validated_bytes = await read_document_upload_safely(file, max_bytes=10 * 1024 * 1024)
+    else:
+        if not file.content_type or not file.content_type.startswith("image/"):
+            raise HTTPException(status_code=400, detail="Envie uma imagem valida.")
+        # G7: fotos de perfil/selfie limitadas a 5 MB.
+        validated_bytes = await read_image_upload_safely(file, max_bytes=5 * 1024 * 1024)
 
     safe_owner = "".join(char for char in owner_id.strip().lower() if char.isalnum() or char in {"-", "_", "@"})[:80] or "anonymous"
     destination_dir = UPLOAD_ROOT / safe_owner
     destination_dir.mkdir(parents=True, exist_ok=True)
-    extension = _safe_upload_extension(file.filename, file.content_type)
+    # G6: usa helper ciente de PDF para documentos; helper de imagem para fotos.
+    if normalized_type in _DOCUMENT_TYPES_ALLOW_PDF:
+        extension = _safe_document_extension(file.filename, file.content_type)
+    else:
+        extension = _safe_upload_extension(file.filename, file.content_type)
     destination = destination_dir / f"{normalized_type}-{uuid4().hex}{extension}"
 
     object_storage.save(destination, validated_bytes, file.content_type)

@@ -7,13 +7,13 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_permission
-from app.services.upload_validation import read_image_upload_safely
+from app.services.upload_validation import enforce_upload_rate_limit, read_image_upload_safely
 from app.services import object_storage
 from app.services.signed_uploads import UPLOAD_ROOT as UPLOADS_BASE
 from app.services.upload_registry import record_upload
@@ -160,7 +160,10 @@ def _safe_upload_extension(filename: str | None, content_type: str | None) -> st
         return ".webp"
     if content_type in {"image/heic", "image/heif"}:
         return ".heic"
-    return ".jpg"
+    if content_type == "image/jpeg":
+        return ".jpg"
+    # G3: extensão/tipo não reconhecido — rejeitar explicitamente.
+    raise HTTPException(status_code=400, detail="Tipo de arquivo nao suportado.")
 
 
 # Alias para retrocompat: partner_application.py importa este nome deste módulo.
@@ -871,6 +874,27 @@ class BackgroundCertificatePayload(BaseModel):
     cert_number: str
     document_url: str | None = None
 
+    @field_validator("document_url", mode="before")
+    @classmethod
+    def _validate_document_url(cls, v):
+        """G9: rejeita URLs externas em document_url — aceita apenas caminhos internos."""
+        if v is None:
+            return v
+        normalized = str(v).strip()
+        if not normalized:
+            return normalized
+        # Aceita: caminhos relativos internos (/uploads/...) e URLs do próprio backend.
+        # Caminho relativo interno.
+        if normalized.startswith("/uploads/"):
+            return normalized
+        # URL completa: aceita se o path contem /uploads/ (upload retornado pelo backend).
+        if normalized.startswith(("http://", "https://")):
+            from urllib.parse import urlsplit as _urlsplit
+            parsed = _urlsplit(normalized)
+            if "/uploads/" in parsed.path:
+                return normalized
+        raise ValueError("document_url deve apontar para um upload interno (/uploads/).")
+
 
 def _walker_profile_for_user(user: User, db: Session) -> WalkerProfile:
     profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == user.id).first()
@@ -1227,11 +1251,13 @@ async def upload_kit_photo(
     Espelha o pipeline de completion-photo (valida imagem + object_storage + registry).
     Dono derivado do token.
     """
+    # U3/G2: rate limit; G7: fotos de kit limitadas a 5 MB.
+    enforce_upload_rate_limit(request)
     _require_active_walker(user, db)
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Envie uma imagem valida.")
 
-    validated_bytes = await read_image_upload_safely(file)
+    validated_bytes = await read_image_upload_safely(file, max_bytes=5 * 1024 * 1024)
 
     safe_walker_id = "".join(char for char in user.id if char.isalnum() or char in {"-", "_"})[:80] or "walker"
     destination_dir = WALKER_KIT_UPLOAD_ROOT / safe_walker_id
@@ -1949,6 +1975,8 @@ async def upload_walk_completion_photo(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # U3/G2: rate limit; G7: fotos de finalizacao limitadas a 5 MB.
+    enforce_upload_rate_limit(request)
     _require_active_walker(user, db)
     walk = db.get(Walk, walk_id)
     if not walk:
@@ -1958,7 +1986,7 @@ async def upload_walk_completion_photo(
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Envie uma imagem valida.")
 
-    validated_bytes = await read_image_upload_safely(file)
+    validated_bytes = await read_image_upload_safely(file, max_bytes=5 * 1024 * 1024)
 
     safe_walker_id = "".join(char for char in user.id if char.isalnum() or char in {"-", "_"})[:80] or "walker"
     safe_walk_id = "".join(char for char in walk.id if char.isalnum() or char in {"-", "_"})[:80] or "walk"

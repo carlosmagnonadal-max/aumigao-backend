@@ -2,8 +2,18 @@ from __future__ import annotations
 
 import json
 import logging
+import re as _re
 from datetime import datetime, timedelta
 from uuid import uuid4
+
+_SAFE_IDENT_RE = _re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+
+
+def _safe_ident(name: str) -> str:
+    """Validate a SQL identifier before DDL interpolation. Raises ValueError if unsafe."""
+    if not _SAFE_IDENT_RE.match(name):
+        raise ValueError(f"Unsafe SQL identifier rejected: {name!r}")
+    return name
 
 from fastapi import HTTPException
 from sqlalchemy import inspect, text
@@ -126,7 +136,9 @@ def ensure_operational_schema(engine) -> None:
     with engine.begin() as conn:
         for name, definition in columns.items():
             if name not in existing:
-                conn.execute(text(f"ALTER TABLE walks ADD COLUMN {name} {definition}"))
+                safe_name = _safe_ident(name)  # column names are hardcoded dict keys
+                # nosec: definition is a SQL type string from the hardcoded columns dict
+                conn.execute(text(f"ALTER TABLE walks ADD COLUMN {safe_name} {definition}"))
 
 
 def _json_load(value: str | None, fallback):

@@ -86,6 +86,19 @@ from app.services.signed_uploads import UPLOAD_ROOT, has_valid_upload_signature,
 
 logger = logging.getLogger(__name__)
 
+import re as _re
+
+_SAFE_IDENT_RE = _re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+
+
+def _safe_ident(name: str) -> str:
+    """Validate a SQL identifier (table or column name) against a strict allowlist
+    regex before interpolation into DDL text(). Raises ValueError if invalid.
+    Only call this for values that are NOT already controlled hardcoded literals."""
+    if not _SAFE_IDENT_RE.match(name):
+        raise ValueError(f"Unsafe SQL identifier rejected: {name!r}")
+    return name
+
 
 def get_bool_env(name: str, default: bool) -> bool:
     value = os.getenv(name)
@@ -106,6 +119,7 @@ def ensure_legacy_id_compatibility():
     with engine.begin() as connection:
         for table in Base.metadata.sorted_tables:
             if table.name not in inspector.get_table_names():
+                # nosec: table.name comes from SQLAlchemy model metadata (internal literal)
                 connection.execute(text(f"DROP TYPE IF EXISTS {table.name} CASCADE"))
     targets = {
         "users": ("id",),
@@ -119,7 +133,13 @@ def ensure_legacy_id_compatibility():
             for foreign_key in inspector.get_foreign_keys(table_name):
                 constraint_name = foreign_key.get("name")
                 if constraint_name:
-                    connection.execute(text(f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {constraint_name}"))
+                    try:
+                        safe_constraint = _safe_ident(constraint_name)
+                    except ValueError:
+                        logger.warning("ensure_legacy_id_compatibility: skipping unsafe constraint name %r", constraint_name)
+                        continue
+                    # nosec: table_name is a hardcoded key from targets dict above
+                    connection.execute(text(f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {safe_constraint}"))
     for table_name, column_names in targets.items():
         if table_name not in inspector.get_table_names():
             continue
@@ -128,8 +148,10 @@ def ensure_legacy_id_compatibility():
             for column_name in column_names:
                 column_type = columns.get(column_name, "")
                 if column_type and "char" not in column_type and "text" not in column_type:
+                    safe_col = _safe_ident(column_name)  # column_names are hardcoded literals
+                    # nosec: table_name is a hardcoded key from targets dict above
                     connection.execute(
-                        text(f"ALTER TABLE {table_name} ALTER COLUMN {column_name} TYPE VARCHAR USING {column_name}::VARCHAR")
+                        text(f"ALTER TABLE {table_name} ALTER COLUMN {safe_col} TYPE VARCHAR USING {safe_col}::VARCHAR")
                     )
 
 _db_diagnostics = get_database_diagnostics()
@@ -152,10 +174,15 @@ def _add_missing_columns(table_name: str, columns: dict[str, str]):
     if table_name not in inspector.get_table_names():
         return
     existing = {column["name"] for column in inspector.get_columns(table_name)}
+    # Validate table_name and column names as SQL identifiers before DDL interpolation.
+    # All callers pass hardcoded literals, but we guard defensively.
+    safe_table = _safe_ident(table_name)
     with engine.begin() as connection:
         for name, definition in columns.items():
             if name not in existing:
-                connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {name} {definition}"))
+                safe_name = _safe_ident(name)
+                # nosec: definition is a SQL type string from hardcoded caller dicts (not user input)
+                connection.execute(text(f"ALTER TABLE {safe_table} ADD COLUMN {safe_name} {definition}"))
 
 
 def ensure_user_schema():
@@ -383,7 +410,22 @@ app.add_middleware(
     allow_origins=_cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["*"],
+    # Sec-fix: explicit allowlist replaces allow_headers=["*"].
+    # Headers confirmed by grep on site/ and admin-web/ browser fetch calls:
+    #   Authorization      — Bearer token (mobile app / BFF proxy)
+    #   Content-Type       — JSON bodies
+    #   X-Tenant-Slug      — build-dedicated tenant resolution (TenantResolverMiddleware)
+    #   X-Tenant-Id        — direct tenant id override (TenantResolverMiddleware)
+    #   X-Act-As-Tenant    — super_admin act-as impersonation (admin-web lib/api.ts)
+    #   X-Request-ID       — correlation id (RequestContextMiddleware)
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Tenant-Slug",
+        "X-Tenant-Id",
+        "X-Act-As-Tenant",
+        "X-Request-ID",
+    ],
 )
 app.add_middleware(TenantResolverMiddleware, session_factory=SessionLocal)
 app.add_middleware(RequestContextMiddleware)

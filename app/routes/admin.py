@@ -3,8 +3,8 @@ import logging
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi import HTTPException
 from app.constants import PAID_PAYMENT_STATUSES, WALK_COMPLETED_STATUSES as _WALK_COMPLETED_STATUSES
-from pydantic import BaseModel, Field
-from typing import Any
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Any, Optional
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -2015,13 +2015,44 @@ def referral_program_settings(admin: User = Depends(require_permission("admin.ac
     return get_setting(db, "referral_program", DEFAULT_REFERRAL_PROGRAM_SETTINGS, tenant_id=tenant_id)
 
 
+# Sec-fix: typed schema for referral program settings update — validates known
+# fields with bounds while allowing arbitrary extra keys (extra="allow") so that
+# partial deep-merge payloads continue to work unchanged.
+class ReferralClientRulesUpdate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    indicated_discount_amount: Optional[float] = Field(None, ge=0, le=10000)
+    referrer_coupon_credit_amount: Optional[float] = Field(None, ge=0, le=10000)
+    min_paid_walks_for_referrer_bonus: Optional[int] = Field(None, ge=0, le=1000)
+    referral_limit_per_user: Optional[int] = Field(None, ge=0, le=10000)
+    benefit_validity_days: Optional[int] = Field(None, ge=0, le=3650)
+
+
+class ReferralWalkerRulesUpdate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    fixed_bonus_amount: Optional[float] = Field(None, ge=0, le=100000)
+    min_completed_walks: Optional[int] = Field(None, ge=0, le=10000)
+    min_rating_required: Optional[float] = Field(None, ge=0.0, le=5.0)
+    max_no_show_rate: Optional[float] = Field(None, ge=0.0, le=100.0)
+    eligibility_window_days: Optional[int] = Field(None, ge=0, le=3650)
+
+
+class ReferralProgramSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    program_enabled: Optional[bool] = None
+    client_referral_enabled: Optional[bool] = None
+    walker_referral_enabled: Optional[bool] = None
+    app_visible: Optional[bool] = None
+    client_rules: Optional[ReferralClientRulesUpdate] = None
+    walker_rules: Optional[ReferralWalkerRulesUpdate] = None
+
+
 @router.put("/referral-program/settings")
 @api_router.put("/referral-program/settings")
-def update_referral_program_settings(payload: dict, admin: User = Depends(require_permission("admin.access")), db: Session = Depends(get_db)):
+def update_referral_program_settings(payload: ReferralProgramSettingsUpdate, admin: User = Depends(require_permission("admin.access")), db: Session = Depends(get_db)):
     scope = get_admin_tenant_scope(admin, db)
     tenant_id = scope.tenant_id if not scope.is_global else None
     current = get_setting(db, "referral_program", DEFAULT_REFERRAL_PROGRAM_SETTINGS, tenant_id=tenant_id)
-    merged = _merge_dict(current, payload or {})
+    merged = _merge_dict(current, payload.model_dump(exclude_unset=True))
     merged["updated_at"] = _now()
     merged["updated_by"] = "admin"
     save_setting(db, "referral_program", merged, updated_by="admin", tenant_id=tenant_id)
@@ -2082,13 +2113,50 @@ def walker_programs(admin: User = Depends(require_permission("admin.access")), d
     }
 
 
+# Sec-fix: typed schema for walker program settings update — validates known
+# fields with bounds while allowing arbitrary extra keys (extra="allow") so that
+# partial deep-merge payloads continue to work unchanged.
+class WalkerTipsSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    enabled: Optional[bool] = None
+    separate_from_earnings: Optional[bool] = None
+    post_delivery_only: Optional[bool] = None
+    score_impact_cap_points: Optional[int] = Field(None, ge=0, le=100)
+    review_required_above_amount: Optional[float] = Field(None, ge=0, le=100000)
+    policy: Optional[str] = Field(None, max_length=500)
+
+
+class WalkerMatchingSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    enabled: Optional[bool] = None
+    cr_boost_cap_points: Optional[int] = Field(None, ge=0, le=100)
+    max_distance_km: Optional[float] = Field(None, ge=0, le=500)
+
+
+class WalkerRatingSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    enabled: Optional[bool] = None
+    min_reviews_for_public_rating: Optional[int] = Field(None, ge=0, le=1000)
+    recent_window_walks: Optional[int] = Field(None, ge=0, le=1000)
+    tip_score_impact_cap_points: Optional[int] = Field(None, ge=0, le=100)
+    severe_delay_penalty_points: Optional[int] = Field(None, ge=0, le=100)
+    no_show_penalty_points: Optional[int] = Field(None, ge=0, le=100)
+
+
+class WalkerProgramSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    tips: Optional[WalkerTipsSettingsUpdate] = None
+    matching: Optional[WalkerMatchingSettingsUpdate] = None
+    rating: Optional[WalkerRatingSettingsUpdate] = None
+
+
 @router.put("/walker-programs/settings")
 @api_router.put("/walker-programs/settings")
-def update_walker_program_settings(payload: dict, admin: User = Depends(require_permission("admin.access")), db: Session = Depends(get_db)):
+def update_walker_program_settings(payload: WalkerProgramSettingsUpdate, admin: User = Depends(require_permission("admin.access")), db: Session = Depends(get_db)):
     scope = get_admin_tenant_scope(admin, db)
     tenant_id = scope.tenant_id if not scope.is_global else None
     current = get_setting(db, "walker_program", DEFAULT_WALKER_PROGRAM_SETTINGS, tenant_id=tenant_id)
-    merged = _merge_dict(current, payload or {})
+    merged = _merge_dict(current, payload.model_dump(exclude_unset=True))
     merged["updated_at"] = _now()
     merged["updated_by"] = "admin"
     save_setting(db, "walker_program", merged, updated_by="admin", tenant_id=tenant_id)

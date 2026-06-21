@@ -7,8 +7,11 @@ from app.schemas.common import ORMModel
 class UserCreate(BaseModel):
     # Sec-P3: max_length defensivos — anti-DoS/log-injection. Limites generosos,
     # não quebram uso legítimo.
-    email: str = Field(..., max_length=254)
-    password: str = Field(..., max_length=128)
+    # Sec-fix: EmailStr valida formato antes de qualquer processamento de rota.
+    email: EmailStr = Field(..., max_length=254)
+    # Sec-fix: min_length=8 rejeita senhas trivialmente curtas na camada de schema
+    # (defense-in-depth; a rota já valida força, mas isso bloqueia mais cedo).
+    password: str = Field(..., min_length=8, max_length=128)
     full_name: str = Field("", max_length=200)
     role: str = Field("tutor", max_length=50)
     referral_code: str | None = Field(None, max_length=100)

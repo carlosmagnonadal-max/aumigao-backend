@@ -915,6 +915,17 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_db)
     if not expected or not secrets.compare_digest(expected, received or ""):
         raise HTTPException(status_code=401, detail="Webhook não autorizado")
 
+    # Sec-fix: defensive guard — reject structurally malformed payloads before
+    # any processing. Keeps all existing .get() accesses intact below.
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Payload de webhook inválido.")
+    _event_raw = payload.get("event")
+    if not isinstance(_event_raw, str) or not _event_raw.strip():
+        raise HTTPException(status_code=400, detail="Campo 'event' ausente ou inválido no webhook.")
+    _payment_raw = payload.get("payment")
+    if _payment_raw is not None and not isinstance(_payment_raw, dict):
+        raise HTTPException(status_code=400, detail="Campo 'payment' deve ser um objeto no webhook.")
+
     event = payload.get("event")
     payment_data = payload.get("payment") or {}
     provider_payment_id = payment_data.get("id")

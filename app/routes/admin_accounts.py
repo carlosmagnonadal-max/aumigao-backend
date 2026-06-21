@@ -109,7 +109,7 @@ def list_accounts(
     db: Session = Depends(get_db),
 ):
     """Lista usuários com role admin/super_admin, com tenant-scoping."""
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     query = db.query(User).filter(User.role.in_(ADMIN_ROLES))
     query = apply_tenant_filter(query, User, scope)
     rows = query.order_by(User.created_at.desc()).all()

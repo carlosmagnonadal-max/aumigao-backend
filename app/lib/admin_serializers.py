@@ -32,6 +32,8 @@ from app.services.background_check_service import (
     compute_background_status,
     official_validation_url as background_official_validation_url,
 )
+from app.constants import PAID_PAYMENT_STATUSES
+from app.enums import canonical_application_status as _canonical_application_status_impl
 
 _logger = logging.getLogger("aumigao.admin")
 
@@ -66,8 +68,7 @@ FAKE_ENTITY_TOKENS = (
     "request-demo",
 )
 
-# Status sets importados para evitar dependência circular com admin.py
-PAID_PAYMENT_STATUSES = {"paid", "Pago", "pagamento_confirmado_sandbox", "payment_confirmed", "confirmed"}
+# PAID_PAYMENT_STATUSES importado de app.constants (evita circular com admin.py)
 COMPLETION_REVIEW_MUTABLE_STATUSES = {"pending", "pending_review", "under_review"}
 
 # ---------------------------------------------------------------------------
@@ -254,23 +255,8 @@ def _is_real_paid_payment(payment: Payment, real_walk_ids: set[str]) -> bool:
 # Helpers de normalização de status
 # ---------------------------------------------------------------------------
 
-def _canonical_application_status(status: str | None) -> str:
-    normalized = (status or "submitted").strip().lower()
-    if normalized in {"active", "ativo", "passeador ativo"}:
-        return "active"
-    if normalized in {"approved", "aprovado", "candidato aprovado"}:
-        return "approved"
-    if normalized in {"rejected", "reprovado", "rejeitado", "candidatura recusada"}:
-        return "rejected"
-    if normalized in {"under_review", "document_review", "documents_review", "aprovação documental", "aprovacao documental", "documentos em análise", "documentos em analise", "em análise", "em analise"}:
-        return "under_review"
-    if normalized in {"resubmission_requested", "reenvio solicitado", "documents_pending"}:
-        return "resubmission_requested"
-    if normalized in {"blocked", "bloqueado", "restrito", "restricted", "suspenso", "suspended"}:
-        return "blocked"
-    if normalized in {"submitted", "cadastro enviado", "pending"}:
-        return "submitted"
-    return "submitted"
+# Alias local: mantém o nome _canonical_application_status usado neste módulo.
+_canonical_application_status = _canonical_application_status_impl
 
 
 def _status_label(status: str | None) -> str:

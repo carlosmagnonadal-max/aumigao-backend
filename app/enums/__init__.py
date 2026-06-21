@@ -16,6 +16,7 @@ __all__ = [
     "WalkOperationalStatus",
     "ApplicationStatus",
     "TenantWalkerAccessStatus",
+    "canonical_application_status",
 ]
 
 
@@ -85,3 +86,39 @@ class TenantWalkerAccessStatus(StrEnum):
     DECLINED = "declined"
     REVOKED = "revoked"
     PAUSED = "paused"
+
+
+# ---------------------------------------------------------------------------
+# Função de normalização canônica de status de candidatura
+# ---------------------------------------------------------------------------
+# Extraída de app/routes/walker.py e app/lib/admin_serializers.py (eram
+# cópias idênticas). app/routes/partner_application.py já importava de
+# walker.py; ambos agora importam daqui.
+
+def canonical_application_status(status: str | None) -> str:
+    """Normaliza um status de candidatura de passeador para o valor canônico.
+
+    Aceita strings legadas (português, labels de UI) e retorna um dos valores
+    de ``ApplicationStatus`` como string literal.
+    """
+    normalized = (status or "submitted").strip().lower()
+    if normalized in {"active", "ativo", "passeador ativo"}:
+        return "active"
+    if normalized in {"approved", "aprovado", "candidato aprovado"}:
+        return "approved"
+    if normalized in {"rejected", "reprovado", "rejeitado", "candidatura recusada"}:
+        return "rejected"
+    if normalized in {
+        "under_review", "document_review", "documents_review",
+        "aprovação documental", "aprovacao documental",
+        "documentos em análise", "documentos em analise",
+        "em análise", "em analise",
+    }:
+        return "under_review"
+    if normalized in {"resubmission_requested", "reenvio solicitado", "documents_pending"}:
+        return "resubmission_requested"
+    if normalized in {"blocked", "bloqueado", "restrito", "restricted", "suspenso", "suspended"}:
+        return "blocked"
+    if normalized in {"submitted", "cadastro enviado", "pending"}:
+        return "submitted"
+    return "submitted"

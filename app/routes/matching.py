@@ -92,7 +92,7 @@ def list_walker_boosts(status: str | None = Query(None), db: Session = Depends(g
 @api_admin_router.patch("/boosts/{walker_id}", response_model=WalkerBoostResponse)
 def update_walker_boost(walker_id: str, payload: WalkerBoostUpdate, admin: User = Depends(require_permission("matching.read")), db: Session = Depends(get_db)):
     # Gate walker_boosts por tenant do admin (super_admin global não aplica gate).
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     if scope.tenant_id:
         _boost_tenant = db.get(Tenant, scope.tenant_id)
         if _boost_tenant and not tenant_feature_enabled(_boost_tenant, db, "walker_boosts"):

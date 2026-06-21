@@ -70,7 +70,7 @@ def get_individual_pricing(request: Request, user: User = Depends(get_current_us
 # Admin do tenant
 # --------------------------------------------------------------------------- #
 def _admin_tenant_id(admin: User, db: Session) -> str:
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     return scope.tenant_id or resolve_current_tenant_id(db)
 
 

@@ -104,7 +104,7 @@ async def cancel_my_subscription(request: Request, user: User = Depends(get_curr
 # Admin do tenant (catálogo)
 # --------------------------------------------------------------------------- #
 def _admin_tenant_id(admin: User, db: Session) -> str:
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     return scope.tenant_id or resolve_current_tenant_id(db)
 
 

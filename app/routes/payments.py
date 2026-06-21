@@ -50,7 +50,7 @@ ASAAS_SANDBOX_DEFAULT_CPF_CNPJ = os.getenv("ASAAS_SANDBOX_DEFAULT_CPF_CNPJ", "24
 ASAAS_LIVE_BASE_URL = os.getenv("ASAAS_LIVE_BASE_URL", "https://api.asaas.com/v3").rstrip("/")
 ASAAS_LIVE_API_KEY = os.getenv("ASAAS_LIVE_API_KEY")
 
-SENSITIVE_KEYS = {"access_token", "authorization", "api_key", "token", "password"}
+SENSITIVE_KEYS = {"access_token", "authorization", "api_key", "token", "password", "cpfcnpj", "cpf", "cnpj"}
 
 # ---------------------------------------------------------------------------
 # ContextVars — async-safe, sem alterar assinatura pública de
@@ -219,12 +219,8 @@ def raise_asaas_error(step: str, response: httpx.Response, request_payload: dict
     raise HTTPException(
         status_code=502,
         detail={
-            "message": f"Falha Asaas {mode_label} em {step}.",
-            "status_http": response.status_code,
+            "message": f"Falha ao processar pagamento em {step}. Tente novamente ou entre em contato com o suporte.",
             "asaas_code": asaas_error["code"],
-            "asaas_description": asaas_error["description"],
-            "request_payload": sanitize_for_log(request_payload or {}),
-            "asaas": sanitize_for_log(response_data),
         },
     )
 
@@ -798,7 +794,12 @@ def _handle_tip_webhook(db, event: str, payment_data: dict) -> bool:
             except Exception:
                 logger.exception("falha ao criar notificação tip_received tip_id=%s", tip.id)
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("_handle_tip_webhook: falha ao persistir tip_id=%s", tip.id if tip else "desconhecido")
+        raise
     return True
 
 
@@ -894,7 +895,15 @@ def _handle_subscription_webhook(db, event: str, payment_data: dict) -> bool:
             except Exception:
                 logger.exception("falha ao notificar tutor subscription payment tutor_id=%s", sub.tutor_id)
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "_handle_subscription_webhook: falha ao persistir subscription_id=%s provider_payment_id=%s",
+            sub.id if sub else "desconhecido", payment_data.get("id"),
+        )
+        raise
     return True
 
 
@@ -911,62 +920,103 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_db)
     provider_payment_id = payment_data.get("id")
     external_ref = payment_data.get("externalReference") or ""
 
+    # NOTA SOBRE IDEMPOTÊNCIA E STATUS CODE:
+    # Não existe tabela de dedup persistente por event-id (seria uma migration).
+    # As funções _handle_tip_webhook / _handle_subscription_webhook já são
+    # idempotentes por design (upsert baseado em provider_payment_id / localização
+    # de registro existente), mas sem uma chave de evento gravada não há garantia
+    # 100% contra reenvio duplo em janela de falha parcial.
+    # Decisão de status code:
+    #   - Em caso de erro de persistência retornamos 500 (não 200) para que o
+    #     Asaas reenvia o evento. O risco de duplicata em reenvio é mitigado pela
+    #     idempotência das queries de lookup; sem dedup persistente é o melhor
+    #     equilíbrio possível SEM migration.
+    #   - 200 só é retornado quando o evento foi processado com sucesso OU quando
+    #     é um evento "noop" legítimo (pagamento órfão, assinatura não encontrada).
+
     # --- Gorjeta ---
     if external_ref.startswith("tip:") or (
         provider_payment_id
         and not external_ref.startswith("sub:")
         and _is_tip_payment(db, provider_payment_id, external_ref)
     ):
-        _handle_tip_webhook(db, event, payment_data)
+        try:
+            _handle_tip_webhook(db, event, payment_data)
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "asaas_webhook.tip_error event=%s provider_payment_id=%s",
+                event, provider_payment_id,
+            )
+            raise HTTPException(status_code=500, detail="Erro interno ao processar webhook de gorjeta.")
         return {"ok": True, "received": event}
 
     # --- Cobrança de assinatura recorrente ---
     if external_ref.startswith("sub:") or payment_data.get("subscription"):
-        if _handle_subscription_webhook(db, event, payment_data):
+        try:
+            handled = _handle_subscription_webhook(db, event, payment_data)
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "asaas_webhook.subscription_error event=%s provider_payment_id=%s",
+                event, provider_payment_id,
+            )
+            raise HTTPException(status_code=500, detail="Erro interno ao processar webhook de assinatura.")
+        if handled:
             return {"ok": True, "received": event}
 
     # --- Pagamento regular de passeio ---
-    payment = None
-    if provider_payment_id:
-        payment = db.query(Payment).filter(Payment.provider_payment_id == provider_payment_id).first()
-        if payment:
-            # R3: máquina de estados idempotente + anti-retrocesso. Não sobrescreve
-            # um pagamento confirmado com OVERDUE/REFUNDED atrasado; estorno vai
-            # para estado distinto.
-            fallback = normalize_payment_status(payment_data.get("status"))
-            new_status = resolve_payment_webhook_status(payment.status, event, fallback)
-            status_changed = new_status != payment.status
-            if status_changed:
-                payment.status = new_status
-                db.add(payment)
+    try:
+        payment = None
+        if provider_payment_id:
+            payment = db.query(Payment).filter(Payment.provider_payment_id == provider_payment_id).first()
+            if payment:
+                # R3: máquina de estados idempotente + anti-retrocesso. Não sobrescreve
+                # um pagamento confirmado com OVERDUE/REFUNDED atrasado; estorno vai
+                # para estado distinto.
+                fallback = normalize_payment_status(payment_data.get("status"))
+                new_status = resolve_payment_webhook_status(payment.status, event, fallback)
+                status_changed = new_status != payment.status
+                if status_changed:
+                    payment.status = new_status
+                    db.add(payment)
 
-            # F1.3: notificação de pagamento confirmado (idempotente)
-            if event in _PAYMENT_CONFIRMED_EVENTS or new_status == _PAYMENT_CONFIRMED_STATUS:
-                try:
-                    _create_payment_confirmed_notification(db, payment)
-                except Exception:
-                    logger.exception("falha ao criar notificação de pagamento confirmado payment_id=%s", payment.id)
+                # F1.3: notificação de pagamento confirmado (idempotente)
+                if event in _PAYMENT_CONFIRMED_EVENTS or new_status == _PAYMENT_CONFIRMED_STATUS:
+                    try:
+                        _create_payment_confirmed_notification(db, payment)
+                    except Exception:
+                        logger.exception("falha ao criar notificação de pagamento confirmado payment_id=%s", payment.id)
 
-            # R7: pagamento liquidado libera o walk do estado de espera ('awaiting_payment')
-            # para o fluxo operacional/matching. Só age sobre walks que estavam à espera
-            # (criados com o gate REQUIRE_PAYMENT_BEFORE_MATCHING ligado) — no-op caso contrário.
-            if new_status == _PAYMENT_CONFIRMED_STATUS and payment.walk_id:
-                walk = db.get(Walk, payment.walk_id)
-                if walk and getattr(walk, "operational_status", None) == "awaiting_payment":
-                    walk.operational_status = "pending_walker_confirmation"
-                    walk.status = "Agendado"
-                    db.add(walk)
-                    logger.info("asaas_webhook.walk_liberado walk_id=%s payment_id=%s", walk.id, payment.id)
+                # R7: pagamento liquidado libera o walk do estado de espera ('awaiting_payment')
+                # para o fluxo operacional/matching. Só age sobre walks que estavam à espera
+                # (criados com o gate REQUIRE_PAYMENT_BEFORE_MATCHING ligado) — no-op caso contrário.
+                if new_status == _PAYMENT_CONFIRMED_STATUS and payment.walk_id:
+                    walk = db.get(Walk, payment.walk_id)
+                    if walk and getattr(walk, "operational_status", None) == "awaiting_payment":
+                        walk.operational_status = "pending_walker_confirmation"
+                        walk.status = "Agendado"
+                        db.add(walk)
+                        logger.info("asaas_webhook.walk_liberado walk_id=%s payment_id=%s", walk.id, payment.id)
 
-            db.commit()
-        else:
-            # R3: pagamento órfão (provider_payment_id sem Payment local) NÃO é
-            # silencioso — loga para auditoria e ainda responde 200 ao Asaas.
-            logger.warning(
-                "asaas_webhook.orfao event=%s provider_payment_id=%s sem Payment local",
-                event,
-                provider_payment_id,
-            )
+                db.commit()
+            else:
+                # R3: pagamento órfão (provider_payment_id sem Payment local) NÃO é
+                # silencioso — loga para auditoria e ainda responde 200 ao Asaas.
+                logger.warning(
+                    "asaas_webhook.orfao event=%s provider_payment_id=%s sem Payment local",
+                    event,
+                    provider_payment_id,
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "asaas_webhook.regular_error event=%s provider_payment_id=%s",
+            event, provider_payment_id,
+        )
+        raise HTTPException(status_code=500, detail="Erro interno ao processar webhook de pagamento.")
     return {"ok": True, "received": event}
 
 

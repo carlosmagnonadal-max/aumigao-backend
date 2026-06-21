@@ -105,7 +105,7 @@ def list_contacts(
     db: Session = Depends(get_db),
     admin: User = Depends(require_permission("tenants.read")),
 ):
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     query = db.query(ContactMessage).order_by(ContactMessage.created_at.desc())
     rows = apply_tenant_filter(query, ContactMessage, scope).all()
     return [

@@ -72,7 +72,15 @@ def _send_via_resend(to: str, subject: str, body_text: str, body_html: str | Non
         json=payload,
         timeout=10,
     )
+    if resp.status_code >= 500:
+        # Falha do servidor Resend — alerta crítico para ops; e-mail NÃO enviado.
+        LOGGER.critical(
+            "[ALERTA] Resend com falha de servidor (status=%s): %s — to=%s",
+            resp.status_code, resp.text[:600], to,
+        )
+        return
     if resp.status_code >= 400:
+        # Falha de configuração (domínio não verificado, chave inválida, destinatário rejeitado).
         LOGGER.error(
             "Resend recusou e-mail transacional (status=%s): %s — to=%s",
             resp.status_code, resp.text[:600], to,

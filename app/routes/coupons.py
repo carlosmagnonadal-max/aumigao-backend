@@ -67,7 +67,7 @@ def validate_coupon(payload: CouponValidateRequest, request: Request, user: User
 # Admin do tenant — catálogo
 # --------------------------------------------------------------------------- #
 def _admin_tenant_id(admin: User, db: Session) -> str:
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     return scope.tenant_id or resolve_current_tenant_id(db)
 
 
@@ -103,7 +103,7 @@ def admin_coupon_metrics(
     db: Session = Depends(get_db),
 ):
     """Métricas de cupons do tenant: totais, top cupons e série semanal de resgates."""
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     data = get_coupon_metrics(db, scope)
     return CouponMetricsResponse(**data)
 

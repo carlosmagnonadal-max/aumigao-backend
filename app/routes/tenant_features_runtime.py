@@ -31,7 +31,7 @@ def get_features_runtime(
     # Lookup por ID/slug é superfície de ADMIN — exige autenticação e escopo de
     # tenant (super_admin vê qualquer um; admin só o próprio tenant). Nenhum cliente
     # usa esta rota (app e admin usam /current). Onda 1 / mt-MT2 / crítico C08.
-    scope = get_admin_tenant_scope(user)
+    scope = get_admin_tenant_scope(user, db)
     result = get_tenant_feature_runtime(db, tenant_id=tenant_id)
     resolved_tenant_id = getattr(result, "tenant_id", None)
     if resolved_tenant_id is None and isinstance(result, dict):

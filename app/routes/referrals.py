@@ -121,7 +121,7 @@ def admin_referral_metrics(
 
     WalkerReferral não possui tenant_id — dados são globais independente do scope.
     """
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     data = get_referral_metrics(db, scope)
     return ReferralMetricsResponse(**data)
 

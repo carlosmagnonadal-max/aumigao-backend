@@ -10,8 +10,16 @@ from app.models.walker_referral import WalkerReferral
 from app.models.walker_reputation_snapshot import WalkerReputationSnapshot
 from app.models.walker_review import WalkerReview
 from app.schemas.walker_review import WalkerReviewCreate
+from app.constants import (
+    WALK_COMPLETED_STATUSES as COMPLETED_STATUSES,
+    LEVEL_PRATA_MIN_WALKS,
+    LEVEL_PRATA_MIN_RATING,
+    LEVEL_OURO_MIN_WALKS,
+    LEVEL_OURO_MIN_RATING,
+    LEVEL_DIAMANTE_MIN_WALKS,
+    LEVEL_DIAMANTE_MIN_RATING,
+)
 
-COMPLETED_STATUSES = {"Finalizado", "Concluido", "Concluído", "finalizado", "completed", "finished"}
 DEFAULT_WALKER_PHOTO = "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=400&q=85"
 
 
@@ -24,13 +32,21 @@ def is_completed_walk(walk: Walk) -> bool:
 
 
 def walker_level(total_walks: int, rating_average: float, reviews_count: int) -> str:
+    """Nível simples do passeador (sem fatores de trust).
+
+    Usado em contextos bulk (múltiplos passeadores) onde buscar dados de trust
+    seria custoso. Para o nível oficial com fatores de confiança, use
+    compute_walker_level() de walker_trust_service (fonte de verdade — B3).
+
+    Os cortes numéricos são compartilhados via LEVEL_*_MIN_* de walker_trust_service.
+    """
     if reviews_count == 0:
         return "Bronze"
-    if total_walks >= 150 and rating_average >= 4.9:
+    if total_walks >= LEVEL_DIAMANTE_MIN_WALKS and rating_average >= LEVEL_DIAMANTE_MIN_RATING:
         return "Diamante"
-    if total_walks >= 50 and rating_average >= 4.7:
+    if total_walks >= LEVEL_OURO_MIN_WALKS and rating_average >= LEVEL_OURO_MIN_RATING:
         return "Ouro"
-    if total_walks >= 10 and rating_average >= 4.5:
+    if total_walks >= LEVEL_PRATA_MIN_WALKS and rating_average >= LEVEL_PRATA_MIN_RATING:
         return "Prata"
     return "Bronze"
 

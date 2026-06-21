@@ -55,6 +55,18 @@ from app.services.operational_matching_service import (
 )
 from app.services.walker_operational_score_service import calculate_walker_operational_score
 from app.routes.notifications import NotificationCreate, _create_notification
+from app.constants import PAID_PAYMENT_STATUSES as _PAID_PAYMENT_STATUSES_CONST
+from app.constants import WALK_COMPLETED_STATUSES as _WALK_COMPLETED_STATUSES
+from app.constants import (
+    LEVEL_PRATA_MIN_WALKS,
+    LEVEL_PRATA_MIN_RATING,
+    LEVEL_OURO_MIN_WALKS,
+    LEVEL_OURO_MIN_RATING,
+    LEVEL_DIAMANTE_MIN_WALKS,
+    LEVEL_DIAMANTE_MIN_RATING,
+)
+from app.enums import canonical_application_status as _canonical_application_status_impl
+from app.utils.url_utils import normalize_media_url as _normalize_media_url
 router = APIRouter(prefix="/walker", tags=["walker"])
 api_public_router = APIRouter(prefix="/api", tags=["walkers"])
 
@@ -130,19 +142,8 @@ def _public_upload_url(request: Request, path: Path) -> str:
     return f"{base_url}/uploads/{relative}"
 
 
-def _normalize_public_walker_image_url(value: str | None) -> str | None:
-    image_url = (value or "").strip()
-    if not image_url:
-        return None
-    if image_url.startswith(("file:", "content:", "blob:", "data:image")):
-        return None
-    if image_url.startswith("http://aumigao-backend-production.up.railway.app"):
-        return image_url.replace(
-            "http://aumigao-backend-production.up.railway.app",
-            "https://aumigao-backend-production.up.railway.app",
-            1,
-        )
-    return image_url
+# Alias: mantém o nome exportado para partner_application.py e outros call sites.
+_normalize_public_walker_image_url = _normalize_media_url
 
 
 def _public_walker_avatar_url(profile: WalkerProfile) -> str:
@@ -162,23 +163,8 @@ def _safe_upload_extension(filename: str | None, content_type: str | None) -> st
     return ".jpg"
 
 
-def _canonical_application_status(status: str | None) -> str:
-    normalized = (status or "submitted").strip().lower()
-    if normalized in {"active", "ativo", "passeador ativo"}:
-        return "active"
-    if normalized in {"approved", "aprovado", "candidato aprovado"}:
-        return "approved"
-    if normalized in {"rejected", "reprovado", "rejeitado", "candidatura recusada"}:
-        return "rejected"
-    if normalized in {"under_review", "document_review", "documents_review", "aprovação documental", "aprovacao documental", "documentos em análise", "documentos em analise", "em análise", "em analise"}:
-        return "under_review"
-    if normalized in {"resubmission_requested", "reenvio solicitado", "documents_pending"}:
-        return "resubmission_requested"
-    if normalized in {"blocked", "bloqueado", "restrito", "restricted", "suspenso", "suspended"}:
-        return "blocked"
-    if normalized in {"submitted", "cadastro enviado", "pending"}:
-        return "submitted"
-    return "submitted"
+# Alias para retrocompat: partner_application.py importa este nome deste módulo.
+_canonical_application_status = _canonical_application_status_impl
 
 
 def _raw_status_from_label(status: str) -> str:
@@ -391,6 +377,7 @@ def _goal_progress(current: int, target: int) -> int:
 
 
 def _walker_level(total_completed: int, rating_avg: float, acceptance_rate: int, cancellation_rate: int, regularity: int) -> dict:
+    # Cortes referenciam as constantes canônicas de app.constants (B3).
     levels = [
         {
             "key": "iniciante",
@@ -402,22 +389,22 @@ def _walker_level(total_completed: int, rating_avg: float, acceptance_rate: int,
         {
             "key": "confiavel",
             "name": "Prata",
-            "min_completed_walks": 10,
-            "min_rating": 4.5,
+            "min_completed_walks": LEVEL_PRATA_MIN_WALKS,
+            "min_rating": LEVEL_PRATA_MIN_RATING,
             "benefit": "Mais consistencia para aparecer em boas oportunidades.",
         },
         {
             "key": "destaque",
             "name": "Ouro",
-            "min_completed_walks": 50,
-            "min_rating": 4.7,
+            "min_completed_walks": LEVEL_OURO_MIN_WALKS,
+            "min_rating": LEVEL_OURO_MIN_RATING,
             "benefit": "Perfil com potencial para selos e campanhas futuras.",
         },
         {
             "key": "elite_aumigao",
             "name": "Diamante",
-            "min_completed_walks": 150,
-            "min_rating": 4.9,
+            "min_completed_walks": LEVEL_DIAMANTE_MIN_WALKS,
+            "min_rating": LEVEL_DIAMANTE_MIN_RATING,
             "benefit": "Prioridade e beneficios especiais quando a regra comercial for ativada.",
         },
     ]
@@ -639,10 +626,10 @@ def _available_balance(user: User, db: Session) -> float:
         .join(Walk, Payment.walk_id == Walk.id)
         # Status de pagamento CONFIRMADO. Antes filtrava só "paid", mas o Asaas grava
         # "pagamento_confirmado_sandbox"/"payment_confirmed" => o saldo caía sempre no
-        # fallback de preço cheio (ignorando o split). Espelha PAID_PAYMENT_STATUSES.
+        # fallback de preço cheio (ignorando o split). Fonte: app.constants.PAID_PAYMENT_STATUSES.
         .filter(
             Walk.walker_id == user.id,
-            Payment.status.in_(("paid", "Pago", "pagamento_confirmado_sandbox", "payment_confirmed", "confirmed")),
+            Payment.status.in_(_PAID_PAYMENT_STATUSES_CONST),
             Payment.walker_amount.isnot(None),
         )
         .all()
@@ -718,6 +705,13 @@ def _goals_evolution_payload(user: User, db: Session) -> dict:
     regularity = min(100, round((active_days / 5) * 100)) if active_days else 72
     total_completed = len(completed) if has_real_data else 38
     level = _walker_level(total_completed, rating_avg, acceptance_rate, cancellation_rate, regularity)
+    # B3: corrige o `current.name` para o nível oficial (com fatores de trust).
+    # _walker_level já computa score/progress/critérios corretamente; apenas o nome
+    # do nível atual é sobrescrito pela fonte de verdade (compute_walker_trust).
+    if has_real_data:
+        from app.services.walker_trust_service import compute_walker_trust as _compute_trust
+        official_level = _compute_trust(db, user.id)["level"]
+        level["current"] = {**level["current"], "name": official_level}
 
     return {
         "title": "Acompanhe sua evolucao",
@@ -981,9 +975,9 @@ def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_
     op_score = calculate_walker_operational_score(user.id, db)
     score = op_score.get("score") if op_score else None  # None se sem dados
 
-    # Nível real via walker_level (reputation_service)
-    from app.services.reputation_service import walker_level as _real_walker_level
-    level_str = _real_walker_level(len(completed), rating_avg, rating_count)
+    # Nível oficial via compute_walker_trust (fonte de verdade com trust — B3)
+    from app.services.walker_trust_service import compute_walker_trust as _compute_trust
+    level_str = _compute_trust(db, user.id)["level"]
     # Mapeamento para chave interna usada pelo frontend
     level_map = {"Bronze": "BRONZE", "Prata": "SILVER", "Ouro": "GOLD", "Diamante": "DIAMOND"}
     level_key = level_map.get(level_str, "BRONZE")
@@ -1132,8 +1126,9 @@ def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_d
     # Reputação real
     rep = _walk_review_reputation_summary(user.id, db)
     op_score = calculate_walker_operational_score(user.id, db)
-    from app.services.reputation_service import walker_level as _real_walker_level
-    level_str = _real_walker_level(len(completed), rep["rating_avg"], rep["rating_count"])
+    # Nível oficial via compute_walker_trust (fonte de verdade com trust — B3)
+    from app.services.walker_trust_service import compute_walker_trust as _compute_trust
+    level_str = _compute_trust(db, user.id)["level"]
 
     return {
         "available_balance": _available_balance(user, db),
@@ -1845,7 +1840,7 @@ def walker_status(walk_id: str, payload: WalkerStatusRequest, user: User = Depen
     # Preserva o default do .get("status", walk.status): so cai no walk.status se a chave
     # nao foi enviada (model_fields_set), nao quando vem explicitamente nula.
     requested_status = str(payload.status) if "status" in payload.model_fields_set else str(walk.status)
-    if requested_status in {"ride_completed", "Finalizado", "finalizado", "completed", "finished"}:
+    if requested_status in _WALK_COMPLETED_STATUSES:
         raise HTTPException(status_code=409, detail="Finalizacao exige envio de relatorio para revisao administrativa.")
     update_operational_status(walk, requested_status, db, actor=user)
     db.commit()

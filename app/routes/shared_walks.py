@@ -159,7 +159,7 @@ def cancel_shared_walk(walk_id: str, request: Request, user: User = Depends(get_
 # Admin do tenant
 # --------------------------------------------------------------------------- #
 def _admin_tenant_id(admin: User, db: Session) -> str:
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     return scope.tenant_id or resolve_current_tenant_id(db)
 
 

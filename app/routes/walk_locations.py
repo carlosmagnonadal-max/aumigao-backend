@@ -192,7 +192,7 @@ def _get_locations(
         # Admin/super_admin: valida escopo de tenant. super_admin global (tenant_id None)
         # pode ver qualquer tenant; admin de tenant (ou super_admin operando-como) só vê
         # passeios do PRÓPRIO tenant — senão vazaria localização entre tenants.
-        scope = get_admin_tenant_scope(user)  # lança 403 se não for admin/super_admin
+        scope = get_admin_tenant_scope(user, db)  # lança 403 se não for admin/super_admin
         if scope.tenant_id is not None and walk.tenant_id != scope.tenant_id:
             raise HTTPException(status_code=403, detail="Sem permissao para visualizar localizacao deste passeio")
     else:

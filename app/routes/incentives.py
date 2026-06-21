@@ -39,7 +39,7 @@ api_admin_router = APIRouter(prefix="/api/admin", tags=["incentives-admin"], dep
 
 
 def _admin_tenant_id(admin: User, db: Session) -> str:
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     return scope.tenant_id or resolve_current_tenant_id(db)
 
 
@@ -98,7 +98,7 @@ def admin_incentive_metrics(
     db: Session = Depends(get_db),
 ):
     """Métricas de incentivos: regras, concessões, breakdown por tipo e série semanal."""
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     data = get_incentive_metrics(db, scope)
     return IncentiveMetricsResponse(**data)
 

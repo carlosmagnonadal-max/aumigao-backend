@@ -2,6 +2,7 @@
 import logging
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi import HTTPException
+from app.constants import PAID_PAYMENT_STATUSES, WALK_COMPLETED_STATUSES as _WALK_COMPLETED_STATUSES
 from pydantic import BaseModel, Field
 from typing import Any
 from datetime import datetime, timedelta
@@ -116,9 +117,10 @@ router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(requir
 api_router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_permission("admin.access"))])
 
 APPROVED_WALKER_STATUSES = {"active"}
-PAID_PAYMENT_STATUSES = {"paid", "Pago", "pagamento_confirmado_sandbox", "payment_confirmed", "confirmed"}
+# PAID_PAYMENT_STATUSES importado de app.constants
 IN_PROGRESS_WALK_STATUSES = {"Indo buscar o pet", "Passeando agora", "walker_arriving", "ride_in_progress"}
-DIRECT_COMPLETION_STATUSES = {"ride_completed", "Finalizado", "finalizado", "completed", "finished"}
+# WALK_COMPLETED_STATUSES importado de app.constants (conjunto canônico amplo — B2)
+DIRECT_COMPLETION_STATUSES = _WALK_COMPLETED_STATUSES
 COMPLETION_REVIEW_MUTABLE_STATUSES = {"pending", "pending_review", "under_review"}
 COMPLETION_REVIEW_APPROVED_STATUSES = {"approved"}
 COMPLETION_REVIEW_REJECTED_STATUSES = {"rejected", "completion_rejected"}
@@ -701,7 +703,7 @@ def _walker_program_metrics(rows: list[dict]) -> dict:
 @api_router.get("/operational-alerts")
 def operational_alerts(admin: User = Depends(require_permission("walks.read")), db: Session = Depends(get_db)):
     process_expired_attempts(db)
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
 
     real_walks = [
         walk
@@ -826,7 +828,7 @@ def _sql_count_risk_walkers(db: Session) -> int:
 @router.get("/dashboard")
 @api_router.get("/dashboard")
 def dashboard(admin: User = Depends(require_permission("admin.access")), db: Session = Depends(get_db)):
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
 
     # --- Agregacoes SQL: O(1) queries em vez de carregar tabelas inteiras ---
     total_real_clients = _sql_count_real_tutors(db, scope)
@@ -943,7 +945,7 @@ def users(
     offset: int = Query(0, ge=0),
 ):
     # super_admin enxerga todos os tenants; admin regular fica restrito ao seu.
-    query = apply_tenant_filter(db.query(User), User, get_admin_tenant_scope(admin))
+    query = apply_tenant_filter(db.query(User), User, get_admin_tenant_scope(admin, db))
     return [_serialize_admin_user(u) for u in query.order_by(User.created_at.desc()).offset(offset).limit(limit).all()]
 
 
@@ -957,7 +959,7 @@ def get_admin_user(
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="Usuario nao encontrado")
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     ensure_tenant_access(user.tenant_id, scope)
     return _serialize_admin_user(user)
 
@@ -969,7 +971,7 @@ def list_audit_logs(
     db: Session = Depends(get_db),
     limit: int = Query(100, ge=1, le=500),
 ):
-    query = apply_tenant_filter(db.query(AuditLog), AuditLog, get_admin_tenant_scope(admin))
+    query = apply_tenant_filter(db.query(AuditLog), AuditLog, get_admin_tenant_scope(admin, db))
     rows = query.order_by(AuditLog.created_at.desc()).limit(limit).all()
     return [
         {
@@ -1007,7 +1009,7 @@ def get_payment_config(
     admin: User = Depends(require_permission("finance.read")),
     db: Session = Depends(get_db),
 ):
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     tenant_id = scope.tenant_id or resolve_current_tenant_id(db)
     config = get_or_create_payment_config(db, tenant_id)
     db.commit()
@@ -1021,7 +1023,7 @@ def update_payment_config_endpoint(
     admin: User = Depends(require_permission("finance.manage")),
     db: Session = Depends(get_db),
 ):
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     tenant_id = scope.tenant_id or resolve_current_tenant_id(db)
     # Comissão da plataforma: somente super_admin pode alterar.
     if payload.commission_percent is not None and admin.role != "super_admin":
@@ -1048,7 +1050,7 @@ def tutors(
 ):
     users = [
         user
-        for user in apply_tenant_filter(db.query(User), User, get_admin_tenant_scope(admin)).order_by(User.created_at.desc()).all()
+        for user in apply_tenant_filter(db.query(User), User, get_admin_tenant_scope(admin, db)).order_by(User.created_at.desc()).all()
         if _is_real_tutor(user)
     ]
     paginated = users[offset: offset + limit]
@@ -1059,7 +1061,7 @@ def tutors(
 def admin_pets(admin: User = Depends(require_permission("tutors.read")), db: Session = Depends(get_db)):
     pets = [
         pet
-        for pet in apply_tenant_filter(db.query(Pet), Pet, get_admin_tenant_scope(admin)).order_by(Pet.created_at.desc()).all()
+        for pet in apply_tenant_filter(db.query(Pet), Pet, get_admin_tenant_scope(admin, db)).order_by(Pet.created_at.desc()).all()
         if _is_real_pet(pet, db.get(User, pet.tutor_id) if pet.tutor_id else None)
     ]
     return [_serialize_admin_pet(pet, db) for pet in pets]
@@ -1337,7 +1339,7 @@ def walks(
       avaliados após o fetch; para a página solicitada isso é transparente ao client.
     """
     process_expired_attempts(db)
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     # Todos os walks do tenant (ordem SQL), sem paginação antecipada pois o filtro de
     # "real" acontece em Python. Para tenants grandes considerar adicionar filtros SQL
     # básicos de role e e-mail via JOIN (fase futura de otimização).
@@ -1373,7 +1375,7 @@ def get_admin_walk(
     walk = db.get(Walk, walk_id)
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     ensure_tenant_access(walk.tenant_id, scope)
     return _serialize_admin_walk(walk, db)
 
@@ -1649,7 +1651,7 @@ def payments(
     offset: int = Query(0, ge=0),
 ):
     # require_permission convive com o require_admin do router durante a migração.
-    query = apply_tenant_filter(db.query(Payment), Payment, get_admin_tenant_scope(admin))
+    query = apply_tenant_filter(db.query(Payment), Payment, get_admin_tenant_scope(admin, db))
     rows = query.order_by(Payment.created_at.desc()).offset(offset).limit(limit).all()
     # Batch preload (3 queries) — elimina o N+1 de 3×db.get por pagamento.
     walks_by_id, tutors_by_id, pets_by_id = _preload_admin_payment_refs(rows, db)
@@ -1669,7 +1671,7 @@ def get_admin_payment(
     payment = db.get(Payment, payment_id)
     if not payment:
         raise HTTPException(status_code=404, detail="Pagamento nao encontrado")
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     ensure_tenant_access(payment.tenant_id, scope)
     return _serialize_admin_payment(payment, db)
 
@@ -1678,7 +1680,7 @@ def get_admin_payment(
 @api_router.get("/walk-completions/pending")
 def pending_walk_completions(admin: User = Depends(require_permission("walks.read")), db: Session = Depends(get_db)):
     rows = apply_tenant_filter(
-        db.query(WalkCompletionReview), WalkCompletionReview, get_admin_tenant_scope(admin)
+        db.query(WalkCompletionReview), WalkCompletionReview, get_admin_tenant_scope(admin, db)
     ).filter(
         WalkCompletionReview.status == "pending_review"
     ).order_by(WalkCompletionReview.created_at.desc()).all()
@@ -1981,7 +1983,7 @@ def reject_walker_kit(submission_id: str, payload: RejectWalkerKitRequest | None
 
 @router.get("/walker-operations")
 def walker_operations(admin: User = Depends(require_permission("walkers.read")), db: Session = Depends(get_db)):
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     # F09: WalkerProfile não possui tenant_id — walkers são globais da plataforma
     # (conforme comentário em _sql_count_real_active_walkers e endpoint /walkers).
     # Coerente com todos os outros endpoints que listam walkers sem filtro de tenant.
@@ -2007,7 +2009,7 @@ def walker_operations(admin: User = Depends(require_permission("walkers.read")),
 @router.get("/referral-program/settings")
 @api_router.get("/referral-program/settings")
 def referral_program_settings(admin: User = Depends(require_permission("admin.access")), db: Session = Depends(get_db)):
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     # super_admin sem act-as-tenant edita a global (tenant_id=None)
     tenant_id = scope.tenant_id if not scope.is_global else None
     return get_setting(db, "referral_program", DEFAULT_REFERRAL_PROGRAM_SETTINGS, tenant_id=tenant_id)
@@ -2016,7 +2018,7 @@ def referral_program_settings(admin: User = Depends(require_permission("admin.ac
 @router.put("/referral-program/settings")
 @api_router.put("/referral-program/settings")
 def update_referral_program_settings(payload: dict, admin: User = Depends(require_permission("admin.access")), db: Session = Depends(get_db)):
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     tenant_id = scope.tenant_id if not scope.is_global else None
     current = get_setting(db, "referral_program", DEFAULT_REFERRAL_PROGRAM_SETTINGS, tenant_id=tenant_id)
     merged = _merge_dict(current, payload or {})
@@ -2054,7 +2056,7 @@ def update_referral_status(referral_id: str, payload: ReferralStatusRequest):
 @router.get("/walker-programs")
 @api_router.get("/walker-programs")
 def walker_programs(admin: User = Depends(require_permission("admin.access")), db: Session = Depends(get_db)):
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     tenant_id = scope.tenant_id if not scope.is_global else None
     rows = _walker_program_rows(db)
     return {
@@ -2083,7 +2085,7 @@ def walker_programs(admin: User = Depends(require_permission("admin.access")), d
 @router.put("/walker-programs/settings")
 @api_router.put("/walker-programs/settings")
 def update_walker_program_settings(payload: dict, admin: User = Depends(require_permission("admin.access")), db: Session = Depends(get_db)):
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     tenant_id = scope.tenant_id if not scope.is_global else None
     current = get_setting(db, "walker_program", DEFAULT_WALKER_PROGRAM_SETTINGS, tenant_id=tenant_id)
     merged = _merge_dict(current, payload or {})
@@ -2161,7 +2163,7 @@ def approve_withdrawal(payment_id: str, admin: User = Depends(require_permission
         if payment.provider != "pix":
             raise HTTPException(status_code=400, detail="Payment nao e um saque de passeador.")
         # Isolamento multi-tenant: admin de tenant não aprova saque de outro tenant.
-        ensure_tenant_access(payment.tenant_id, get_admin_tenant_scope(admin))
+        ensure_tenant_access(payment.tenant_id, get_admin_tenant_scope(admin, db))
         payment.status = "paid"
         record_admin_operational_event(
             db,
@@ -2186,7 +2188,7 @@ def reject_withdrawal(payment_id: str, admin: User = Depends(require_permission(
         if payment.provider != "pix":
             raise HTTPException(status_code=400, detail="Payment nao e um saque de passeador.")
         # Isolamento multi-tenant: admin de tenant não rejeita saque de outro tenant.
-        ensure_tenant_access(payment.tenant_id, get_admin_tenant_scope(admin))
+        ensure_tenant_access(payment.tenant_id, get_admin_tenant_scope(admin, db))
         payment.status = "rejected"
         record_admin_operational_event(
             db,

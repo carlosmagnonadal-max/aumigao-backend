@@ -79,7 +79,7 @@ def get_pet_tour(request: Request, user: User = Depends(get_current_user), db: S
 # Admin do tenant (configuração)
 # --------------------------------------------------------------------------- #
 def _admin_tenant_id(admin: User, db: Session) -> str:
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     return scope.tenant_id or resolve_current_tenant_id(db)
 
 

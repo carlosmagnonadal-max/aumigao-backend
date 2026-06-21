@@ -52,12 +52,12 @@ router = APIRouter(prefix="/admin/tenants", tags=["admin-tenants"], dependencies
 api_router = APIRouter(prefix="/api/admin/tenants", tags=["admin-tenants"], dependencies=[Depends(require_permission("tenants.read"))])
 
 
-def _scope_or_404(admin: User, tenant_id: str) -> None:
+def _scope_or_404(admin: User, tenant_id: str, db: Session) -> None:
     """Isolamento multi-tenant (Onda 1 / mt-MT1+MT5): super_admin acessa qualquer
     tenant; admin de tenant só o PRÓPRIO. Cross-tenant -> 404 (não vaza existência).
     Mesma regra já aplicada em update_tenant_features (D5), agora em todos os endpoints.
     """
-    ensure_tenant_access(tenant_id, get_admin_tenant_scope(admin))
+    ensure_tenant_access(tenant_id, get_admin_tenant_scope(admin, db))
 
 
 def _normalize_slug(value: str) -> str:
@@ -120,7 +120,7 @@ def _list_features(tenant_id: str, db: Session):
 @api_router.get("", response_model=list[TenantResponse])
 def list_tenants(admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
     # Escopo: super_admin vê todos; admin de tenant vê só o próprio (Onda 1).
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     query = db.query(Tenant).order_by(Tenant.created_at.desc())
     query = apply_tenant_filter(query, Tenant, scope, tenant_column=Tenant.id)
     return query.all()
@@ -166,14 +166,14 @@ def create_tenant(payload: TenantCreate, admin: User = Depends(get_current_user)
 @router.get("/{tenant_id}", response_model=TenantDetailResponse)
 @api_router.get("/{tenant_id}", response_model=TenantDetailResponse)
 def get_tenant(tenant_id: str, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _scope_or_404(admin, tenant_id)
+    _scope_or_404(admin, tenant_id, db)
     return _tenant_or_404(tenant_id, db)
 
 
 @router.patch("/{tenant_id}", response_model=TenantResponse)
 @api_router.patch("/{tenant_id}", response_model=TenantResponse)
 def update_tenant(tenant_id: str, payload: TenantUpdate, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _scope_or_404(admin, tenant_id)
+    _scope_or_404(admin, tenant_id, db)
     tenant = _tenant_or_404(tenant_id, db)
     values = payload.model_dump(exclude_unset=True)
     _ensure_status(values.get("status"), TENANT_STATUSES, "status")
@@ -202,7 +202,7 @@ def update_tenant(tenant_id: str, payload: TenantUpdate, admin: User = Depends(g
 @router.get("/{tenant_id}/branding", response_model=TenantBrandingResponse)
 @api_router.get("/{tenant_id}/branding", response_model=TenantBrandingResponse)
 def get_tenant_branding(tenant_id: str, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _scope_or_404(admin, tenant_id)
+    _scope_or_404(admin, tenant_id, db)
     tenant = _tenant_or_404(tenant_id, db)
     if not tenant.branding:
         tenant.branding = _default_branding(tenant)
@@ -214,7 +214,7 @@ def get_tenant_branding(tenant_id: str, admin: User = Depends(get_current_user),
 @router.patch("/{tenant_id}/branding", response_model=TenantBrandingResponse)
 @api_router.patch("/{tenant_id}/branding", response_model=TenantBrandingResponse)
 def update_tenant_branding(tenant_id: str, payload: TenantBrandingUpdate, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _scope_or_404(admin, tenant_id)
+    _scope_or_404(admin, tenant_id, db)
     tenant = _tenant_or_404(tenant_id, db)
     branding = tenant.branding or _default_branding(tenant)
     db.add(branding)
@@ -229,7 +229,7 @@ def update_tenant_branding(tenant_id: str, payload: TenantBrandingUpdate, admin:
 @router.get("/{tenant_id}/settings", response_model=TenantSettingsResponse)
 @api_router.get("/{tenant_id}/settings", response_model=TenantSettingsResponse)
 def get_tenant_settings(tenant_id: str, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _scope_or_404(admin, tenant_id)
+    _scope_or_404(admin, tenant_id, db)
     tenant = _tenant_or_404(tenant_id, db)
     if not tenant.settings:
         tenant.settings = _default_settings(tenant)
@@ -241,7 +241,7 @@ def get_tenant_settings(tenant_id: str, admin: User = Depends(get_current_user),
 @router.patch("/{tenant_id}/settings", response_model=TenantSettingsResponse)
 @api_router.patch("/{tenant_id}/settings", response_model=TenantSettingsResponse)
 def update_tenant_settings(tenant_id: str, payload: TenantSettingsUpdate, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _scope_or_404(admin, tenant_id)
+    _scope_or_404(admin, tenant_id, db)
     tenant = _tenant_or_404(tenant_id, db)
     settings = tenant.settings or _default_settings(tenant)
     db.add(settings)
@@ -275,7 +275,7 @@ def update_tenant_settings(tenant_id: str, payload: TenantSettingsUpdate, admin:
 @router.get("/{tenant_id}/onboarding", response_model=TenantOnboardingResponse)
 @api_router.get("/{tenant_id}/onboarding", response_model=TenantOnboardingResponse)
 def get_tenant_onboarding(tenant_id: str, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _scope_or_404(admin, tenant_id)
+    _scope_or_404(admin, tenant_id, db)
     tenant = _tenant_or_404(tenant_id, db)
     return _ensure_tenant_onboarding(tenant, db)
 
@@ -283,7 +283,7 @@ def get_tenant_onboarding(tenant_id: str, admin: User = Depends(get_current_user
 @router.get("/{tenant_id}/capabilities", response_model=TenantCapabilitiesResponse)
 @api_router.get("/{tenant_id}/capabilities", response_model=TenantCapabilitiesResponse)
 def get_tenant_capabilities_endpoint(tenant_id: str, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _scope_or_404(admin, tenant_id)
+    _scope_or_404(admin, tenant_id, db)
     tenant = _tenant_or_404(tenant_id, db)
     return {
         "tenant_id": tenant.id,
@@ -295,7 +295,7 @@ def get_tenant_capabilities_endpoint(tenant_id: str, admin: User = Depends(get_c
 @router.patch("/{tenant_id}/onboarding", response_model=TenantOnboardingResponse)
 @api_router.patch("/{tenant_id}/onboarding", response_model=TenantOnboardingResponse)
 def update_tenant_onboarding(tenant_id: str, payload: TenantOnboardingUpdate, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _scope_or_404(admin, tenant_id)
+    _scope_or_404(admin, tenant_id, db)
     tenant = _tenant_or_404(tenant_id, db)
     onboarding = tenant.onboarding or _default_onboarding(tenant)
     db.add(onboarding)
@@ -312,7 +312,7 @@ def update_tenant_onboarding(tenant_id: str, payload: TenantOnboardingUpdate, ad
 @router.get("/{tenant_id}/features", response_model=list[TenantFeatureResponse])
 @api_router.get("/{tenant_id}/features", response_model=list[TenantFeatureResponse])
 def list_tenant_features(tenant_id: str, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _scope_or_404(admin, tenant_id)
+    _scope_or_404(admin, tenant_id, db)
     _tenant_or_404(tenant_id, db)
     return _list_features(tenant_id, db)
 
@@ -320,7 +320,7 @@ def list_tenant_features(tenant_id: str, admin: User = Depends(get_current_user)
 @router.patch("/{tenant_id}/features", response_model=list[TenantFeatureResponse])
 @api_router.patch("/{tenant_id}/features", response_model=list[TenantFeatureResponse])
 def update_tenant_features(tenant_id: str, payload: list[TenantFeatureUpdate], admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _scope_or_404(admin, tenant_id)
+    _scope_or_404(admin, tenant_id, db)
     tenant = _tenant_or_404(tenant_id, db)
 
     existing = {
@@ -351,7 +351,7 @@ def update_tenant_features(tenant_id: str, payload: list[TenantFeatureUpdate], a
 @router.get("/{tenant_id}/units", response_model=list[TenantUnitResponse])
 @api_router.get("/{tenant_id}/units", response_model=list[TenantUnitResponse])
 def list_tenant_units(tenant_id: str, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _scope_or_404(admin, tenant_id)
+    _scope_or_404(admin, tenant_id, db)
     _tenant_or_404(tenant_id, db)
     return db.query(TenantUnit).filter(TenantUnit.tenant_id == tenant_id).order_by(TenantUnit.created_at.asc()).all()
 
@@ -359,7 +359,7 @@ def list_tenant_units(tenant_id: str, admin: User = Depends(get_current_user), d
 @router.post("/{tenant_id}/units", response_model=TenantUnitResponse)
 @api_router.post("/{tenant_id}/units", response_model=TenantUnitResponse)
 def create_tenant_unit(tenant_id: str, payload: TenantUnitCreate, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _scope_or_404(admin, tenant_id)
+    _scope_or_404(admin, tenant_id, db)
     tenant = _tenant_or_404(tenant_id, db)
     _ensure_status(payload.status, TENANT_UNIT_STATUSES, "status")
     enforce_can_add_tenant_unit(tenant, db)

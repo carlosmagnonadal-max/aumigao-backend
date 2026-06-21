@@ -41,6 +41,7 @@ from app.routes.walker import (
     _raw_status_from_label,
     _safe_upload_extension,
 )
+from app.lib.admin_serializers import _document_key_list
 
 router = APIRouter(prefix="/api/partner-applications", tags=["partner-applications"])
 
@@ -103,9 +104,7 @@ def _extract_experience_options(value: str) -> list[str]:
     return [part for part in parts[1:] if part]
 
 
-def _document_key_list(values: list[str] | None) -> str:
-    return ",".join([item.strip() for item in (values or []) if item.strip()])
-
+# _document_key_list importado de app.lib.admin_serializers
 
 def _serialize_partner_application(profile: WalkerProfile, db: Session, include_internal: bool = False) -> dict:
     user = db.get(User, profile.user_id) if profile.user_id else None

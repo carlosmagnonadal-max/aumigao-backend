@@ -43,12 +43,12 @@ from app.services.operational_matching_service import (
 from app.services.operational_reliability_service import detect_reliability_events, record_late_cancellation_if_applicable
 from app.services.tenant_seed_service import default_tenant_id
 from app.models.tenant_walker_access import TenantWalkerAccess
+from app.constants import PAID_PAYMENT_STATUSES as _PAID_PAYMENT_STATUSES
+from app.constants import WALK_COMPLETED_STATUSES as COMPLETED_WALK_STATUSES
+from app.constants import WALK_COMPLETED_STATUSES as DIRECT_COMPLETION_STATUSES
 
 router = APIRouter(prefix="/walks", tags=["walks"])
 logger = logging.getLogger(__name__)
-
-COMPLETED_WALK_STATUSES = {"Finalizado", "Concluido", "Concluído", "finalizado", "completed", "finished"}
-DIRECT_COMPLETION_STATUSES = {"ride_completed", "Finalizado", "finalizado", "completed", "finished"}
 REVIEWABLE_COMPLETION_STATUSES = {"ride_completed"}
 TIP_STATUSES = {"pending", "paid", "failed", "cancelled"}
 TIP_PROVIDER = "internal_mock"
@@ -231,7 +231,7 @@ def _get_walk_for_user(walk_id: str, user: User, db: Session) -> Walk:
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
     if user.role in {"admin", "super_admin"}:
-        scope = get_admin_tenant_scope(user)
+        scope = get_admin_tenant_scope(user, db)
         ensure_tenant_access(walk.tenant_id, scope)
         return walk
     if user.role not in {"admin", "super_admin"} and walk.tutor_id != user.id and walk.walker_id != user.id and walk.assigned_walker_id != user.id:
@@ -284,7 +284,7 @@ def list_walks(
                 )
             )
         elif user.role in {"admin", "super_admin"}:
-            query = apply_tenant_filter(query, Walk, get_admin_tenant_scope(user))
+            query = apply_tenant_filter(query, Walk, get_admin_tenant_scope(user, db))
         elif user.role not in {"admin", "super_admin"}:
             query = query.filter(Walk.tutor_id == user.id)
         walks = query.order_by(Walk.created_at.desc()).limit(limit).all()
@@ -308,7 +308,7 @@ def list_walks(
             )
         )
     elif user.role in {"admin", "super_admin"}:
-        query = apply_tenant_filter(query, Walk, get_admin_tenant_scope(user))
+        query = apply_tenant_filter(query, Walk, get_admin_tenant_scope(user, db))
     elif user.role not in {"admin", "super_admin"}:
         query = query.filter(Walk.tutor_id == user.id)
     rows = query.order_by(Walk.created_at.desc()).limit(limit).all()
@@ -474,6 +474,10 @@ def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db:
             "created_at": walk.created_at,
     }
 
+    except HTTPException:
+        # Erros de negócio (400/403/409) não precisam de rollback de DB aqui — o
+        # walk ainda não foi commitado. Re-raise direto sem logar como erro interno.
+        raise
     except Exception as error:
         db.rollback()
 
@@ -892,8 +896,7 @@ async def create_walk_tip(walk_id: str, payload: WalkTipCreate, user: User = Dep
         db,
     )
 
-# espelha PAID_PAYMENT_STATUSES em admin.py (nao importamos de la p/ evitar import circular).
-_PAID_PAYMENT_STATUSES = {"paid", "Pago", "pagamento_confirmado_sandbox", "payment_confirmed", "confirmed"}
+# _PAID_PAYMENT_STATUSES importado de app.constants (módulo neutro, sem circular)
 # Estados em que o passeio ja esta em execucao/concluido — exclusao orfanaria o pagamento
 # ou apagaria historico operacional. Defesa em profundidade caso a linha de Payment falte.
 _WALK_STATUSES_BLOCKED_FROM_DELETE = {

@@ -245,13 +245,22 @@ async def subscribe_async(
                 tutor_subscription_id=subscription.id,
             )
         except HTTPException:
-            # Falha no Asaas → não persiste assinatura
+            # Falha no Asaas (ex.: credenciais inválidas, 4xx) → não persiste assinatura
             db.rollback()
             raise
         except Exception as exc:
-            logger.warning(
-                "Asaas indisponível ao criar assinatura; criando localmente sem ID Asaas. error=%s", exc
+            # Falha de rede/timeout: NÃO persiste assinatura local órfã sem asaas_subscription_id.
+            # Criar assinatura sem ID Asaas geraria débitos não rastreáveis no provider.
+            # O cliente deve tentar novamente; o backend retornará 502.
+            db.rollback()
+            logger.exception(
+                "create_subscription: falha de rede ao criar assinatura no Asaas; "
+                "assinatura NÃO criada localmente para evitar registro órfão. error=%s", exc,
             )
+            raise HTTPException(
+                status_code=502,
+                detail="Serviço de pagamento temporariamente indisponível. Tente novamente em instantes.",
+            ) from exc
 
     if asaas_sub_id:
         subscription.asaas_subscription_id = asaas_sub_id

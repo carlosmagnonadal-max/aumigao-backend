@@ -97,7 +97,8 @@ def fetch(upload_path: str) -> tuple[bytes, str] | None:
         return None
     try:
         obj = _get_client().get_object(Bucket=_bucket(), Key=key)
-    except Exception:
+    except Exception as exc:
+        logger.warning("object_storage.fetch: falha ao buscar objeto key=%r bucket=%r error=%s", key, _bucket(), exc)
         return None
     body = obj["Body"].read()
     ctype = obj.get("ContentType") or mimetypes.guess_type(key)[0] or "application/octet-stream"

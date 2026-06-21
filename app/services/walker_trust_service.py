@@ -24,6 +24,14 @@ from sqlalchemy.orm import Session
 from app.models.complaint import Complaint
 from app.models.walker_profile import WalkerProfile
 from app.services import reputation_service
+from app.constants import (
+    LEVEL_PRATA_MIN_WALKS,
+    LEVEL_PRATA_MIN_RATING,
+    LEVEL_OURO_MIN_WALKS,
+    LEVEL_OURO_MIN_RATING,
+    LEVEL_DIAMANTE_MIN_WALKS,
+    LEVEL_DIAMANTE_MIN_RATING,
+)
 
 # Status considerados "aprovado ou superior" para o cadastro estar liberado.
 APPROVED_STATUSES = {"approved", "active"}
@@ -45,6 +53,17 @@ EXPERIENCE_MIN_WALKS = 50
 EXPERIENCE_MIN_MONTHS = 3
 PREMIUM_MIN_RATING = 4.9
 PREMIUM_MIN_WALKS = 100
+
+# Cortes de nível importados de app.constants (fonte única — B3).
+# Reexportados aqui para que código que já importa de walker_trust_service
+# não precise mudar o import.
+__all__ = [
+    "LEVEL_PRATA_MIN_WALKS", "LEVEL_PRATA_MIN_RATING",
+    "LEVEL_OURO_MIN_WALKS", "LEVEL_OURO_MIN_RATING",
+    "LEVEL_DIAMANTE_MIN_WALKS", "LEVEL_DIAMANTE_MIN_RATING",
+    "compute_walker_level", "compute_walker_trust",
+    "critical_incidents_count",
+]
 
 
 def _profile(walker_user_id: str, db: Session) -> WalkerProfile | None:
@@ -236,8 +255,8 @@ def compute_walker_level(
 
     # Diamante
     if (
-        total_walks >= 150
-        and rating >= 4.9
+        total_walks >= LEVEL_DIAMANTE_MIN_WALKS
+        and rating >= LEVEL_DIAMANTE_MIN_RATING
         and risk_level == "normal"
         and cancellation_rate < 8.0
         and critical_incidents == 0
@@ -246,16 +265,16 @@ def compute_walker_level(
         return "Diamante"
     # Ouro
     if (
-        total_walks >= 50
-        and rating >= 4.7
+        total_walks >= LEVEL_OURO_MIN_WALKS
+        and rating >= LEVEL_OURO_MIN_RATING
         and risk_level == "normal"
         and cancellation_rate < 12.0
     ):
         return "Ouro"
     # Prata
     if (
-        total_walks >= 10
-        and rating >= 4.5
+        total_walks >= LEVEL_PRATA_MIN_WALKS
+        and rating >= LEVEL_PRATA_MIN_RATING
         and risk_level in {"normal", "attention"}
     ):
         return "Prata"

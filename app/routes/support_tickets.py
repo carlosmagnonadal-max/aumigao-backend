@@ -191,7 +191,7 @@ def list_support_tickets(
     Retorna items + status_counts (resumo de contadores por status).
     Tenant-scoped: admin regular vê só seu tenant; super_admin vê todos.
     """
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     query = db.query(SupportTicket)
     query = apply_tenant_filter(query, SupportTicket, scope)
 
@@ -227,7 +227,7 @@ def create_support_ticket(
     db: Session = Depends(get_db),
 ):
     """Cria novo ticket de suporte. tenant_id = escopo do admin autenticado."""
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     tenant_id = scope.tenant_id  # None para super_admin (ticket global)
 
     ticket = SupportTicket(
@@ -257,7 +257,7 @@ def get_support_ticket(
     db: Session = Depends(get_db),
 ):
     """Detalhe de um ticket. Verifica acesso por tenant."""
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     ticket = db.get(SupportTicket, ticket_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket nao encontrado.")
@@ -279,7 +279,7 @@ def update_support_ticket(
     - seta replied_at = now
     - cria Notification + push para o autor (type=support_reply)
     """
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     ticket = db.get(SupportTicket, ticket_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket nao encontrado.")

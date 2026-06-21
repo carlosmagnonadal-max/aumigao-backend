@@ -70,7 +70,7 @@ def admin_complaint_metrics(
     Tenant-scoped (Complaint.tenant_id). avg_resolution_hours é null se não houver
     ocorrências com resolved_at preenchido.
     """
-    scope = get_admin_tenant_scope(admin)
+    scope = get_admin_tenant_scope(admin, db)
     data = get_complaint_metrics(db, scope)
     return ComplaintMetricsResponse(**data)
 
@@ -88,7 +88,7 @@ def admin_list_cases(
     admin: User = Depends(require_permission("occurrences.read")),
     db: Session = Depends(get_db),
 ):
-    query = apply_tenant_filter(db.query(Complaint), Complaint, get_admin_tenant_scope(admin))
+    query = apply_tenant_filter(db.query(Complaint), Complaint, get_admin_tenant_scope(admin, db))
     if status and status != "all":
         query = query.filter(Complaint.status == status)
     if severity and severity != "all":

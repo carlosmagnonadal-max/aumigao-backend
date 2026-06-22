@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
-from app.core.database import get_db
+from app.core.database import get_db, set_session_user
 from app.core.security import decode_access_token
 from app.models.user import User
 
@@ -66,6 +66,12 @@ def get_current_user(
         user_id_var.set(str(user.id))
     except Exception:
         pass  # never block auth for logging bookkeeping
+    # Injeta app.current_user_id no GUC da transação PostgreSQL.
+    # NO-OP em SQLite (testes); jamais propaga exceção.
+    try:
+        set_session_user(db, str(user.id))
+    except Exception:
+        pass  # never block auth for GUC bookkeeping
     return user
 
 def require_admin(user: User = Depends(get_current_user)) -> User:

@@ -76,21 +76,37 @@ class Base(DeclarativeBase):
 # ---------------------------------------------------------------------------
 @event.listens_for(Session, "after_begin")
 def _set_rls_tenant_on_begin(session: Session, transaction, connection) -> None:
-    """Injeta app.current_tenant na transação PostgreSQL via set_config.
+    """Injeta app.current_tenant e app.current_user_id na transação PostgreSQL.
 
     NO-OP em qualquer dialeto diferente de postgresql (ex.: sqlite em testes).
     Parametrizado — jamais interpola strings no SQL.
+
+    app.current_tenant:
+      None → fail-closed (GUC vazio; policy bloqueia todas as linhas).
+      '*'  → super_admin / caller interno global (vê tudo).
+      str  → tenant_id específico.
+
+    app.current_user_id:
+      None / ausente → '-' (não autenticado / caller interno).
+      str            → user.id do usuário autenticado.
     """
     if connection.dialect.name != "postgresql":
         return
     tenant = session.info.get("rls_tenant")
-    # None → fail-closed: sem tenant definido, o GUC fica vazio e a policy
-    # bloqueia todas as linhas. Callers internos devem setar "*" explicitamente.
     conn_tenant = tenant if tenant is not None else ""
     connection.exec_driver_sql(
         "SELECT set_config('app.current_tenant', %s, true)",
         (conn_tenant,),
     )
+    # app.current_user_id: default '-' para sessions sem usuário autenticado.
+    user_id = session.info.get("rls_user_id", "-")
+    try:
+        connection.exec_driver_sql(
+            "SELECT set_config('app.current_user_id', %s, true)",
+            (user_id,),
+        )
+    except Exception:
+        pass  # never break a transaction for user_id GUC bookkeeping
 
 
 def set_session_tenant(db: Session, tenant: str) -> None:
@@ -109,6 +125,26 @@ def set_session_tenant(db: Session, tenant: str) -> None:
     if bind is None or bind.dialect.name != "postgresql":
         return
     db.execute(text("SELECT set_config('app.current_tenant', :t, true)"), {"t": tenant})
+
+
+def set_session_user(db: Session, user_id: str) -> None:
+    """Seta o GUC app.current_user_id na transação corrente.
+
+    Espelha set_session_tenant mas para o usuário autenticado.
+    Chamado em get_current_user (auth.py) logo após validação do token.
+
+    Valor padrão '-' indica "não autenticado / caller interno".
+    NO-OP em SQLite (testes) — set_config não existe neste dialeto.
+    Jamais propaga exceção: qualquer erro é silenciado para não bloquear requests.
+    """
+    db.info["rls_user_id"] = user_id
+    bind = db.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        return
+    try:
+        db.execute(text("SELECT set_config('app.current_user_id', :u, true)"), {"u": user_id})
+    except Exception:
+        pass  # never block a request for GUC bookkeeping
 
 
 def get_global_db():

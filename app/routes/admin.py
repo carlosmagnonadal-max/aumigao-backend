@@ -710,10 +710,17 @@ def operational_alerts(admin: User = Depends(require_permission("walks.read")), 
     process_expired_attempts(db)
     scope = get_admin_tenant_scope(admin, db)
 
+    all_walks = (
+        apply_tenant_filter(db.query(Walk), Walk, scope)
+        .order_by(Walk.created_at.desc())
+        .all()
+    )
+    # Batch preload: evita N+1 de _is_real_admin_walk(walk, db) por walk.
+    walk_users_by_id, walk_pets_by_id, walk_profiles_by_user_id = _preload_admin_walk_realness(all_walks, db)
     real_walks = [
         walk
-        for walk in apply_tenant_filter(db.query(Walk), Walk, scope).order_by(Walk.created_at.desc()).all()
-        if _is_real_admin_walk(walk, db)
+        for walk in all_walks
+        if _is_real_admin_walk_preloaded(walk, walk_users_by_id, walk_pets_by_id, walk_profiles_by_user_id)
     ]
     _refresh_reliability_events(real_walks, db)
 
@@ -1064,10 +1071,22 @@ def tutors(
 @router.get("/pets")
 @api_router.get("/pets")
 def admin_pets(admin: User = Depends(require_permission("tutors.read")), db: Session = Depends(get_db)):
+    all_pets = (
+        apply_tenant_filter(db.query(Pet), Pet, get_admin_tenant_scope(admin, db))
+        .order_by(Pet.created_at.desc())
+        .all()
+    )
+    # Batch preload: evita N+1 de db.get(User, pet.tutor_id) por pet.
+    tutor_ids = {pet.tutor_id for pet in all_pets if pet.tutor_id}
+    users_by_id = (
+        {u.id: u for u in db.query(User).filter(User.id.in_(tutor_ids)).all()}
+        if tutor_ids
+        else {}
+    )
     pets = [
         pet
-        for pet in apply_tenant_filter(db.query(Pet), Pet, get_admin_tenant_scope(admin, db)).order_by(Pet.created_at.desc()).all()
-        if _is_real_pet(pet, db.get(User, pet.tutor_id) if pet.tutor_id else None)
+        for pet in all_pets
+        if _is_real_pet(pet, users_by_id.get(pet.tutor_id))
     ]
     return [_serialize_admin_pet(pet, db) for pet in pets]
 

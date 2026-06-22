@@ -197,13 +197,10 @@ def ensure_user_schema():
             "created_at": _sql_type("datetime"),
         },
     )
-    inspector = inspect(engine)
-    if "users" not in inspector.get_table_names():
-        return
-    existing = {column["name"] for column in inspector.get_columns("users")}
-    if "password" in existing and "password_hash" in existing:
-        with engine.begin() as connection:
-            connection.execute(text("UPDATE users SET password_hash = password WHERE COALESCE(password_hash, '') = ''"))
+    # Bloco de migração legado REMOVIDO (2026-06-22): copiava uma coluna `password`
+    # (fóssil de schema antigo) para `password_hash`. Era footgun de segurança —
+    # poderia mover senha em texto plano para o campo de hash. A migração one-time
+    # já rodou em todo boot por meses; o ORM (user.py) usa apenas `password_hash`.
 
 
 def ensure_walker_profile_schema():

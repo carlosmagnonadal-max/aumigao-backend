@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import NullPool
 from starlette.requests import Request
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -50,9 +51,24 @@ def mask_database_url(database_url: str = SQLALCHEMY_DATABASE_URL) -> str:
 
 
 connect_args = {"check_same_thread": False} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {}
-engine_kwargs = {}
+
+# RLS GUCs use SET LOCAL (set_config(..., true)) at after_begin = transaction-scoped,
+# compatible with pgbouncer transaction pooling; psycopg2 has no server-side prepared
+# statements so it's pooler-safe.
+#
+# When the host contains "-pooler" (Neon pooled endpoint / pgbouncer in transaction
+# mode), we skip client-side pooling entirely (NullPool) to avoid holding connections
+# across pgbouncer transaction boundaries.  Without "-pooler" we keep the existing
+# pool for direct connections.
+_parsed_url = urlparse(SQLALCHEMY_DATABASE_URL)
+_is_pooler_url = "-pooler" in (_parsed_url.hostname or "")
+
+engine_kwargs: dict = {}
 if not SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
-    engine_kwargs = {"pool_pre_ping": True, "pool_recycle": 300, "pool_size": 5, "max_overflow": 10}
+    if _is_pooler_url:
+        engine_kwargs = {"poolclass": NullPool}
+    else:
+        engine_kwargs = {"pool_pre_ping": True, "pool_recycle": 300, "pool_size": 5, "max_overflow": 10}
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args=connect_args, **engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

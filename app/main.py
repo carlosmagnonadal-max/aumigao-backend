@@ -338,7 +338,16 @@ if _run_startup_admin_seed:
 else:
     print("[startup] admin seed skipped")
 
-app = FastAPI(title="Aumigao Walk API")
+# Sec: em produção desabilita /docs, /redoc e /openapi.json. Expor o schema
+# completo da API publicamente facilita reconhecimento de atacante. Em dev/staging
+# (ENVIRONMENT != production) os docs continuam disponíveis para desenvolvimento.
+_is_production = os.getenv("ENVIRONMENT", "").strip().lower() == "production"
+app = FastAPI(
+    title="Aumigao Walk API",
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
+)
 
 
 # O1 — Exception handler global: captura qualquer Exception não tratada
@@ -431,7 +440,6 @@ app.add_middleware(RequestContextMiddleware)
 # Sec-P3: headers de segurança defensivos injetados em TODAS as respostas.
 # Colocado como @app.middleware após add_middleware (executa na camada de rota,
 # depois dos middlewares ASGI registrados acima) para não colidir com CORS.
-# NÃO inclui CSP — esta é uma API JSON; CSP pode interferir com /docs (Swagger).
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -439,6 +447,13 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # CSP estrito SÓ em produção: API JSON não renderiza páginas; default-src 'none'
+    # nega tudo (inofensivo p/ JSON, cobre respostas HTML acidentais como erros).
+    # Fica de fora em dev p/ não quebrar o Swagger /docs (que só existe fora de prod).
+    if _is_production:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+        )
     return response
 
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)

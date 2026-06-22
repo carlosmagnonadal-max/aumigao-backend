@@ -16,7 +16,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from app.core.request_context import request_id_var
+from app.core.request_context import request_id_var, tenant_id_var, user_id_var
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,15 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         request_id = incoming[:12] if incoming else uuid.uuid4().hex[:12]
 
         token = request_id_var.set(request_id)
+
+        # Resolve tenant_id from request state if the TenantMiddleware already ran.
+        # Falls back to "-" (default) when not available — never blocks the request.
+        resolved_tenant = getattr(request.state, "tenant_id", None) or "-"
+        tenant_token = tenant_id_var.set(resolved_tenant)
+        # user_id is not available until after JWT validation in the route/dependency;
+        # routes should call user_id_var.set(user.id) after successful auth.
+        user_token = user_id_var.set("-")
+
         start = time.perf_counter()
         try:
             response: Response = await call_next(request)
@@ -47,3 +56,5 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             request_id_var.reset(token)
+            tenant_id_var.reset(tenant_token)
+            user_id_var.reset(user_token)

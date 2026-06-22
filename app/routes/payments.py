@@ -50,7 +50,9 @@ ASAAS_SANDBOX_DEFAULT_CPF_CNPJ = os.getenv("ASAAS_SANDBOX_DEFAULT_CPF_CNPJ", "24
 ASAAS_LIVE_BASE_URL = os.getenv("ASAAS_LIVE_BASE_URL", "https://api.asaas.com/v3").rstrip("/")
 ASAAS_LIVE_API_KEY = os.getenv("ASAAS_LIVE_API_KEY")
 
-SENSITIVE_KEYS = {"access_token", "authorization", "api_key", "token", "password", "cpfcnpj", "cpf", "cnpj"}
+# SENSITIVE_KEYS and sanitize_for_log are now canonical in app.core.log_masking (DRY).
+# Kept as re-exports here for backwards compatibility with any direct imports.
+from app.core.log_masking import SENSITIVE_KEYS, sanitize_for_log  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # ContextVars — async-safe, sem alterar assinatura pública de
@@ -165,21 +167,6 @@ def asaas_headers(api_key: str | None = None, *, mode: str | None = None) -> dic
         "Content-Type": "application/json",
         "User-Agent": f"Aumigao Beta {effective_mode.capitalize()}",
     }
-
-
-def sanitize_for_log(value):
-    if isinstance(value, dict):
-        sanitized = {}
-        for key, item in value.items():
-            normalized_key = key.lower()
-            if normalized_key in SENSITIVE_KEYS or "token" in normalized_key or "key" in normalized_key:
-                sanitized[key] = "***"
-            else:
-                sanitized[key] = sanitize_for_log(item)
-        return sanitized
-    if isinstance(value, list):
-        return [sanitize_for_log(item) for item in value]
-    return value
 
 
 def parse_asaas_response(response: httpx.Response):
@@ -309,12 +296,12 @@ async def create_asaas_customer(
     }
     mode_label = "Live" if is_live else "Sandbox"
     _log_payload = {**sanitize_for_log(payload), "email": "***"}
-    logger.warning("Asaas %s request customers payload=%s", mode_label, _log_payload)
+    logger.info("Asaas %s request customers payload=%s", mode_label, _log_payload)
     response = await client.post("/customers", json=payload)
     if response.status_code >= 400:
         raise_asaas_error("customers.create", response, payload)
     data = response.json()
-    logger.warning(
+    logger.info(
         "Asaas %s response customers status_http=%s customer_id=%s",
         mode_label, response.status_code, data.get("id"),
     )
@@ -368,19 +355,19 @@ async def create_asaas_payment(payload: PaymentCreate, user: User):
                     "percentualValue": split_config["percentual_value"],
                 }
             ]
-            logger.warning(
+            logger.info(
                 "Asaas Live split incluido wallet_id=%s percentual_value=%s",
                 split_config["wallet_id"],
                 split_config["percentual_value"],
             )
 
-        logger.warning("Asaas %s request payments payload=%s", mode_label, sanitize_for_log(payment_payload))
+        logger.info("Asaas %s request payments payload=%s", mode_label, sanitize_for_log(payment_payload))
         response = await client.post("/payments", json=payment_payload)
         if response.status_code >= 400:
             raise_asaas_error("payments.create", response, payment_payload)
 
         payment_data = response.json()
-        logger.warning(
+        logger.info(
             "Asaas %s response payments status_http=%s payment_id=%s provider_status=%s billing_type=%s",
             mode_label,
             response.status_code,
@@ -410,7 +397,7 @@ async def create_asaas_payment(payload: PaymentCreate, user: User):
                     {"payment_id": payment_data.get("id"), "billingType": billing_type},
                 )
             pix_data = pix_response.json()
-            logger.warning(
+            logger.info(
                 "Asaas %s response pix_qr_code status_http=%s payment_id=%s has_payload=%s",
                 mode_label,
                 pix_response.status_code,
@@ -566,12 +553,18 @@ async def create_payment(payload: PaymentCreate, user: User = Depends(get_curren
     except Exception as error:
         if is_live:
             # No modo live não usamos fallback interno — falha explícita é mais segura.
-            logger.error("Asaas Live indisponivel. error=%s", error)
+            logger.error(
+                "Asaas Live indisponivel. error=%s user_id=%s walk_id=%s tenant_id=%s",
+                error, user.id, payload.walk_id, user.tenant_id,
+            )
             raise HTTPException(
                 status_code=502,
                 detail="Gateway de pagamento em produção indisponível. Tente novamente em instantes.",
             )
-        logger.warning("Asaas Sandbox indisponivel; usando fallback interno beta. error=%s", error)
+        logger.warning(
+            "Asaas Sandbox indisponivel; usando fallback interno beta. error=%s user_id=%s walk_id=%s tenant_id=%s",
+            error, user.id, payload.walk_id, user.tenant_id,
+        )
         provider_data = {
             "id": f"internal-sandbox-{uuid4()}",
             "status": "PAYMENT_CREATED",

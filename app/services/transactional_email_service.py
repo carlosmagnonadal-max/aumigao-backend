@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from app.core.log_masking import mask_email
+
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
@@ -72,21 +74,22 @@ def _send_via_resend(to: str, subject: str, body_text: str, body_html: str | Non
         json=payload,
         timeout=10,
     )
+    masked_to = mask_email(to)
     if resp.status_code >= 500:
         # Falha do servidor Resend — alerta crítico para ops; e-mail NÃO enviado.
         LOGGER.critical(
             "[ALERTA] Resend com falha de servidor (status=%s): %s — to=%s",
-            resp.status_code, resp.text[:600], to,
+            resp.status_code, resp.text[:600], masked_to,
         )
         return
     if resp.status_code >= 400:
         # Falha de configuração (domínio não verificado, chave inválida, destinatário rejeitado).
         LOGGER.error(
             "Resend recusou e-mail transacional (status=%s): %s — to=%s",
-            resp.status_code, resp.text[:600], to,
+            resp.status_code, resp.text[:600], masked_to,
         )
         return
-    LOGGER.info("e-mail transacional enviado via Resend para %s subject=%r", to, subject)
+    LOGGER.info("e-mail transacional enviado via Resend para %s subject=%r", masked_to, subject)
 
 
 def _send_via_smtp(to: str, subject: str, body_text: str) -> None:
@@ -111,7 +114,7 @@ def _send_via_smtp(to: str, subject: str, body_text: str) -> None:
             server.starttls()
             server.login(user, password)
             server.send_message(msg)
-    LOGGER.info("e-mail transacional enviado via SMTP para %s subject=%r", to, subject)
+    LOGGER.info("e-mail transacional enviado via SMTP para %s subject=%r", mask_email(to), subject)
 
 
 def _transactional_emails_enabled(db: "Session | None", tenant_id: str | None) -> bool:
@@ -146,7 +149,7 @@ def _send_email(to: str, subject: str, body_text: str, body_html: str | None = N
                 to, subject,
             )
     except Exception:
-        LOGGER.exception("falha ao enviar e-mail transacional to=%s subject=%r", to, subject)
+        LOGGER.exception("falha ao enviar e-mail transacional to=%s subject=%r", mask_email(to), subject)
 
 
 # --------------------------------------------------------------------------- #

@@ -18,6 +18,7 @@ from app.models.user import User
 _SENSITIVE_KEYS = {
     "password", "password_hash", "token", "access_token", "refresh_token",
     "secret", "api_key", "authorization",
+    "cpf", "cpf_cnpj", "cpfcnpj", "rg",
 }
 _MAX_PAYLOAD = 8000
 

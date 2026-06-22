@@ -301,7 +301,8 @@ async def upload_partner_application_document(
 @router.post("", status_code=201)
 def create_partner_application(payload: PartnerApplicationCreate, response: Response, request: Request, db: Session = Depends(get_db)):
     enforce_application_rate_limit(request)
-    LOGGER.info("candidatura recebida", extra={"email": payload.email, "full_name": payload.full_name})
+    from app.core.log_masking import mask_email as _mask_email
+    LOGGER.info("candidatura recebida", extra={"email": _mask_email(payload.email or ""), "full_name": "***"})
     _validate_password_or_raise(payload.password)
     if not payload.accepted_declaration:
         raise HTTPException(status_code=400, detail="Declaracao obrigatoria precisa ser aceita.")

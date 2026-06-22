@@ -61,7 +61,7 @@ def _apple_allowed_audiences() -> list[str]:
     return bases
 
 from app.core.database import get_db
-from app.core.security import create_access_token, create_refresh_token, get_password_hash, verify_password
+from app.core.security import create_access_token, create_refresh_token, get_password_hash, password_needs_rehash, verify_password
 from app.dependencies.auth import get_current_user
 from app.models.password_reset_code import PasswordResetCode
 from app.models.user import User
@@ -267,6 +267,18 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
         "login_success user_id=%s role=%s ip=%s",
         user.id, user.role, client_ip,
     )
+    # Transparent rehash: migrate legacy pbkdf2 hashes to bcrypt on first login.
+    # Wrapped in try/except so a rehash failure never blocks a valid login.
+    if password_needs_rehash(user.password_hash or ""):
+        try:
+            user.password_hash = get_password_hash(password)
+            db.commit()
+            _auth_logger.info("password_rehashed user_id=%s", user.id)
+        except Exception as _rehash_exc:
+            _auth_logger.warning(
+                "password_rehash_failed user_id=%s reason=%s",
+                user.id, _rehash_exc,
+            )
     return build_session(user)
 
 @router.get("/me", response_model=UserResponse)

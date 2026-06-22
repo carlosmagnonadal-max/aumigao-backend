@@ -1,4 +1,6 @@
-﻿from datetime import datetime, timedelta, timezone
+﻿import base64
+import hashlib
+from datetime import datetime, timedelta, timezone
 from hashlib import pbkdf2_hmac
 from hmac import compare_digest
 import os
@@ -7,6 +9,7 @@ from os import urandom
 from pathlib import Path
 from typing import Any
 
+import bcrypt
 import jwt
 from dotenv import load_dotenv
 
@@ -29,21 +32,82 @@ JWT_ISSUER = (os.getenv("JWT_ISSUER") or "aumigao-walk").strip()
 JWT_AUDIENCE = (os.getenv("JWT_AUDIENCE") or "aumigao-app").strip()
 
 
+_BCRYPT_COST = 12
+
+
+def _bcrypt_prepare(password: str) -> bytes:
+    """Pre-hash the password with SHA-256 then base64-encode before bcrypt.
+
+    bcrypt silently truncates inputs at 72 bytes; this step ensures that long
+    or multibyte passwords are never truncated — every bit of the original
+    password influences the final hash.
+    """
+    digest = hashlib.sha256(password.encode("utf-8")).digest()
+    return base64.b64encode(digest)
+
+
 def get_password_hash(password: str) -> str:
-    salt = urandom(16)
-    digest = pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120_000)
-    return f"pbkdf2_sha256${salt.hex()}${digest.hex()}"
+    """Hash password with bcrypt (cost factor 12). Returns a $2b$… string."""
+    prepared = _bcrypt_prepare(password)
+    hashed = bcrypt.hashpw(prepared, bcrypt.gensalt(rounds=_BCRYPT_COST))
+    return hashed.decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify password against hash — backward-compatible with legacy pbkdf2_sha256 hashes.
+
+    Dispatch:
+    - $2… prefix → bcrypt path (new hashes).
+    - pbkdf2_sha256$… prefix → legacy pbkdf2 path (existing users are never locked out).
+    - anything else → False.
+    Never raises; all exceptions are caught and return False.
+    """
     try:
-        algorithm, salt_hex, digest_hex = hashed_password.split("$", 2)
-        if algorithm != "pbkdf2_sha256":
+        if hashed_password.startswith("$2"):
+            # bcrypt path — use try/except BaseException because bcrypt's Rust
+            # backend can raise PanicException (not a subclass of Exception) on
+            # malformed/truncated hash strings.
+            try:
+                prepared = _bcrypt_prepare(plain_password)
+                return bcrypt.checkpw(prepared, hashed_password.encode("utf-8"))
+            except BaseException:
+                return False
+        elif hashed_password.startswith("pbkdf2_sha256$"):
+            # Legacy pbkdf2 path — keep existing users working
+            algorithm, salt_hex, digest_hex = hashed_password.split("$", 2)
+            if algorithm != "pbkdf2_sha256":
+                return False
+            digest = pbkdf2_hmac(
+                "sha256",
+                plain_password.encode("utf-8"),
+                bytes.fromhex(salt_hex),
+                120_000,
+            )
+            return compare_digest(digest.hex(), digest_hex)
+        else:
             return False
-        digest = pbkdf2_hmac("sha256", plain_password.encode("utf-8"), bytes.fromhex(salt_hex), 120_000)
-        return compare_digest(digest.hex(), digest_hex)
     except Exception:
         return False
+
+
+def password_needs_rehash(hashed: str) -> bool:
+    """Return True if the hash is NOT a current bcrypt hash at cost 12.
+
+    Used in the login flow to transparently migrate legacy pbkdf2 users to
+    bcrypt on their next successful login.
+    """
+    if not hashed.startswith("$2b$"):
+        return True
+    try:
+        # bcrypt hash format: $2b$NN$<53 chars>
+        # Split on '$' → ['', '2b', 'NN', '<salt+hash>']
+        parts = hashed.split("$")
+        if len(parts) < 4:
+            return True
+        cost = int(parts[2])
+        return cost != _BCRYPT_COST
+    except Exception:
+        return True
 
 
 def create_refresh_token(user: Any) -> str:

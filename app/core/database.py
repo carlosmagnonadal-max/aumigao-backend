@@ -111,6 +111,24 @@ def set_session_tenant(db: Session, tenant: str) -> None:
     db.execute(text("SELECT set_config('app.current_tenant', :t, true)"), {"t": tenant})
 
 
+def get_global_db():
+    """FastAPI dependency que fornece uma sessão do banco com escopo global (RLS irrestrito).
+
+    Destinado a endpoints que precisam ver dados de TODOS os tenants sem restrição de
+    tenant_id: webhooks de gateway de pagamento (Asaas, Efí), operações de plataforma.
+
+    Diferença de get_db: não lê tenant_id de request.state — sempre usa "*".
+    Isso permite que os testes sobrescrevam via dependency_overrides, exatamente como
+    fariam com get_db (sem depender de global_scope_session interno).
+    """
+    db = SessionLocal()
+    db.info["rls_tenant"] = "*"
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 def get_db(request: Request = None):  # type: ignore[assignment]
     """FastAPI dependency que fornece uma sessão do banco com tenant RLS injetado.
 

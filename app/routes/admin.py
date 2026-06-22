@@ -1125,6 +1125,14 @@ def update_background_certificate(
     profile = db.get(WalkerProfile, candidate_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Candidatura nao encontrada")
+    # Escopo de tenant: WalkerProfile nao tem tenant_id (walkers sao globais), mas admin
+    # de tenant so pode validar certidoes de candidatos cujo user.tenant_id bate com o seu tenant.
+    # Espelha a logica do GET /partner-applications/{candidate_id} em ~1101.
+    scope = get_admin_tenant_scope(admin, db)
+    if not scope.is_global:
+        _walker_scope_user = db.get(User, profile.user_id)
+        if not _walker_scope_user or _walker_scope_user.tenant_id != scope.tenant_id:
+            raise HTTPException(status_code=404, detail="Candidatura nao encontrada")
     cert = db.get(WalkerBackgroundCertificate, cert_id)
     if not cert or cert.walker_profile_id != profile.id:
         raise HTTPException(status_code=404, detail="Certidao nao encontrada")
@@ -1195,6 +1203,14 @@ def update_partner_application_admin_fields(candidate_id: str, payload: UpdatePa
     profile = db.get(WalkerProfile, candidate_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Candidatura nao encontrada")
+    # Escopo de tenant: WalkerProfile nao tem tenant_id (walkers sao globais), mas admin
+    # de tenant so pode gerenciar candidatos cujo user.tenant_id bate com o seu tenant.
+    # Espelha a logica do GET /partner-applications/{candidate_id} em ~1101.
+    scope = get_admin_tenant_scope(admin, db)
+    if not scope.is_global:
+        _walker_user = db.get(User, profile.user_id)
+        if not _walker_user or _walker_user.tenant_id != scope.tenant_id:
+            raise HTTPException(status_code=404, detail="Candidatura nao encontrada")
     data = payload.model_dump(exclude_unset=True) if payload else {}
     if "internal_notes" in data:
         profile.internal_notes = data.get("internal_notes") or ""
@@ -1242,6 +1258,14 @@ def approve_walker(walker_id: str, request: Request, payload: dict | None = None
     profile = db.get(WalkerProfile, walker_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Passeador nao encontrado")
+    # Escopo de tenant: WalkerProfile nao tem tenant_id (walkers sao globais), mas admin
+    # de tenant so pode aprovar candidatos cujo user.tenant_id bate com o seu tenant.
+    # Espelha a logica do GET /partner-applications/{candidate_id} em ~1101.
+    scope = get_admin_tenant_scope(admin, db)
+    if not scope.is_global:
+        _walker_scope_user = db.get(User, profile.user_id)
+        if not _walker_scope_user or _walker_scope_user.tenant_id != scope.tenant_id:
+            raise HTTPException(status_code=404, detail="Passeador nao encontrado")
     # GATE Background Check (Fase 0) — dormente: so age quando a flag de tenant
     # `background_checks` esta LIGADA. Flag OFF (default) => comportamento IDENTICO ao
     # anterior (zero regressao).
@@ -1315,6 +1339,14 @@ def reject_walker(walker_id: str, request: Request, payload: RejectWalkerRequest
     profile = db.get(WalkerProfile, walker_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Passeador nao encontrado")
+    # Escopo de tenant: WalkerProfile nao tem tenant_id (walkers sao globais), mas admin
+    # de tenant so pode rejeitar candidatos cujo user.tenant_id bate com o seu tenant.
+    # Espelha a logica do GET /partner-applications/{candidate_id} em ~1101.
+    scope = get_admin_tenant_scope(admin, db)
+    if not scope.is_global:
+        _walker_scope_user = db.get(User, profile.user_id)
+        if not _walker_scope_user or _walker_scope_user.tenant_id != scope.tenant_id:
+            raise HTTPException(status_code=404, detail="Passeador nao encontrado")
     reason = payload.reason if payload else None
     _apply_application_status(profile, "rejected", reason)
     record_admin_operational_event(
@@ -1410,6 +1442,10 @@ def update_admin_walk_status(walk_id: str, payload: AdminWalkStatusRequest, admi
 
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
+
+    # Escopo de tenant: admin de tenant so pode alterar passeios do seu proprio tenant.
+    scope = get_admin_tenant_scope(admin, db)
+    ensure_tenant_access(walk.tenant_id, scope)
 
     status = payload.status
 
@@ -1587,6 +1623,10 @@ def recover_walk(walk_id: str, admin: User = Depends(require_permission("walks.r
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
 
+    # Escopo de tenant: admin de tenant so pode recuperar passeios do seu proprio tenant.
+    scope = get_admin_tenant_scope(admin, db)
+    ensure_tenant_access(walk.tenant_id, scope)
+
     process_expired_attempts(db)
 
     walk.walker_id = None
@@ -1732,6 +1772,14 @@ def approve_walk_completion(review_id: str, payload: WalkCompletionDecisionReque
         )
         db.commit()
         raise HTTPException(status_code=404, detail="Revisao de finalizacao nao encontrada.")
+    # Escopo de tenant: valida via tenant_id do review (preenchido na criacao).
+    # Fallback ao walk.tenant_id quando review.tenant_id for None (registros legados).
+    scope = get_admin_tenant_scope(admin, db)
+    review_tenant_id = review.tenant_id
+    if review_tenant_id is None:
+        _walk_for_scope = db.get(Walk, review.walk_id)
+        review_tenant_id = _walk_for_scope.tenant_id if _walk_for_scope else None
+    ensure_tenant_access(review_tenant_id, scope)
     walk = db.get(Walk, review.walk_id)
     if not walk:
         record_operational_log(
@@ -1844,6 +1892,14 @@ def reject_walk_completion(review_id: str, payload: WalkCompletionDecisionReques
         )
         db.commit()
         raise HTTPException(status_code=404, detail="Revisao de finalizacao nao encontrada.")
+    # Escopo de tenant: valida via tenant_id do review (preenchido na criacao).
+    # Fallback ao walk.tenant_id quando review.tenant_id for None (registros legados).
+    scope = get_admin_tenant_scope(admin, db)
+    review_tenant_id = review.tenant_id
+    if review_tenant_id is None:
+        _walk_for_scope = db.get(Walk, review.walk_id)
+        review_tenant_id = _walk_for_scope.tenant_id if _walk_for_scope else None
+    ensure_tenant_access(review_tenant_id, scope)
     walk = db.get(Walk, review.walk_id)
     if not walk:
         record_operational_log(

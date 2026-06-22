@@ -71,7 +71,7 @@ from app.models import (
 )
 from app.models.support_ticket import SupportTicket  # noqa: F401 — garante tabela no metadata
 from app.models.walk_location_ping import WalkLocationPing  # noqa: F401 — garante tabela no metadata
-from app.routes import admin, admin_accounts, auth, complaints, contact, coupons, incentives, individual_walk_pricing, legal, matching, notifications, operational_walks, partner_application, payments, pet_routine, pet_tour, pets, protected_chat, recurring_plans, referrals, reviews, shared_walks, support_tickets, tenant_app_config, tenant_branding, tenant_commercial, tenant_dedicated_app_readiness, tenant_features_runtime, tenant_launch_readiness, tenant_units_runtime, tenants, tutor, tutor_gamification, walker, walker_network, walker_quality, walker_trust, walk_locations, walks, weekly_missions
+from app.routes import admin, admin_accounts, auth, client_errors, complaints, contact, coupons, incentives, individual_walk_pricing, legal, matching, notifications, operational_walks, partner_application, payments, pet_routine, pet_tour, pets, protected_chat, recurring_plans, referrals, reviews, shared_walks, support_tickets, tenant_app_config, tenant_branding, tenant_commercial, tenant_dedicated_app_readiness, tenant_features_runtime, tenant_launch_readiness, tenant_units_runtime, tenants, tutor, tutor_gamification, walker, walker_network, walker_quality, walker_trust, walk_locations, walks, weekly_missions
 from app.services.admin_seed_service import ensure_configured_admin_users
 from app.services.tenant_seed_service import ensure_default_tenant_links, ensure_network_profiles
 from app.services.operational_matching_service import ensure_operational_schema
@@ -599,6 +599,8 @@ app.include_router(coupons.api_router)
 app.include_router(coupons.admin_router)
 app.include_router(coupons.api_admin_router)
 app.include_router(contact.router)
+# Observabilidade: ingestão de erros do app mobile → Cloud Logging / Error Reporting BR.
+app.include_router(client_errors.router)
 # Incentivos: registrado ANTES de walker_quality para vencer a colisao de rota
 # (/walker/me/incentives e /admin/walkers/{id}/incentives) com a versao gated + regras do tenant.
 app.include_router(incentives.walker_router)

@@ -1,9 +1,12 @@
+import logging
 import os
 import unicodedata
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.models.pet import Pet
 from app.models.walk import Walk
@@ -175,7 +178,11 @@ def get_eligible_walkers(request: MatchingWalkerRequest, db: Session, tenant_id:
         from app.services.walker_network_matching_service import get_matching_pool_for_tenant
         try:
             tenant_pool = set(get_matching_pool_for_tenant(db, tenant_id))
-        except Exception:
+        except Exception as _pool_exc:
+            logger.warning(
+                "matching_pool_load_failed tenant_id=%s reason=%s — falling back to empty pool",
+                tenant_id, type(_pool_exc).__name__,
+            )
             tenant_pool = set()
     # Wave 5 — porte do pet (carregado uma vez, de forma segura). FAIL-OPEN:
     # se não há pet_id, o pet não existe, ou o porte é desconhecido, pet_size_rank
@@ -185,7 +192,11 @@ def get_eligible_walkers(request: MatchingWalkerRequest, db: Session, tenant_id:
     if pet_id:
         try:
             pet = db.get(Pet, pet_id)
-        except Exception:
+        except Exception as _pet_exc:
+            logger.warning(
+                "matching_pet_load_failed pet_id=%s reason=%s — skipping size filter",
+                pet_id, type(_pet_exc).__name__,
+            )
             pet = None
         if pet is not None:
             pet_size_rank = size_rank(getattr(pet, "size", None))

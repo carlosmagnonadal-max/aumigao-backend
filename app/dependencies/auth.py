@@ -1,10 +1,13 @@
-﻿from datetime import datetime, timezone
+﻿import logging
+from datetime import datetime, timezone
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import decode_access_token
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 # EPIC 4.2 — cutoff de tokens legados sem claim `ver`.
 # Tokens sem `ver` cujo `iat` (issued-at) seja ANTERIOR a esta data são rejeitados:
@@ -29,7 +32,8 @@ def get_current_user(
         # (tokens legados sem iss/aud ainda passam; iss/aud errados são rejeitados).
         payload = decode_access_token(credentials.credentials)
         user_id = payload.get("sub")
-    except Exception:
+    except Exception as _exc:
+        logger.warning("token_decode_failed reason=%s", type(_exc).__name__)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token invalido")
     user = db.get(User, user_id)
     if not user or not user.is_active:
@@ -56,6 +60,12 @@ def get_current_user(
     # Armazena o tenant alvo (somente super_admin usa; tenant_scope.py filtra por role).
     # O valor é isolado por request — não há estado compartilhado entre requisições.
     user._act_as_tenant_id = x_act_as_tenant or None
+    # Publica user_id no ContextVar para que o logging filter o injete em todos os records.
+    try:
+        from app.core.request_context import user_id_var
+        user_id_var.set(str(user.id))
+    except Exception:
+        pass  # never block auth for logging bookkeeping
     return user
 
 def require_admin(user: User = Depends(get_current_user)) -> User:

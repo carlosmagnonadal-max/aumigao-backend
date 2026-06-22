@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 _apple_logger = logging.getLogger("aumigao.apple_auth")
+_auth_logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Apple JWKS cache (in-memory, refreshed after TTL or on key-miss)
@@ -238,12 +239,14 @@ def register(payload: UserCreate, request: Request, db: Session = Depends(get_db
     return build_session(user)
 
 @router.post("/login", response_model=TokenResponse)
-def login(payload: LoginRequest, db: Session = Depends(get_db)):
+def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    from app.core.log_masking import mask_email as _mask_email
     try:
         email = normalize_email_or_raise(payload.email)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    client_ip = _get_client_ip(request)
     password = str(payload.password or "").strip()
     if login_rate_limiter.is_blocked(email):
         raise HTTPException(status_code=429, detail="Muitas tentativas de login. Tente novamente mais tarde.")
@@ -251,10 +254,19 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == email).first()
     if not user or not verify_password(password, user.password_hash):
         login_rate_limiter.record_failure(email)
+        _auth_logger.warning(
+            "login_failed email=%s ip=%s",
+            _mask_email(email), client_ip,
+        )
         raise HTTPException(status_code=401, detail="Credenciais invalidas")
     if not user.is_active:
+        _auth_logger.warning("login_inactive_user user_id=%s ip=%s", user.id, client_ip)
         raise HTTPException(status_code=403, detail="Usuario inativo")
     login_rate_limiter.clear(email)
+    _auth_logger.info(
+        "login_success user_id=%s role=%s ip=%s",
+        user.id, user.role, client_ip,
+    )
     return build_session(user)
 
 @router.get("/me", response_model=UserResponse)
@@ -280,7 +292,8 @@ def refresh_token_endpoint(payload: RefreshRequest, db: Session = Depends(get_db
             algorithms=[ALGORITHM],
             options={"verify_aud": False},
         )
-    except Exception:
+    except Exception as _exc:
+        _auth_logger.warning("refresh_token_decode_failed reason=%s", type(_exc).__name__)
         raise invalid
 
     # Exige claim type=refresh — rejeita access tokens e tokens sem tipo.

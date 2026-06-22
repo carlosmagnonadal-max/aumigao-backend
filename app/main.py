@@ -738,12 +738,16 @@ def health():
     # Campos "environment" e "database" foram removidos do endpoint PÚBLICO
     # para não vazar informações de infraestrutura. Detalhes internos disponíveis
     # apenas via /internal/health (autenticado) se necessário no futuro.
+    import logging as _logging
+    _health_logger = _logging.getLogger("app.health")
+    db_status = "ok"
     try:
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
-    except Exception:
+    except Exception as _exc:
         # Banco indisponível: ainda retorna 200 para o health check do Cloud Run
         # não derrubar a instância (o banco pode ser transitório); o alerta de
         # indisponibilidade fica no Sentry/logs, não exposto publicamente.
-        pass
-    return {"status": "ok"}
+        _health_logger.error("health_check_db_failed reason=%s", type(_exc).__name__)
+        db_status = "down"
+    return {"status": "ok", "db": db_status}

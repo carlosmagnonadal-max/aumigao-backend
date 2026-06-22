@@ -639,7 +639,11 @@ async def create_walk_tip_checkout(walk_id: str, payload: WalkTipCheckoutCreate,
 
     try:
         cfg = _get_asaas_config()
-    except Exception:
+    except Exception as _cfg_exc:
+        logger.warning(
+            "tip_asaas_config_unavailable walk_id=%s reason=%s — falling back to internal_mock",
+            walk.id, type(_cfg_exc).__name__,
+        )
         cfg = None
 
     checkout_url: str | None = None

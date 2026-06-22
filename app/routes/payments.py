@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 
-from app.core.database import get_db
+from app.core.database import get_db, get_global_db
 from app.dependencies.auth import get_current_user
 from app.models.notification import Notification
 from app.models.payment import Payment
@@ -909,7 +909,10 @@ def _handle_subscription_webhook(db, event: str, payment_data: dict) -> bool:
 
 
 @router.post("/webhooks/asaas")
-def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_db)):
+def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_global_db)):
+    # ---------------------------------------------------------------------------
+    # 1. Verificação de assinatura — antes de qualquer acesso ao banco.
+    # ---------------------------------------------------------------------------
     expected = os.getenv("ASAAS_WEBHOOK_TOKEN")
     received = request.headers.get("asaas-access-token")
 
@@ -931,6 +934,18 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_db)
     payment_data = payload.get("payment") or {}
     provider_payment_id = payment_data.get("id")
     external_ref = payment_data.get("externalReference") or ""
+
+    # ---------------------------------------------------------------------------
+    # 2. Processamento de DB com escopo global — via get_global_db (rls_tenant="*").
+    #
+    # Webhooks confiáveis processam pagamentos de QUALQUER tenant → escopo global
+    # após validar a assinatura. O futuro webhook do Efí DEVE usar este mesmo helper.
+    #
+    # Não usamos Depends(get_db) aqui: get_db escopa a sessão ao tenant resolvido
+    # da requisição HTTP (tenant padrão); com RLS ativo, isso silenciosamente ignora
+    # pagamentos de outros tenants. get_global_db sempre usa rls_tenant="*" e pode
+    # ser substituído via dependency_overrides nos testes.
+    # ---------------------------------------------------------------------------
 
     # NOTA SOBRE IDEMPOTÊNCIA E STATUS CODE:
     # Não existe tabela de dedup persistente por event-id (seria uma migration).

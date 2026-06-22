@@ -25,7 +25,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401 - registra todas as tabelas no Base.metadata
-from app.core.database import Base, get_db
+from app.core.database import Base, get_db, get_global_db
 from app.core.security import get_password_hash, verify_password
 from app.dependencies.auth import get_current_user
 from app.models.notification import Notification
@@ -85,6 +85,8 @@ def build_payments(*, users=None, walks=None, existing_payments=None):
     test_app = FastAPI()
     test_app.include_router(payments.router)
     test_app.dependency_overrides[get_db] = lambda: db
+    # get_global_db e usado pelo webhook do Asaas; override para ver entidades em memoria.
+    test_app.dependency_overrides[get_global_db] = lambda: db
     return TestClient(test_app), db
 
 

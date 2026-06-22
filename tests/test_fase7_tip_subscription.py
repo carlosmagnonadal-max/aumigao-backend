@@ -38,7 +38,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401 — registra todas as tabelas
-from app.core.database import Base, get_db
+from app.core.database import Base, get_db, get_global_db
 from app.dependencies.auth import get_current_user
 from app.models.notification import Notification
 from app.models.payment import Payment
@@ -126,6 +126,8 @@ def _make_payments_app(db):
     test_app = FastAPI()
     test_app.include_router(payments_module.router)
     test_app.dependency_overrides[get_db] = lambda: db
+    # get_global_db e usado pelo webhook do Asaas; override para ver entidades em memoria.
+    test_app.dependency_overrides[get_global_db] = lambda: db
     return TestClient(test_app)
 
 

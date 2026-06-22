@@ -18,12 +18,15 @@ from os import urandom
 
 import pytest
 
+import bcrypt as _bcrypt_mod
+
 from app.core.security import (
     _BCRYPT_COST,
     _bcrypt_prepare,
     get_password_hash,
     password_needs_rehash,
     verify_password,
+    wrap_pbkdf2_with_bcrypt,
 )
 
 
@@ -211,3 +214,117 @@ class TestEdgeCases:
                 assert result is False, f"Expected False for ({plain!r}, {hashed!r}), got {result}"
             except Exception as exc:
                 pytest.fail(f"verify_password raised for ({plain!r}, {hashed!r}): {exc}")
+
+
+# ---------------------------------------------------------------------------
+# 6. CRITICAL ANTI-LOCKOUT: bcrypt_pbkdf2$ layered format (DB-migrated users)
+# ---------------------------------------------------------------------------
+
+class TestBcryptPbkdf2LayeredFormat:
+    """Acceptance tests for the layered bcrypt_pbkdf2$ format introduced by the
+    SQL migration (pgcrypto crypt/gen_salt).  A failure here means 34 real users
+    cannot log in after the migration.
+    """
+
+    def _make_legacy(self, password: str) -> tuple[str, str, str]:
+        """Return (legacy_hash, salt_hex, digest_hex) for a fresh pbkdf2 hash."""
+        salt = urandom(16)
+        digest = pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120_000)
+        salt_hex = salt.hex()
+        digest_hex = digest.hex()
+        legacy = f"pbkdf2_sha256${salt_hex}${digest_hex}"
+        return legacy, salt_hex, digest_hex
+
+    # --- Round-trip via Python helper -----------------------------------------
+
+    def test_roundtrip_via_helper_correct_password(self):
+        """wrap_pbkdf2_with_bcrypt → verify_password must accept the right password."""
+        pw = "SenhaReal#2026"
+        legacy, _, _ = self._make_legacy(pw)
+        layered = wrap_pbkdf2_with_bcrypt(legacy)
+        assert layered.startswith("bcrypt_pbkdf2$"), f"Unexpected prefix: {layered[:30]}"
+        assert verify_password(pw, layered) is True, (
+            "LOCKOUT RISK: wrap_pbkdf2_with_bcrypt + verify_password rejected correct password!"
+        )
+
+    def test_roundtrip_via_helper_wrong_password(self):
+        """wrap_pbkdf2_with_bcrypt → verify_password must reject a wrong password."""
+        pw = "SenhaReal#2026"
+        legacy, _, _ = self._make_legacy(pw)
+        layered = wrap_pbkdf2_with_bcrypt(legacy)
+        assert verify_password("errada", layered) is False
+
+    # --- Round-trip mirroring exact SQL / pgcrypto output ---------------------
+
+    def test_roundtrip_mirroring_sql_output_correct_password(self):
+        """Build the layered hash the way pgcrypto would (bcrypt of digest_hex with $2b$)
+        and confirm verify_password accepts the right password.
+        pgcrypto produces $2a$ but Python bcrypt produces $2b$; both are accepted by
+        bcrypt.checkpw — this test covers the $2b$ variant which verify_password also
+        handles via the same bcrypt.checkpw call.
+        """
+        pw = "SenhaReal#2026"
+        _legacy, salt_hex, digest_hex = self._make_legacy(pw)
+        # Mirror SQL: bcrypt(digest_hex_string, gen_salt('bf', 12))
+        bcrypt_of_digest = _bcrypt_mod.hashpw(
+            digest_hex.encode("utf-8"), _bcrypt_mod.gensalt(rounds=12)
+        )
+        layered = f"bcrypt_pbkdf2${salt_hex}${bcrypt_of_digest.decode('utf-8')}"
+        assert verify_password(pw, layered) is True, (
+            "LOCKOUT RISK: SQL-mirrored layered hash rejected correct password!"
+        )
+
+    def test_roundtrip_mirroring_sql_output_wrong_password(self):
+        """SQL-mirrored layered hash must reject a wrong password."""
+        pw = "SenhaReal#2026"
+        _legacy, salt_hex, digest_hex = self._make_legacy(pw)
+        bcrypt_of_digest = _bcrypt_mod.hashpw(
+            digest_hex.encode("utf-8"), _bcrypt_mod.gensalt(rounds=12)
+        )
+        layered = f"bcrypt_pbkdf2${salt_hex}${bcrypt_of_digest.decode('utf-8')}"
+        assert verify_password("errada", layered) is False
+
+    def test_roundtrip_with_2a_prefix_simulated(self):
+        """pgcrypto gen_salt('bf',12) produces $2a$12$… hashes.
+        Simulate this by converting Python's $2b$ to $2a$ — bcrypt.checkpw accepts
+        both interchangeably (they are the same algorithm; $2a$ is just an older label).
+        """
+        pw = "SenhaReal#2026"
+        _legacy, salt_hex, digest_hex = self._make_legacy(pw)
+        bcrypt_2b = _bcrypt_mod.hashpw(
+            digest_hex.encode("utf-8"), _bcrypt_mod.gensalt(rounds=12)
+        ).decode("utf-8")
+        # Simulate pgcrypto output: replace $2b$ with $2a$
+        bcrypt_2a = bcrypt_2b.replace("$2b$", "$2a$", 1)
+        assert bcrypt_2a.startswith("$2a$"), "Substitution failed"
+        layered = f"bcrypt_pbkdf2${salt_hex}${bcrypt_2a}"
+        assert verify_password(pw, layered) is True, (
+            "LOCKOUT RISK: $2a$-prefixed pgcrypto hash rejected correct password!"
+        )
+
+    # --- password_needs_rehash ------------------------------------------------
+
+    def test_layered_hash_needs_rehash(self):
+        """bcrypt_pbkdf2$ hashes must trigger a rehash to plain bcrypt on next login."""
+        pw = "SenhaReal#2026"
+        legacy, _, _ = self._make_legacy(pw)
+        layered = wrap_pbkdf2_with_bcrypt(legacy)
+        assert password_needs_rehash(layered) is True, (
+            "password_needs_rehash must return True for bcrypt_pbkdf2$ so users "
+            "are silently upgraded to plain bcrypt on next login."
+        )
+
+    # --- Garbage / malformed bcrypt_pbkdf2$ inputs ----------------------------
+
+    def test_garbage_bcrypt_pbkdf2_one_part_returns_false(self):
+        """bcrypt_pbkdf2$ with only one part (no second $) must return False, not raise."""
+        assert verify_password("pw", "bcrypt_pbkdf2$onlyonepart") is False
+
+    def test_garbage_bcrypt_pbkdf2_non_hex_salt_returns_false(self):
+        """bcrypt_pbkdf2$ with non-hex salt must return False, not raise."""
+        assert verify_password("pw", "bcrypt_pbkdf2$NOTHEX$" + "$2b$12$" + "x" * 53) is False
+
+    def test_wrap_pbkdf2_with_bcrypt_rejects_non_pbkdf2_input(self):
+        """wrap_pbkdf2_with_bcrypt must raise ValueError if input is not pbkdf2_sha256$."""
+        with pytest.raises(ValueError):
+            wrap_pbkdf2_with_bcrypt("$2b$12$somebcrypthash")

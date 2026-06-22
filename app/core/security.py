@@ -54,12 +54,14 @@ def get_password_hash(password: str) -> str:
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify password against hash — backward-compatible with legacy pbkdf2_sha256 hashes.
+    """Verify password against hash — backward-compatible with all hash formats.
 
     Dispatch:
-    - $2… prefix → bcrypt path (new hashes).
-    - pbkdf2_sha256$… prefix → legacy pbkdf2 path (existing users are never locked out).
-    - anything else → False.
+    - $2… prefix          → bcrypt path (new hashes produced by get_password_hash).
+    - bcrypt_pbkdf2$…     → layered path: pbkdf2 inner digest verified via bcrypt
+                            (DB-migrated users; SQL used pgcrypto crypt/gen_salt).
+    - pbkdf2_sha256$…     → legacy pbkdf2 path (pre-migration hashes).
+    - anything else       → False.
     Never raises; all exceptions are caught and return False.
     """
     try:
@@ -70,6 +72,22 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
             try:
                 prepared = _bcrypt_prepare(plain_password)
                 return bcrypt.checkpw(prepared, hashed_password.encode("utf-8"))
+            except BaseException:
+                return False
+        elif hashed_password.startswith("bcrypt_pbkdf2$"):
+            # Layered hash: bcrypt_pbkdf2$<salt_hex>$<bcrypt_of_digest_hex>
+            # Produced by the SQL migration (pgcrypto crypt/gen_salt bf,12) or by
+            # wrap_pbkdf2_with_bcrypt(). The bcrypt_part starts with $2a$ (pgcrypto)
+            # or $2b$ (Python bcrypt) and may contain $, so split at most 2 times.
+            try:
+                _prefix, salt_hex, bcrypt_part = hashed_password.split("$", 2)
+                inner_hex = pbkdf2_hmac(
+                    "sha256",
+                    plain_password.encode("utf-8"),
+                    bytes.fromhex(salt_hex),
+                    120_000,
+                ).hex()  # 64-char lowercase hex string — under bcrypt's 72-byte limit
+                return bcrypt.checkpw(inner_hex.encode("utf-8"), bcrypt_part.encode("utf-8"))
             except BaseException:
                 return False
         elif hashed_password.startswith("pbkdf2_sha256$"):
@@ -88,6 +106,30 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
             return False
     except Exception:
         return False
+
+
+def wrap_pbkdf2_with_bcrypt(pbkdf2_hash: str) -> str:
+    """Re-wrap a legacy pbkdf2_sha256 hash into the layered bcrypt_pbkdf2 format.
+
+    Mirrors what the SQL migration does via pgcrypto:
+      crypt(<digest_hex>, gen_salt('bf', 12))
+    but executed in Python. The digest_hex is 64 ASCII chars (SHA-256 hex),
+    which is 64 bytes — safely under bcrypt's 72-byte truncation limit.
+
+    Args:
+        pbkdf2_hash: a string of the form ``pbkdf2_sha256$<salt_hex>$<digest_hex>``.
+
+    Returns:
+        ``bcrypt_pbkdf2$<salt_hex>$<bcrypt_of_digest_hex>``
+
+    Raises:
+        ValueError: if pbkdf2_hash is not in the expected format.
+    """
+    if not pbkdf2_hash.startswith("pbkdf2_sha256$"):
+        raise ValueError(f"Expected pbkdf2_sha256$ prefix, got: {pbkdf2_hash[:20]!r}")
+    _algorithm, salt_hex, digest_hex = pbkdf2_hash.split("$", 2)
+    bcrypt_hash = bcrypt.hashpw(digest_hex.encode("utf-8"), bcrypt.gensalt(rounds=12))
+    return f"bcrypt_pbkdf2${salt_hex}${bcrypt_hash.decode('utf-8')}"
 
 
 def password_needs_rehash(hashed: str) -> bool:

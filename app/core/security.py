@@ -21,7 +21,7 @@ if not SECRET_KEY or len(SECRET_KEY) < 32:
     )
 
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24h (EPIC 4.1: reduzido de 7 dias para 24h)
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES") or str(60 * 4))  # 4h default (EPIC 4.1: 7d→24h→4h; env-overridable). Janela menor p/ token roubado; refresh silencioso no app cobre a UX.
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS") or "30")
 # B-ALT-011: emissor/audiência do token (configuráveis por env). Identificam de quem é
 # o token e para qual app, e preparam o enforcement (passo 2) e a revogação (via jti).

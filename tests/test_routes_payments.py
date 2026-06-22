@@ -23,7 +23,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401 - registra todas as tabelas no Base.metadata
-from app.core.database import Base, get_db
+from app.core.database import Base, get_db, get_global_db
 from app.dependencies.auth import get_current_user
 from app.models.payment import Payment
 from app.models.tenant import Tenant
@@ -60,6 +60,9 @@ def build(*, users: list[dict] | None = None, payment_configs: list[dict] | None
     test_app = FastAPI()
     test_app.include_router(payments.router)
     test_app.dependency_overrides[get_db] = lambda: db
+    # get_global_db e usado pelo webhook do Asaas; precisa do mesmo override para
+    # que o TestClient veja as entidades criadas na sessao em memoria.
+    test_app.dependency_overrides[get_global_db] = lambda: db
     # get_current_user real continua valendo (HTTPBearer auto_error=False -> 401),
     # exceto quando o teste o sobrescreve.
     return test_app, db

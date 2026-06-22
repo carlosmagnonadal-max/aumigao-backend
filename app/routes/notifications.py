@@ -204,94 +204,6 @@ def _mark_all_as_read(db: Session, current_user: User) -> dict[str, int]:
     return {"updated": len(rows)}
 
 
-def _seed_demo_notifications(db: Session, current_user: User) -> list[dict[str, Any]]:
-    existing = (
-        db.query(Notification)
-        .filter(Notification.user_id == current_user.id, _notification_tenant_filter(_current_tenant_id(current_user, db)))
-        .count()
-    )
-
-    if existing > 0:
-        return _list_notifications(db, current_user)
-
-    role = current_user.role or "tutor"
-
-    if _is_admin_role(role):
-        samples = [
-            NotificationCreate(
-                user_id=current_user.id,
-                user_role="admin",
-                title="Passeio entrou em recovery",
-                message="Um passeio está aguardando ação operacional para continuar a busca por passeador.",
-                type="recovery",
-                related_entity_type="walk",
-                related_entity_id="demo-walk-recovery",
-                metadata={"priority": "high", "channel": "in_app"},
-            ),
-            NotificationCreate(
-                user_id=current_user.id,
-                user_role="admin",
-                title="Muitas recusas detectadas",
-                message="O sistema identificou várias recusas/expirações para o mesmo passeio.",
-                type="operational_alert",
-                related_entity_type="walk",
-                related_entity_id="demo-walk-attempts",
-                metadata={"priority": "medium", "channel": "in_app"},
-            ),
-        ]
-    elif role == "walker":
-        samples = [
-            NotificationCreate(
-                user_id=current_user.id,
-                user_role="walker",
-                title="Novo passeio disponível",
-                message="Há um passeio disponível próximo à sua região. Responda antes do prazo expirar.",
-                type="new_walk",
-                related_entity_type="walk",
-                related_entity_id="demo-walk-new",
-                metadata={"priority": "medium", "channel": "in_app"},
-            ),
-            NotificationCreate(
-                user_id=current_user.id,
-                user_role="walker",
-                title="Tempo de aceite acabando",
-                message="Você tem pouco tempo para aceitar ou recusar este passeio.",
-                type="acceptance_deadline",
-                related_entity_type="walk",
-                related_entity_id="demo-walk-deadline",
-                metadata={"priority": "high", "channel": "in_app"},
-            ),
-        ]
-    else:
-        samples = [
-            NotificationCreate(
-                user_id=current_user.id,
-                user_role="tutor",
-                title="Passeio criado",
-                message="Seu passeio foi criado e já estamos buscando um passeador disponível.",
-                type="walk_created",
-                related_entity_type="walk",
-                related_entity_id="demo-walk-created",
-                metadata={"priority": "low", "channel": "in_app"},
-            ),
-            NotificationCreate(
-                user_id=current_user.id,
-                user_role="tutor",
-                title="Passeador aceitou",
-                message="Um passeador aceitou o passeio e em breve estará a caminho.",
-                type="walker_accepted",
-                related_entity_type="walk",
-                related_entity_id="demo-walk-accepted",
-                metadata={"priority": "medium", "channel": "in_app"},
-            ),
-        ]
-
-    for sample in samples:
-        _create_notification(db, sample)
-
-    return _list_notifications(db, current_user)
-
-
 @router.get("")
 @api_router.get("")
 def get_notifications(
@@ -400,21 +312,6 @@ def create_notification(
     db.commit()
     db.refresh(notification)
     return _serialize_notification(notification)
-
-
-@router.post("/seed-demo")
-@api_router.post("/seed-demo")
-def seed_demo_notifications(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    # Restringir seed-demo a admin/super_admin: tutores e walkers nao devem poder
-    # popular dados de demonstracao (poderia ser usado para spam ou reconhecimento).
-    if not _is_admin_role(current_user.role):
-        raise HTTPException(status_code=403, detail="Apenas admin pode gerar notificações de demonstração.")
-    notifications = _seed_demo_notifications(db, current_user)
-    db.commit()
-    return notifications
 
 
 @router.patch("/{notification_id}/read")

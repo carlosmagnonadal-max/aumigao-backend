@@ -11,7 +11,7 @@ EPIC 2 — Escopo de tenant em rotas admin:
   walker-kits/pending: requer permissao walkers.read (sem ela -> 403).
   walker-network (POST/PATCH): requer walkers.manage para escrita.
   referrals admin: requer referrals.manage para PATCH de status.
-  notifications/seed-demo: tutor/walker recebe 403.
+  notifications/seed-demo: REMOVIDO (rota demo eliminada em prod).
   notifications POST: admin de tenant nao cria notif para outro tenant.
 
 Padrao: FastAPI minimo + SQLite em memoria (StaticPool) + overrides de get_db /
@@ -543,53 +543,6 @@ class TestReferralsWritePermission:
         client = TestClient(app_)
         r = client.patch("/admin/referrals/walkers/ref-1/status",
                          json={"status": "approved"})
-        assert r.status_code == 200, r.text
-
-
-# ---------------------------------------------------------------------------
-# EPIC 2 — notifications/seed-demo: restrito a admin
-# ---------------------------------------------------------------------------
-
-
-class TestNotificationsSeedDemo:
-    """POST /notifications/seed-demo deve recusar tutores e walkers."""
-
-    def _build(self):
-        db = _new_db()
-        db.add(Tenant(id=TENANT_A, name="A", slug="tenant-a", status="active", plan="starter"))
-        tutor = User(id=TUTOR_A_ID, email="t@test.com", password_hash="x",
-                      role="cliente", tenant_id=TENANT_A)
-        walker = User(id=WALKER_ID, email="w@test.com", password_hash="x",
-                       role="walker", tenant_id=TENANT_A)
-        admin = User(id=SUPER_ADMIN_ID, email="sa@test.com", password_hash="x",
-                      role="super_admin", tenant_id=TENANT_A)
-        db.add_all([tutor, walker, admin])
-        db.commit()
-
-        app_ = FastAPI()
-        app_.include_router(notifications.router)
-        app_.dependency_overrides[get_db] = lambda: db
-        return app_, db
-
-    def test_tutor_cannot_seed_demo_notifications(self):
-        app_, db = self._build()
-        app_.dependency_overrides[get_current_user] = lambda: db.get(User, TUTOR_A_ID)
-        client = TestClient(app_)
-        r = client.post("/notifications/seed-demo")
-        assert r.status_code == 403, r.text
-
-    def test_walker_cannot_seed_demo_notifications(self):
-        app_, db = self._build()
-        app_.dependency_overrides[get_current_user] = lambda: db.get(User, WALKER_ID)
-        client = TestClient(app_)
-        r = client.post("/notifications/seed-demo")
-        assert r.status_code == 403, r.text
-
-    def test_admin_can_seed_demo_notifications(self):
-        app_, db = self._build()
-        app_.dependency_overrides[get_current_user] = lambda: db.get(User, SUPER_ADMIN_ID)
-        client = TestClient(app_)
-        r = client.post("/notifications/seed-demo")
         assert r.status_code == 200, r.text
 
 

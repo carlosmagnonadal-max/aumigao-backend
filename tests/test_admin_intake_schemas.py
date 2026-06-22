@@ -12,7 +12,6 @@ from app.routes.admin import (
     AdminWalkStatusRequest,
     KitAuditActionRequest,
     OperationalEventRequest,
-    ReferralStatusRequest,
     RejectWalkerKitRequest,
     RejectWalkerRequest,
     SetWalkerWalletRequest,
@@ -46,12 +45,6 @@ def test_reject_kit_empty_and_extra():
 
 
 # --- acoes do programa de passeadores (defaults preservados) --------------------
-
-def test_referral_status_defaults():
-    m = ReferralStatusRequest()
-    assert m.status is None
-    assert m.note == ""
-
 
 def test_adjust_cr_defaults_and_coercion():
     m = AdjustWalkerCrRequest()

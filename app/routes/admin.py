@@ -313,11 +313,6 @@ DEFAULT_REFERRAL_PROGRAM_SETTINGS = {
     "updated_by": "sistema",
 }
 
-# LEGADO: endpoint GET /admin/referrals é legado de tela demo.
-# O sistema real de indicações está em routes/referrals.py (GET /admin/referrals/walkers).
-# Dados demo removidos; lista vazia até eventual remoção do endpoint legado.
-REFERRAL_RECORDS: list[dict] = []
-
 DEFAULT_WALKER_PROGRAM_SETTINGS = {
     "tips": {
         "enabled": True,
@@ -2087,40 +2082,6 @@ def update_referral_program_settings(payload: ReferralProgramSettingsUpdate, adm
     merged["updated_by"] = "admin"
     save_setting(db, "referral_program", merged, updated_by="admin", tenant_id=tenant_id)
     return merged
-
-
-@router.get("/referrals")
-@api_router.get("/referrals")
-def referrals(
-    limit: int = 20,
-    admin: User = Depends(require_permission("admin.access")),
-):
-    items = REFERRAL_RECORDS[: max(0, limit)]
-    return {"items": items, "total": len(REFERRAL_RECORDS)}
-
-
-# api-T2: schema permissivo da mudanca de status de indicacao (demo in-memory).
-class ReferralStatusRequest(BaseModel):
-    status: str | None = None
-    note: str = ""
-
-
-@router.post("/referrals/{referral_id}/status")
-@api_router.post("/referrals/{referral_id}/status")
-def update_referral_status(
-    referral_id: str,
-    payload: ReferralStatusRequest,
-    admin: User = Depends(require_permission("admin.access")),
-):
-    status = payload.status
-    note = payload.note or ""
-    for item in REFERRAL_RECORDS:
-        if item["id"] == referral_id:
-            item["status"] = status or item["status"]
-            if status == "invalida_fraude":
-                item["fraud_flags"] = [note or "Marcado manualmente pelo admin"]
-            return item
-    return {"id": referral_id, "status": status, "note": note}
 
 
 @router.get("/walker-programs")

@@ -137,6 +137,8 @@ def create_session(
             role="host",
             status=PARTICIPANT_ACCEPTED,
             price=price,
+            # Propagado do shared_walk pai para satisfazer a policy RLS (0046).
+            tenant_id=session.tenant_id,
         ))
     db.commit()
     db.refresh(session)
@@ -167,6 +169,8 @@ def join_session(db: Session, tenant: Tenant, walk_id: str, guest_tutor_id: str,
         role="guest",
         status=PARTICIPANT_ACCEPTED,
         price=session.price_per_pet,
+        # Propagado do shared_walk pai para satisfazer a policy RLS (0046).
+        tenant_id=session.tenant_id,
     ))
     db.commit()
     db.refresh(session)

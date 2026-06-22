@@ -257,7 +257,7 @@ def test_migration_0040_single_head():
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     heads = list(script.get_heads())
     assert len(heads) == 1, f"Esperado 1 head, obteve: {heads}"
-    assert heads == ["0044_rls_allow_null_tenant"], heads
+    assert heads == ["0046_tenant_id_chat_participants_rls"], heads
 
 
 def test_migration_0040_revision_id_within_32_chars():

@@ -101,5 +101,10 @@ class SharedWalkParticipant(Base):
     payment_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Desnormalizado de shared_walks.tenant_id para permitir RLS direto.
+    # Nullable para compatibilidade retroativa; backfill em 0046_.
+    tenant_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("tenants.id"), nullable=True, index=True
+    )
 
     shared_walk: Mapped[SharedWalk] = relationship(back_populates="participants")

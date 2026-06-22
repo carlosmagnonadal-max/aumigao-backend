@@ -250,6 +250,8 @@ def create_message(payload: ProtectedChatMessageCreate, user: User, db: Session)
         sender_role=participant_role or _normalize_role(user.role),
         body=body,
         created_at=datetime.utcnow(),
+        # Propagado do walk para satisfazer a policy RLS (0046).
+        tenant_id=walk.tenant_id,
     )
     db.add(message)
     db.flush()

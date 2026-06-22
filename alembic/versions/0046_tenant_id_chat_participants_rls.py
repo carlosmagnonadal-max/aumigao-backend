@@ -42,7 +42,7 @@ Deploy ordering:
 NO-OP em SQLite (CI/testes — RLS é exclusivo do PostgreSQL).
 Idempotente: ADD COLUMN IF NOT EXISTS + DROP POLICY IF EXISTS + CREATE.
 
-Revision ID: 0046_tenant_id_chat_participants_rls
+Revision ID: 0046_chat_participants_rls
 Revises: 0045_rls_harden_with_check
 Create Date: 2026-06-22
 """
@@ -53,7 +53,7 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0046_tenant_id_chat_participants_rls"
+revision: str = "0046_chat_participants_rls"
 down_revision: Union[str, None] = "0045_rls_harden_with_check"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

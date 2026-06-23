@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -25,6 +25,7 @@ from app.schemas.walker_network import (
 )
 from app.services.audit_service import record_audit_log
 from app.services.tenant_plan_service import enforce_network_access_allowed, tenant_has_feature
+from app.services.tenant_report_service import build_tenant_pool_report
 from app.services.walker_exclusivity_service import (
     assert_walker_link_allowed,
     get_exclusive_tenant_id,
@@ -428,6 +429,25 @@ def approve_walker_requirements(
     access.updated_at = datetime.utcnow()
     db.commit()
     return {"walker_user_id": walker_user_id, "tenant_id": tenant_id, "requirements_met": access.requirements_met}
+
+
+# ── F3.3: relatório de saúde do pool por tenant (read-only) ──────────────────
+
+@router.get("/tenants/{tenant_id}/report")
+@api_router.get("/tenants/{tenant_id}/report")
+def tenant_pool_report(
+    tenant_id: str,
+    from_: date | None = Query(default=None, alias="from"),
+    to: date | None = Query(default=None),
+    admin: User = Depends(require_permission("walkers.read")),
+    db: Session = Depends(get_db),
+):
+    """Resumo operacional do pool do tenant (tenant-admin do próprio + super_admin).
+    Período por Walk.created_at; default = últimos 30 dias."""
+    ensure_tenant_access(tenant_id, get_admin_tenant_scope(admin, db))
+    date_to = datetime.combine(to, datetime.max.time()) if to else datetime.utcnow()
+    date_from = datetime.combine(from_, datetime.min.time()) if from_ else (date_to - timedelta(days=30))
+    return build_tenant_pool_report(db, tenant_id, date_from, date_to)
 
 
 @walker_router.get("/tenants/{tenant_id}/requirements")

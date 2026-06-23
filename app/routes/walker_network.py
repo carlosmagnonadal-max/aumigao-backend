@@ -1,12 +1,13 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.database import get_db
+from app.core.database import get_db, get_walker_self_db
 from app.dependencies.auth import get_current_user, require_admin
 from app.dependencies.rbac import require_permission
-from app.dependencies.tenant_scope import ensure_tenant_access, get_admin_tenant_scope
+from app.dependencies.tenant_scope import ensure_tenant_access, get_admin_tenant_scope, is_super_admin
 from app.models.tenant import Tenant
 from app.models.tenant_walker_access import TenantWalkerAccess
 from app.models.user import User
@@ -14,6 +15,7 @@ from app.models.walker_network_profile import WalkerNetworkProfile
 from app.schemas.walker_network import (
     TENANT_WALKER_ACCESS_STATUSES,
     TENANT_WALKER_ACCESS_TYPES,
+    WALKER_NETWORK_STATUSES,
     TenantWalkerAccessCreate,
     TenantWalkerAccessResponse,
     TenantWalkerAccessUpdate,
@@ -21,7 +23,15 @@ from app.schemas.walker_network import (
     WalkerNetworkMeResponse,
     WalkerNetworkProfileResponse,
 )
+from app.services.audit_service import record_audit_log
 from app.services.tenant_plan_service import enforce_network_access_allowed, tenant_has_feature
+from app.services.walker_exclusivity_service import (
+    assert_walker_link_allowed,
+    get_exclusive_tenant_id,
+    release_walker_exclusive,
+    set_walker_exclusive,
+    walker_exclusivity_ok,
+)
 
 router = APIRouter(prefix="/admin/walker-network", tags=["admin-walker-network"], dependencies=[Depends(require_permission("walkers.read"))])
 api_router = APIRouter(prefix="/api/admin/walker-network", tags=["admin-walker-network"], dependencies=[Depends(require_permission("walkers.read"))])
@@ -55,6 +65,29 @@ def _ensure_network_profile(walker_user_id: str, db: Session) -> WalkerNetworkPr
     profile = WalkerNetworkProfile(walker_user_id=walker_user_id)
     db.add(profile)
     return profile
+
+
+def _recompute_tenants_served(walker_user_id: str, db: Session) -> None:
+    """Recomputa total_tenants_served = nº de vínculos ATIVOS do passeador. Idempotente.
+
+    Garante que o WalkerNetworkProfile exista (aprovação→perfil de rede).
+    Não commita — o caller commita junto com a ação principal.
+    """
+    profile = _ensure_network_profile(walker_user_id, db)
+    count = (
+        db.query(TenantWalkerAccess)
+        .filter(
+            TenantWalkerAccess.walker_user_id == walker_user_id,
+            TenantWalkerAccess.status == "active",
+        )
+        .count()
+    )
+    profile.total_tenants_served = count
+
+
+class WalkerNetworkStatusUpdate(BaseModel):
+    network_status: str | None = None  # active | suspended | blocked
+    network_enabled: bool | None = None
 
 
 @router.get("", response_model=list[WalkerNetworkProfileResponse])
@@ -102,6 +135,9 @@ def link_walker_to_tenant(
     _ensure_choice(payload.status, TENANT_WALKER_ACCESS_STATUSES, "status")
     _ensure_network_profile(payload.walker_user_id, db)
 
+    # Guard de exclusividade (DORMENTE F1: exclusive_tenant_id é sempre NULL).
+    assert_walker_link_allowed(db, payload.walker_user_id, tenant_id, payload.access_type)
+
     access = (
         db.query(TenantWalkerAccess)
         .filter(TenantWalkerAccess.tenant_id == tenant_id, TenantWalkerAccess.walker_user_id == payload.walker_user_id)
@@ -114,6 +150,14 @@ def link_walker_to_tenant(
     access.access_type = payload.access_type
     access.status = payload.status
     access.updated_at = datetime.utcnow()
+
+    # Se tornando exclusivo: registrar no WalkerNetworkProfile (DORMENTE F1).
+    if payload.access_type == "tenant_exclusive":
+        set_walker_exclusive(db, payload.walker_user_id, tenant_id)
+
+    # Passo 8: recomputa total_tenants_served com base nos vínculos ativos atuais.
+    _recompute_tenants_served(payload.walker_user_id, db)
+
     db.commit()
     db.refresh(access)
     return access
@@ -145,12 +189,89 @@ def update_tenant_walker_access(
     values = payload.model_dump(exclude_unset=True)
     _ensure_choice(values.get("access_type"), TENANT_WALKER_ACCESS_TYPES, "access_type")
     _ensure_choice(values.get("status"), TENANT_WALKER_ACCESS_STATUSES, "status")
+
+    # Guard de exclusividade ao mudar access_type (DORMENTE F1: exclusive sempre NULL).
+    new_access_type = values.get("access_type")
+    if new_access_type is not None:
+        assert_walker_link_allowed(db, walker_user_id, tenant_id, new_access_type)
+
     for field, value in values.items():
         setattr(access, field, value)
     access.updated_at = datetime.utcnow()
+
+    # Se tornando exclusivo: registrar no profile (DORMENTE F1).
+    if new_access_type == "tenant_exclusive":
+        set_walker_exclusive(db, walker_user_id, tenant_id)
+    # Se saindo de tenant_exclusive para outro tipo e este tenant era o exclusivo:
+    # liberar exclusive_tenant_id do profile.
+    elif new_access_type is not None and new_access_type != "tenant_exclusive":
+        if get_exclusive_tenant_id(db, walker_user_id) == tenant_id:
+            release_walker_exclusive(db, walker_user_id)
+
+    # Passo 8: garante profile e recomputa total_tenants_served (ativar/revogar muda o count).
+    _recompute_tenants_served(walker_user_id, db)
+
     db.commit()
     db.refresh(access)
     return access
+
+
+@router.patch("/{walker_user_id}", response_model=WalkerNetworkProfileResponse)
+@api_router.patch("/{walker_user_id}", response_model=WalkerNetworkProfileResponse)
+def update_walker_network_status(
+    walker_user_id: str,
+    payload: WalkerNetworkStatusUpdate,
+    admin: User = Depends(require_permission("walkers.manage")),
+    db: Session = Depends(get_db),
+):
+    """Passo 8: super_admin altera network_status e/ou network_enabled do passeador.
+
+    Apenas super_admin pode chamar este endpoint — admins de tenant recebem 403.
+    """
+    if not is_super_admin(admin):
+        raise HTTPException(status_code=403, detail="Apenas super_admin pode alterar o status de rede do passeador.")
+
+    _walker_or_404(walker_user_id, db)
+
+    values = payload.model_dump(exclude_unset=True)
+    if not values:
+        raise HTTPException(status_code=400, detail="Nenhum campo fornecido para atualização.")
+
+    if "network_status" in values and values["network_status"] not in WALKER_NETWORK_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"network_status invalido. Valores aceitos: {sorted(WALKER_NETWORK_STATUSES)}.",
+        )
+
+    profile = _ensure_network_profile(walker_user_id, db)
+
+    before = {
+        "network_status": profile.network_status,
+        "network_enabled": profile.network_enabled,
+    }
+
+    for field, value in values.items():
+        setattr(profile, field, value)
+    profile.updated_at = datetime.utcnow()
+
+    after = {
+        "network_status": profile.network_status,
+        "network_enabled": profile.network_enabled,
+    }
+
+    record_audit_log(
+        db,
+        action="walker_network.status_updated",
+        entity_type="walker_network_profile",
+        entity_id=profile.id,
+        actor=admin,
+        before=before,
+        after=after,
+    )
+
+    db.commit()
+    db.refresh(profile)
+    return profile
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +313,7 @@ def _invite_to_response(invite: TenantWalkerAccess, db: Session) -> WalkerNetwor
 
 
 @walker_router.get("/invites", response_model=list[WalkerNetworkInviteResponse])
-def list_my_invites(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_my_invites(user: User = Depends(get_current_user), db: Session = Depends(get_walker_self_db)):
     _require_walker(user)
     invites = (
         db.query(TenantWalkerAccess)
@@ -211,9 +332,18 @@ def _respond_to_invite(invite_id: str, new_status: str, user: User, db: Session)
     invite = _own_invite_or_404(invite_id, user.id, db)
     if invite.status != "pending":
         raise HTTPException(status_code=409, detail="Convite ja respondido.")
+    # Guard de exclusividade ao aceitar (DORMENTE F1: exclusive sempre NULL → passa reto).
+    if new_status == "active" and not walker_exclusivity_ok(db, user.id, invite.tenant_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Passeador é exclusivo de outro tenant; não pode aceitar este convite.",
+        )
     invite.status = new_status
     invite.responded_at = datetime.utcnow()
     invite.updated_at = datetime.utcnow()
+    # Passo 8: ao aceitar convite o passeador passa a servir +1 tenant → recomputa.
+    if new_status == "active":
+        _recompute_tenants_served(user.id, db)
     db.commit()
     db.refresh(invite)
     return _invite_to_response(invite, db)
@@ -230,7 +360,7 @@ def decline_invite(invite_id: str, user: User = Depends(get_current_user), db: S
 
 
 @walker_router.get("/me", response_model=WalkerNetworkMeResponse)
-def network_me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def network_me(user: User = Depends(get_current_user), db: Session = Depends(get_walker_self_db)):
     """Plano/capabilities do tenant do passeador (net-T4).
 
     O app/admin usam network_access para saber se a Rede está disponível.

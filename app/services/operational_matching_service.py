@@ -20,6 +20,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from app.models.pet import Pet
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.walk import Walk, WalkMatchingAttempt, WalkOperationalLog
 from app.models.walk_completion_review import WalkCompletionReview
@@ -339,6 +340,7 @@ def serialize_operational_walk(
     """
     pet = db.get(Pet, walk.pet_id) if walk.pet_id else None
     tutor = db.get(User, walk.tutor_id) if walk.tutor_id else None
+    tenant = db.get(Tenant, walk.tenant_id) if walk.tenant_id else None
     walker_id = walk.walker_id or walk.assigned_walker_id
     walker = db.get(User, walker_id) if walker_id else None
     walker_profile = (
@@ -459,6 +461,14 @@ def serialize_operational_walk(
             if live_tracking_ids is not None
             else _has_live_tracking(walk.id, db)
         ),
+        # ── Fase 1 Passo 3: informação de tenant por passeio ──────────────────
+        "tenant_id": walk.tenant_id,
+        "tenant_name": (
+            tenant.branding.display_name
+            if tenant and tenant.branding and tenant.branding.display_name
+            else (tenant.name if tenant else None)
+        ),
+        "tenant_brand_color": (tenant.branding.primary_color if tenant and tenant.branding else None),
     }
 
 

@@ -1,7 +1,9 @@
 from datetime import datetime
+from decimal import Decimal
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
+import sqlalchemy as sa
+from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -30,3 +32,16 @@ class TenantWalkerAccess(Base):
     responded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # ── Fase 1 Passo 1 (migration 0048) ──────────────────────────────────────
+    # Comissão negociada individualmente para este tenant (NULL = usa o default do plano).
+    commission_percent: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
+    # Indica que o passeador cumpriu todos os requisitos deste tenant para ficar ativo.
+    # server_default sa.text("true") funciona em Postgres (true) e SQLite (1=truthy).
+    requirements_met: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=sa.text("true")
+    )
+    # Quem iniciou a relação: "tenant" (tenant convidou) ou "network" (rede indicou).
+    initiated_by: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="tenant", server_default="tenant"
+    )

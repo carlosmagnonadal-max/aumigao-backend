@@ -8,6 +8,8 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import NullPool
 from starlette.requests import Request
 
+from app.core.feature_flags import multi_tenant_walker_enabled
+
 ROOT_DIR = Path(__file__).resolve().parents[2]
 ENV_PATH = ROOT_DIR / ".env"
 
@@ -195,6 +197,28 @@ def get_db(request: Request = None):  # type: ignore[assignment]
     else:
         # Caller interno ou teste: acesso global (sem RLS restritivo).
         db.info["rls_tenant"] = "*"
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def get_walker_self_db(request: Request = None):  # type: ignore[assignment]
+    """Sessão de leitura "minha" do passeador (Fase 1, Passo 2).
+
+    Flag ON  → escopo global RLS (rls_tenant="*"); a QUERY DA ROTA *precisa*
+               filtrar walker_id==user.id — o RLS não isola por walker neste modo.
+    Flag OFF → idêntico a get_db (tenant-scoped) → zero-regressão.
+
+    app.current_user_id é setado por get_current_user/set_session_user (auth.py),
+    que é chamado antes desta dependency nas rotas.
+    """
+    db = SessionLocal()
+    if multi_tenant_walker_enabled():
+        db.info["rls_tenant"] = "*"
+    else:
+        tenant_id = getattr(getattr(request, "state", None), "tenant_id", None)
+        db.info["rls_tenant"] = tenant_id or ""
     try:
         yield db
     finally:

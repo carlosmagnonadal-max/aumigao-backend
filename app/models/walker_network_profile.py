@@ -23,3 +23,11 @@ class WalkerNetworkProfile(Base):
     network_enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # ── Fase 1 Passo 1 (migration 0048) ──────────────────────────────────────
+    # Tenant ao qual o passeador está vinculado exclusivamente (NULL = rede compartilhada).
+    # FK para tenants.id declarada como index=True; a constraint FK real no banco é
+    # criada via migration (não inline no ADD COLUMN do SQLite).
+    exclusive_tenant_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("tenants.id"), nullable=True, index=True
+    )

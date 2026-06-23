@@ -184,8 +184,36 @@ def enforce_tenant_feature_allowed(tenant: Tenant, db: Session, feature_key: str
         raise HTTPException(status_code=403, detail=f"Feature {normalized_key} indisponível para o plano atual.")
 
 
+def tenant_tem_rede(tenant: Tenant, db: Session) -> bool:  # noqa: ARG001
+    """Retorna se o tenant tem acesso à Rede Aumigão de passeadores.
+
+    Hierarquia de decisão (Fase 1 PRD, decisão 5):
+    1. override manual (super_admin): se network_access_override não for None → usa o valor.
+    2. Regra de plano + addon:
+       - enterprise → sempre True.
+       - business   → True SOMENTE se network_access_addon=True.
+         NOTE: business agora exige network_access_addon (decisão 5 PRD);
+         migrar tenants business existentes setando network_access_addon=true
+         antes de ligar a flag MULTI_TENANT_WALKER em produção.
+       - starter/outros → False.
+
+    O parâmetro db é mantido para compatibilidade futura (ex.: lookup de feature rows).
+    """
+    override = getattr(tenant, "network_access_override", None)
+    if override is not None:
+        return bool(override)
+
+    plan = (tenant.plan or "").strip().lower()
+    if plan == TENANT_PLAN_ENTERPRISE:
+        return True
+    if plan == TENANT_PLAN_BUSINESS:
+        return bool(getattr(tenant, "network_access_addon", False))
+    # starter e demais planos → sem rede
+    return False
+
+
 def enforce_network_access_allowed(tenant: Tenant, db: Session) -> None:
-    if not tenant_has_feature(tenant, db, "network_access"):
+    if not tenant_tem_rede(tenant, db):
         raise HTTPException(status_code=403, detail="Acesso à Rede Aumigão indisponível para o plano atual.")
 
 

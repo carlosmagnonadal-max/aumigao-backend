@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401
-from app.core.database import Base, get_db
+from app.core.database import Base, get_db, get_walker_self_db
 from app.dependencies.auth import get_current_user
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -34,6 +34,8 @@ def build():
     test_app = FastAPI()
     test_app.include_router(walker.router)
     test_app.dependency_overrides[get_db] = lambda: db
+    # Passo 2: GET /walker/availability usa get_walker_self_db — injetar mesmo db.
+    test_app.dependency_overrides[get_walker_self_db] = lambda: db
     test_app.dependency_overrides[get_current_user] = lambda: db.get(User, WALKER_ID)
     return test_app, db
 

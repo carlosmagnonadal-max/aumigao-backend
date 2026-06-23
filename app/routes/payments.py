@@ -531,7 +531,12 @@ async def create_payment(payload: PaymentCreate, user: User = Depends(get_curren
                 sandbox_message="Pagamento avulso ja existente devolvido (idempotencia). Nenhuma nova cobranca foi criada.",
             )
 
-    split = build_payment_split(db, user.tenant_id, payload.amount)
+    # Fase 1 Passo 4 §D: deriva walker_id do walk para usar comissão por par.
+    # Se o walk não existir ou não tiver walker atribuído, walker_id=None →
+    # comportamento idêntico ao original (zero-regressão).
+    _walk_for_split = db.get(Walk, payload.walk_id) if payload.walk_id else None
+    _walker_id_for_split = _walk_for_split.walker_id if _walk_for_split else None
+    split = build_payment_split(db, user.tenant_id, payload.amount, walker_id=_walker_id_for_split)
     split_config = _build_split_config_for_payment(db, payload.walk_id, user.tenant_id, split)
     # Injeta split_config via ContextVar (async-safe) antes de chamar create_asaas_payment,
     # mantendo a assinatura pública (payload, user) compatível com mocks de teste.

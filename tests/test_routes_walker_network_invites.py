@@ -16,7 +16,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401
-from app.core.database import Base, get_db
+from app.core.database import Base, get_db, get_walker_self_db
 from app.dependencies.auth import get_current_user
 from app.models.tenant import Tenant
 from app.models.tenant_walker_access import TenantWalkerAccess
@@ -44,6 +44,8 @@ def build():
     test_app = FastAPI()
     test_app.include_router(walker_network.walker_router)
     test_app.dependency_overrides[get_db] = lambda: db
+    # Passo 2: GET /walker/network/invites e /me usam get_walker_self_db.
+    test_app.dependency_overrides[get_walker_self_db] = lambda: db
     return test_app, db
 
 

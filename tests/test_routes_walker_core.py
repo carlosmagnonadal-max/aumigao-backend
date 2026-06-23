@@ -24,7 +24,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401 - registra todas as tabelas no Base.metadata
-from app.core.database import Base, get_db
+from app.core.database import Base, get_db, get_walker_self_db
 from app.dependencies.auth import get_current_user
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -68,6 +68,9 @@ def build(*, profile_kwargs: dict | None = None, role: str = "walker", create_pr
     test_app.include_router(walker.router)
     test_app.include_router(walker.api_public_router)
     test_app.dependency_overrides[get_db] = lambda: db
+    # Passo 2: get_walker_self_db é usado nos GET de leitura do passeador.
+    # Em testes, injetar o mesmo db (flag OFF = mesmo comportamento de get_db).
+    test_app.dependency_overrides[get_walker_self_db] = lambda: db
     test_app.dependency_overrides[get_current_user] = lambda: db.get(User, WALKER_ID)
     return TestClient(test_app), db
 

@@ -1,7 +1,9 @@
+import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from app.models.tenant_walker_access import TenantWalkerAccess
 from app.models.user import User
+from app.models.walker_network_profile import WalkerNetworkProfile
 from app.models.walker_profile import WalkerProfile
 
 MATCHING_ACCESS_TYPES = ("shared_network", "tenant_exclusive")
@@ -12,11 +14,22 @@ def get_tenant_eligible_walker_ids(db: Session, tenant_id: str) -> list[str]:
 
     This service only describes the tenant-aware pool. Operational matching still
     applies its existing availability, score, region, and safety rules.
+
+    Fase 1 — exclusivity guard (DORMENTE):
+      LEFT OUTER JOIN com WalkerNetworkProfile + filtro null-safe garante que
+      passeadores exclusivos de OUTRO tenant não entrem no pool. Como
+      exclusive_tenant_id é sempre NULL na F1, o filtro is_(None) mantém todos
+      os walkers atuais → pool inalterado. REGRESSÃO ZERO.
     """
     rows = (
         db.query(TenantWalkerAccess.walker_user_id)
         .join(User, User.id == TenantWalkerAccess.walker_user_id)
         .join(WalkerProfile, WalkerProfile.user_id == TenantWalkerAccess.walker_user_id)
+        # LEFT JOIN: walkers SEM WalkerNetworkProfile continuam elegíveis (exclusive=NULL implícito)
+        .outerjoin(
+            WalkerNetworkProfile,
+            WalkerNetworkProfile.walker_user_id == TenantWalkerAccess.walker_user_id,
+        )
         .filter(
             TenantWalkerAccess.tenant_id == tenant_id,
             TenantWalkerAccess.status == "active",
@@ -25,6 +38,11 @@ def get_tenant_eligible_walker_ids(db: Session, tenant_id: str) -> list[str]:
             User.is_active.is_(True),
             WalkerProfile.status == "active",
             WalkerProfile.active_as_walker.is_(True),
+            # Null-safe: passa se não exclusivo (NULL) ou exclusivo DESTE tenant
+            sa.or_(
+                WalkerNetworkProfile.exclusive_tenant_id.is_(None),
+                WalkerNetworkProfile.exclusive_tenant_id == tenant_id,
+            ),
         )
         .distinct()
         .all()
@@ -33,11 +51,20 @@ def get_tenant_eligible_walker_ids(db: Session, tenant_id: str) -> list[str]:
 
 
 def is_walker_eligible_for_tenant(db: Session, tenant_id: str, walker_user_id: str) -> bool:
-    """Check whether one walker is enabled for a tenant matching pool."""
+    """Check whether one walker is enabled for a tenant matching pool.
+
+    Fase 1 — exclusivity guard (DORMENTE): mesmo outerjoin null-safe de
+    get_tenant_eligible_walker_ids. exclusive_tenant_id é sempre NULL em F1.
+    """
     return (
         db.query(TenantWalkerAccess.id)
         .join(User, User.id == TenantWalkerAccess.walker_user_id)
         .join(WalkerProfile, WalkerProfile.user_id == TenantWalkerAccess.walker_user_id)
+        # LEFT JOIN: walker sem profile → exclusive=NULL → elegível
+        .outerjoin(
+            WalkerNetworkProfile,
+            WalkerNetworkProfile.walker_user_id == TenantWalkerAccess.walker_user_id,
+        )
         .filter(
             TenantWalkerAccess.tenant_id == tenant_id,
             TenantWalkerAccess.walker_user_id == walker_user_id,
@@ -47,6 +74,11 @@ def is_walker_eligible_for_tenant(db: Session, tenant_id: str, walker_user_id: s
             User.is_active.is_(True),
             WalkerProfile.status == "active",
             WalkerProfile.active_as_walker.is_(True),
+            # Null-safe: passa se não exclusivo (NULL) ou exclusivo DESTE tenant
+            sa.or_(
+                WalkerNetworkProfile.exclusive_tenant_id.is_(None),
+                WalkerNetworkProfile.exclusive_tenant_id == tenant_id,
+            ),
         )
         .first()
         is not None

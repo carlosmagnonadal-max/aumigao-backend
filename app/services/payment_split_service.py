@@ -36,7 +36,40 @@ def _commission_fallback_for_tenant(db: Session, tenant_id: str | None) -> float
     return commission_default_for_plan(plan)
 
 
-def get_commission_percent(db: Session, tenant_id: str | None) -> float:
+def get_commission_percent(
+    db: Session,
+    tenant_id: str | None,
+    *,
+    walker_id: str | None = None,
+) -> float:
+    """Retorna a comissão aplicável para o par (tenant, walker).
+
+    Precedência (Fase 1 Passo 4 §D):
+      1. TenantWalkerAccess.commission_percent para este par específico (quando
+         tanto tenant_id quanto walker_id são fornecidos e existe um registro
+         ativo com commission_percent não-nulo).
+      2. TenantPaymentConfig.commission_percent ativo do tenant.
+      3. Fallback: default do plano do tenant (12/8/5/10%).
+
+    Quando walker_id é None, o comportamento é IDÊNTICO ao original (apenas
+    níveis 2 e 3 são verificados) — zero-regressão.
+    """
+    # Nível 1: comissão negociada por par tenant+walker (Fase 1 Passo 4 §D).
+    if tenant_id and walker_id:
+        from app.models.tenant_walker_access import TenantWalkerAccess
+        twa = (
+            db.query(TenantWalkerAccess)
+            .filter(
+                TenantWalkerAccess.tenant_id == tenant_id,
+                TenantWalkerAccess.walker_user_id == walker_id,
+                TenantWalkerAccess.status == "active",
+            )
+            .first()
+        )
+        if twa is not None and twa.commission_percent is not None:
+            return float(twa.commission_percent)
+
+    # Nível 2: config ativa do tenant.
     if tenant_id:
         config = (
             db.query(TenantPaymentConfig)
@@ -48,7 +81,8 @@ def get_commission_percent(db: Session, tenant_id: str | None) -> float:
         )
         if config and config.commission_percent is not None:
             return float(config.commission_percent)
-    # Sem config ativa: deriva do plano do tenant (12/8/5), não do legado de 20%.
+
+    # Nível 3: fallback por plano.
     return _commission_fallback_for_tenant(db, tenant_id)
 
 
@@ -139,10 +173,22 @@ def walker_percent_from_split(split: dict[str, float]) -> float:
     return round(split["walker_amount"] / total * 100.0, 4) if total > 0 else 0.0
 
 
-def build_payment_split(db: Session, tenant_id: str | None, amount: float) -> dict[str, float]:
+def build_payment_split(
+    db: Session,
+    tenant_id: str | None,
+    amount: float,
+    *,
+    walker_id: str | None = None,
+) -> dict[str, float]:
+    """Monta o split para um pagamento.
+
+    Quando walker_id for fornecido, usa get_commission_percent com precedência
+    por par (TenantWalkerAccess.commission_percent → config → plano).
+    Quando walker_id for None, comportamento idêntico ao original.
+    """
     return compute_split(
         amount,
-        get_commission_percent(db, tenant_id),
+        get_commission_percent(db, tenant_id, walker_id=walker_id),
         get_tenant_margin_percent(db, tenant_id),
     )
 

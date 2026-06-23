@@ -1,6 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 
+import sqlalchemy as sa
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -25,6 +26,15 @@ class Tenant(Base):
     contact_phone: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # ── Fase 1 Passo 1 (migration 0048) ──────────────────────────────────────
+    # Override manual de acesso à rede: True=força ativo, False=força inativo, None=segue regra de plano.
+    network_access_override: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Addon de rede para plano Business: True=rede habilitada, False=não (default).
+    # server_default "false" — padrão do projeto para Boolean=False.
+    network_access_addon: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=sa.text("false")
+    )
 
     branding: Mapped["TenantBranding | None"] = relationship(back_populates="tenant", uselist=False, cascade="all, delete-orphan")
     settings: Mapped["TenantSettings | None"] = relationship(back_populates="tenant", uselist=False, cascade="all, delete-orphan")

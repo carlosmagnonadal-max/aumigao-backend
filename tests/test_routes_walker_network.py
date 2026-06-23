@@ -47,7 +47,11 @@ def build(*, plan: str = "business", admin_role: str = "super_admin"):
     Session = sessionmaker(bind=engine)
     db = Session()
 
-    db.add(Tenant(id="t-test", name="Aumigao", slug="aumigao", status="active", plan=plan))
+    # Fase 1 Passo 1 (decisão 5 PRD): business agora exige network_access_addon=True
+    # para ter acesso à rede. Nos testes com plan="business" o addon é ligado para
+    # exercitar o caminho "rede habilitada"; plan="starter" continua sem addon.
+    addon = plan in {"business", "enterprise"}
+    db.add(Tenant(id="t-test", name="Aumigao", slug="aumigao", status="active", plan=plan, network_access_addon=addon))
     db.add(User(id=ADMIN_ID, email="admin@test.com", password_hash="x", role=admin_role, tenant_id="t-test"))
     db.add(User(id=WALKER_ID, email="walker@test.com", password_hash="x", role="walker", tenant_id="t-test"))
     db.commit()

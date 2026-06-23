@@ -1,6 +1,8 @@
 from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -46,7 +48,20 @@ from app.services.tenant_plan_service import (
     enforce_plan_allows_product_feature,
     enforce_tenant_feature_allowed,
     get_tenant_capabilities,
+    tenant_tem_rede,
 )
+
+
+# ── Schema local (Fase 1 Passo 1) ─────────────────────────────────────────────
+
+class TenantNetworkAccessUpdate(BaseModel):
+    """Body do PATCH /admin/tenants/{tenant_id}/network-access.
+
+    override=True  → força rede ligada (independe do plano/addon).
+    override=False → força rede desligada.
+    override=None  → remove o override; regra de plano volta a valer.
+    """
+    override: Optional[bool] = None
 
 router = APIRouter(prefix="/admin/tenants", tags=["admin-tenants"], dependencies=[Depends(require_permission("tenants.read"))])
 api_router = APIRouter(prefix="/api/admin/tenants", tags=["admin-tenants"], dependencies=[Depends(require_permission("tenants.read"))])
@@ -374,3 +389,57 @@ def create_tenant_unit(tenant_id: str, payload: TenantUnitCreate, admin: User = 
     db.commit()
     db.refresh(unit)
     return unit
+
+
+# ── Fase 1 Passo 1 — Passeador Multi-Tenant ───────────────────────────────────
+
+
+@router.patch("/{tenant_id}/network-access")
+@api_router.patch("/{tenant_id}/network-access")
+def update_tenant_network_access(
+    tenant_id: str,
+    payload: TenantNetworkAccessUpdate,
+    admin: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """PATCH /admin/tenants/{tenant_id}/network-access — SÓ super_admin.
+
+    Seta (ou limpa) o override manual de acesso à Rede Aumigão para um tenant.
+    - override=True  → força rede LIGADA independe do plano.
+    - override=False → força rede DESLIGADA independe do plano.
+    - override=None  → remove o override; regra plano+addon volta a valer.
+
+    Retorna o estado resultante (tenant_id, override, addon, tem_rede).
+    """
+    if not is_super_admin(admin):
+        raise HTTPException(status_code=403, detail="Apenas super_admin pode gerenciar override de rede.")
+
+    _scope_or_404(admin, tenant_id, db)
+    tenant = _tenant_or_404(tenant_id, db)
+
+    values = payload.model_dump(exclude_unset=True)
+    before = {"network_access_override": tenant.network_access_override}
+
+    if "override" in values:
+        tenant.network_access_override = values["override"]
+
+    tenant.updated_at = datetime.utcnow()
+    record_audit_log(
+        db,
+        action="tenant.network_access.updated",
+        entity_type="tenant",
+        entity_id=tenant.id,
+        actor=admin,
+        before=before,
+        after={"network_access_override": tenant.network_access_override},
+        tenant_id=tenant.id,
+    )
+    db.commit()
+    db.refresh(tenant)
+
+    return {
+        "tenant_id": tenant.id,
+        "network_access_override": tenant.network_access_override,
+        "network_access_addon": tenant.network_access_addon,
+        "tem_rede": tenant_tem_rede(tenant, db),
+    }

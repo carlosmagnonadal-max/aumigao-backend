@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from app.core.database import get_db
+from app.core.database import get_db, get_walker_self_db
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_permission
 from app.services.upload_validation import enforce_upload_rate_limit, read_image_upload_safely
@@ -19,6 +19,8 @@ from app.services.signed_uploads import UPLOAD_ROOT as UPLOADS_BASE
 from app.services.upload_registry import record_upload
 from app.models.payment import Payment
 from app.models.pet import Pet
+from app.models.tenant import Tenant
+from app.models.tenant_walker_access import TenantWalkerAccess
 from app.models.user import User
 from app.models.walk import Walk, WalkMatchingAttempt
 from app.models.walk_completion_review import WalkCompletionReview
@@ -614,6 +616,122 @@ def _has_schedule_conflict(candidate: Walk, accepted: list[Walk], buffer_minutes
     return False
 
 
+def _resolve_tenant_name(db: Session, tenant_id: str | None) -> str | None:
+    """Retorna o display_name (ou name) do tenant, ou None se não encontrado."""
+    if not tenant_id:
+        return None
+    try:
+        from app.models.tenant import Tenant as _Tenant
+        t = db.get(_Tenant, tenant_id)
+        if not t:
+            return None
+        branding = getattr(t, "branding", None)
+        if branding and getattr(branding, "display_name", None):
+            return branding.display_name
+        return t.name
+    except Exception:
+        return None
+
+
+# ─── Constantes de status de pagamento para bucketização ───────────────────
+# Status "pendentes" do ponto de vista do walker (aguardando confirmação):
+_PENDING_PAYMENT_STATUSES: frozenset[str] = frozenset({
+    "pagamento_sandbox_criado",
+    "aguardando_pagamento",
+    "pending",
+})
+# Status "em processamento" (análise de risco, risco de chargeback etc.):
+_PROCESSING_PAYMENT_STATUSES: frozenset[str] = frozenset({
+    "em_processamento",
+    "AWAITING_RISK_ANALYSIS",
+    "awaiting_chargeback_reversal",
+    "AWAITING_CHARGEBACK_REVERSAL",
+})
+
+
+def _balance_by_tenant(user: User, db: Session) -> dict[str | None, dict]:
+    """Saldo do walker desagregado por tenant_id.
+
+    Retorna dict cujas chaves são tenant_id (str | None). A entrada com chave
+    None (sentinel "_untenanted") representa saques/pagamentos SEM tenant_id —
+    legado anterior à Fase 1. NÃO é distribuído entre os outros tenants para
+    não corromper saldos por tenant. O caller pode exibir ou ignorar.
+
+    Estrutura de cada valor:
+      {
+        "available": float,   # soma de walker_amount dos pagamentos pagos
+        "pending":   float,   # idem, status pendente
+        "processing": float,  # idem, status processando
+        "total":     float,   # available + pending + processing
+      }
+
+    Notas de escopo:
+    - Apenas pagamentos com walker_amount IS NOT NULL são incluídos (exige que
+      o split tenha sido calculado). Pagamentos sem split (walk.price fallback)
+      não têm tenant_id útil e seriam impossíveis de atribuir de forma confiável.
+    - Tips NÃO estão incluídas aqui: WalkTip não carrega tenant_id de forma
+      explícita. Tips continuam somente no consolidado flat (campo `tips`).
+    - Saques são identificados por provider="pix" e walk_id IS NULL, usando
+      tutor_id == user.id (o campo é reaproveitado para o walker no saque).
+    - Saques com tenant_id NULL (legado) ficam na entrada None e reduzem apenas
+      o available da entrada None — NÃO subtraídos de outros tenants.
+    """
+    buckets: dict[str | None, dict] = {}
+
+    def _bucket(tid: str | None) -> dict:
+        if tid not in buckets:
+            buckets[tid] = {"available": 0.0, "pending": 0.0, "processing": 0.0, "total": 0.0}
+        return buckets[tid]
+
+    # Créditos: pagamentos de walk vinculados ao walker (via Walk.walker_id)
+    # que possuem walker_amount calculado.
+    credit_payments = (
+        db.query(Payment)
+        .join(Walk, Payment.walk_id == Walk.id)
+        .filter(
+            Walk.walker_id == user.id,
+            Payment.walker_amount.isnot(None),
+        )
+        .all()
+    )
+    for p in credit_payments:
+        b = _bucket(p.tenant_id)
+        val = float(p.walker_amount or 0)
+        if p.status in _PAID_PAYMENT_STATUSES_CONST:
+            b["available"] += val
+        elif p.status in _PENDING_PAYMENT_STATUSES:
+            b["pending"] += val
+        elif p.status in _PROCESSING_PAYMENT_STATUSES:
+            b["processing"] += val
+        # status "falha_pagamento" ou outros: ignorar (não afeta saldo)
+
+    # Débitos: saques do walker (provider="pix", walk_id IS NULL, tutor_id=walker).
+    # Reduzem o `available` do tenant correspondente (ou None se sem tenant_id).
+    debit_payments = (
+        db.query(Payment)
+        .filter(
+            Payment.tutor_id == user.id,
+            Payment.provider == "pix",
+            Payment.walk_id.is_(None),
+            Payment.amount < 0,
+        )
+        .all()
+    )
+    for p in debit_payments:
+        b = _bucket(p.tenant_id)
+        # amount já é negativo; abatemos do available (pode ir negativo em edge cases)
+        b["available"] += float(p.amount or 0)
+
+    # Arredondamento e cálculo do total
+    for b in buckets.values():
+        b["available"] = round(b["available"], 2)
+        b["pending"] = round(b["pending"], 2)
+        b["processing"] = round(b["processing"], 2)
+        b["total"] = round(b["available"] + b["pending"] + b["processing"], 2)
+
+    return buckets
+
+
 def _available_balance(user: User, db: Session) -> float:
     """Saldo disponível do walker.
 
@@ -960,7 +1078,7 @@ def get_background_status(
 
 
 @router.get("/dashboard")
-def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_walker_self_db)):
     _require_active_walker(user, db)
     # F16: carrega only active/accepted/available sem limite; completed com limite 200.
     active = db.query(Walk).filter(Walk.walker_id == user.id, Walk.status.in_(["Indo buscar o pet", "Passeando agora"])).all()
@@ -1104,7 +1222,7 @@ def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_
 
 
 @router.get("/earnings")
-def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_walker_self_db)):
     _require_active_walker(user, db)
     completed = _completed_walks(user, db)
     total = sum(float(walk.price or 0) for walk in completed)
@@ -1112,20 +1230,80 @@ def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_d
     # Gorjetas reais
     tips = _walker_tips_total(user.id, db)
 
-    # F10: lista de transações real; sem demo entries quando vazia
+    # ── Fase 1 Passo 4 §A: saldo por tenant ──────────────────────────────────
+    # Mapeia tenant_id (pode ser None para legado) → bucket {available/pending/...}
+    by_tenant_raw = _balance_by_tenant(user, db)
+
+    # Resolve tenant_names para a resposta (evita N queries na lista final)
+    _tenant_name_cache: dict[str | None, str | None] = {}
+
+    def _get_tenant_name(tid: str | None) -> str | None:
+        if tid not in _tenant_name_cache:
+            _tenant_name_cache[tid] = _resolve_tenant_name(db, tid)
+        return _tenant_name_cache[tid]
+
+    # ── Fase 1 Passo 4 §B: by_tenant list (sem entrada None/untenanted) ──────
+    # A entrada None é legado sem tenant_id; não a expõe na lista by_tenant para
+    # não confundir o cliente multi-tenant. O consolidated inclui tudo.
+    by_tenant_list = []
+    for tid, b in by_tenant_raw.items():
+        if tid is None:
+            # Entrada untenanted (saques/pagamentos sem tenant_id).
+            # NÃO incluída na lista by_tenant; sua eventual contribuição ao
+            # consolidated mantém a soma correta do available legado.
+            continue
+        by_tenant_list.append({
+            "tenant_id": tid,
+            "tenant_name": _get_tenant_name(tid),
+            "available": b["available"],
+            "pending": b["pending"],
+            "processing": b["processing"],
+            "total": b["total"],
+        })
+
+    # consolidated: soma de TODOS os buckets incluindo o untenanted (None), para
+    # representar a visão financeira completa baseada em Payment.walker_amount.
+    # Nota: pode diferir de available_balance (campo legado) quando há passeios
+    # sem split calculado (walker_amount NULL) — nesses casos available_balance
+    # usa o fallback de walk.price e consolidated ignora tais pagamentos.
+    # Os dois campos coexistem; o app instalado usa available_balance (inalterado).
+    _cons_available = round(sum(b["available"] for b in by_tenant_raw.values()), 2)
+    _cons_pending = round(sum(b["pending"] for b in by_tenant_raw.values()), 2)
+    _cons_processing = round(sum(b["processing"] for b in by_tenant_raw.values()), 2)
+    consolidated = {
+        "available": _cons_available,
+        "pending": _cons_pending,
+        "processing": _cons_processing,
+        "total": round(_cons_available + _cons_pending + _cons_processing, 2),
+    }
+
+    # F10: lista de transações real; sem demo entries quando vazia.
+    # Fase 1 Passo 4 §B: adiciona tenant_id e tenant_name a cada item sem
+    # remover nenhum campo existente (superset — zero-regressão).
     transactions = []
     for walk in completed:
-        payload = _walk_payload(walk, db)
+        wpl = _walk_payload(walk, db)
+        # Tenta encontrar o Payment mais recente pago para obter tenant_id
+        _pay = (
+            db.query(Payment)
+            .filter(Payment.walk_id == walk.id, Payment.status.in_(_PAID_PAYMENT_STATUSES_CONST))
+            .order_by(Payment.created_at.desc())
+            .first()
+        )
+        _walk_tenant_id = _pay.tenant_id if _pay else getattr(walk, "tenant_id", None)
         transactions.append({
             "id": f"walk-{walk.id}",
             "type": "walk",
             "description": "Passeio concluido",
-            "pet_name": payload["pet_name"],
-            "duration": payload["duration"],
-            "date": payload["date"],
-            "time": payload["time"],
+            "pet_name": wpl["pet_name"],
+            "duration": wpl["duration"],
+            "date": wpl["date"],
+            "time": wpl["time"],
             "amount": float(walk.price or 0),
             "status": "paid",
+            # Campos novos (Fase 1 Passo 4 §B) — não existiam antes:
+            "tenant_id": _walk_tenant_id,
+            "tenant_name": _get_tenant_name(_walk_tenant_id),
         })
     # Gorjetas pagas como transações reais
     tips_rows = (
@@ -1145,6 +1323,9 @@ def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_d
             "time": tip.created_at.strftime("%H:%M") if tip.created_at else "",
             "amount": float(tip.amount or 0),
             "status": "paid",
+            # Tips: sem tenant_id explícito; campo presente mas null.
+            "tenant_id": None,
+            "tenant_name": None,
         })
     # F10: NÃO injeta demo-walk-1/demo-tip-1/demo-withdraw-1 — lista vazia é honesta
     # Ordena por data desc (walks já vêm desc pelo _completed_walks)
@@ -1158,6 +1339,7 @@ def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_d
     level_str = _compute_trust(db, user.id)["level"]
 
     return {
+        # ── Chaves EXISTENTES (contrato inalterado — zero-regressão) ────────
         "available_balance": _available_balance(user, db),
         "weekly_total": total,
         "completed_walks": len(completed),
@@ -1171,6 +1353,9 @@ def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_d
         "level": level_str,
         "score": op_score.get("score") if op_score else None,
         "transactions": transactions,
+        # ── Chaves NOVAS (Fase 1 Passo 4 §B) — não quebram cliente antigo ───
+        "by_tenant": by_tenant_list,
+        "consolidated": consolidated,
     }
 
 
@@ -1582,7 +1767,7 @@ def api_public_walkers(request: Request = None, db: Session = Depends(get_db)):
 
 
 @router.get("/availability")
-def availability(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def availability(user: User = Depends(get_current_user), db: Session = Depends(get_walker_self_db)):
     profile = _require_active_walker(user, db)
     # F04: próximos 7 dias REAIS a partir de hoje (default "available")
     now = datetime.utcnow()
@@ -1747,7 +1932,7 @@ def tutor_walk_reconfirmation(
     return serialize_operational_walk(walk, db, user=user)
 
 @router.get("/requests")
-def requests(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def requests(user: User = Depends(get_current_user), db: Session = Depends(get_walker_self_db)):
     _require_active_walker(user, db)
     process_expired_attempts(db)
     pending_attempt_rows = (
@@ -1782,13 +1967,45 @@ def requests(user: User = Depends(get_current_user), db: Session = Depends(get_d
             "notes": "",
             "expires_in": _format_expires_in(walk.confirmation_expires_at),
             "response_deadline_at": walk.confirmation_expires_at,
+            # Fase 1 Passo 3: tenant info
+            "tenant_id": operational["tenant_id"],
+            "tenant_name": operational["tenant_name"],
+            "tenant_brand_color": operational["tenant_brand_color"],
         })
         payloads.append(payload)
     return payloads
 
 
+@router.get("/tenants")
+def walker_tenants(user: User = Depends(get_current_user), db: Session = Depends(get_walker_self_db)):
+    """Tenants em que o passeador está ATIVO (status=active) — com branding. Fase 1 Passo 3."""
+    _require_active_walker(user, db)
+    accesses = (
+        db.query(TenantWalkerAccess)
+        .filter(TenantWalkerAccess.walker_user_id == user.id, TenantWalkerAccess.status == "active")
+        .order_by(TenantWalkerAccess.created_at.desc())
+        .all()
+    )
+    result = []
+    for a in accesses:
+        tenant = db.get(Tenant, a.tenant_id)
+        if not tenant:
+            continue
+        b = tenant.branding
+        result.append({
+            "tenant_id": a.tenant_id,
+            "slug": tenant.slug,
+            "display_name": (b.display_name if b and b.display_name else tenant.name),
+            "brand_color": (b.primary_color if b else None),
+            "logo_url": (b.logo_url if b else None),
+            "access_status": a.status,
+            "access_type": a.access_type,
+        })
+    return result
+
+
 @router.get("/walks")
-def walker_walks(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def walker_walks(user: User = Depends(get_current_user), db: Session = Depends(get_walker_self_db)):
     _require_active_walker(user, db)
     process_expired_attempts(db)
 
@@ -2517,10 +2734,14 @@ def walker_active_walk(
     return serialize_operational_walk(walk, db, user=user)
 
 
-# api-T2: schema permissivo do pedido de saque (campo unico `amount`; Pydantic v2 coage
-# string numerica -> float e devolve 422 honesto p/ valor invalido em vez de 500).
+# api-T2 / Fase 1 Passo 4 §C: schema permissivo do pedido de saque.
+# `amount` coage string numérica → float (Pydantic v2) e devolve 422 honesto.
+# `tenant_id` é opcional: quando presente, o saque é vinculado ao tenant e
+# valida contra o saldo daquele tenant especificamente (nova funcionalidade).
+# Quando ausente, mantém comportamento LEGADO idêntico (zero-regressão).
 class WithdrawalRequest(BaseModel):
     amount: float | None = None
+    tenant_id: str | None = None
 
 
 @router.post("/withdrawals")
@@ -2528,10 +2749,32 @@ def request_withdrawal(payload: WithdrawalRequest, user: User = Depends(get_curr
     amount = float(payload.amount or 0)
     if amount < 20:
         raise HTTPException(status_code=400, detail="Valor minimo para saque e R$ 20,00")
-    balance = _available_balance(user, db)
-    if amount > balance:
-        raise HTTPException(status_code=400, detail="Saldo insuficiente")
-    payment = Payment(id=str(uuid4()), tutor_id=user.id, walk_id=None, amount=-amount, status="pending", provider="pix")
+
+    if payload.tenant_id is not None:
+        # ── Fase 1 Passo 4 §C: saque vinculado a tenant ─────────────────────
+        # Valida contra o saldo disponível DESTE tenant especificamente.
+        by_tenant = _balance_by_tenant(user, db)
+        tenant_bucket = by_tenant.get(payload.tenant_id, {"available": 0.0})
+        if amount > tenant_bucket["available"]:
+            raise HTTPException(status_code=400, detail="Saldo insuficiente para este tenant")
+        payment = Payment(
+            id=str(uuid4()),
+            tutor_id=user.id,
+            walk_id=None,
+            amount=-amount,
+            status="pending",
+            provider="pix",
+            tenant_id=payload.tenant_id,
+        )
+    else:
+        # ── Ramo LEGADO — comportamento idêntico ao original ─────────────────
+        # Valida contra o saldo global e cria Payment sem tenant_id (NULL),
+        # exatamente como antes da Fase 1.
+        balance = _available_balance(user, db)
+        if amount > balance:
+            raise HTTPException(status_code=400, detail="Saldo insuficiente")
+        payment = Payment(id=str(uuid4()), tutor_id=user.id, walk_id=None, amount=-amount, status="pending", provider="pix")
+
     db.add(payment)
     db.commit()
     return {"ok": True, "withdrawal_id": payment.id, "amount": amount, "status": "pending"}

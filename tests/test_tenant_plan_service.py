@@ -388,8 +388,12 @@ def test_enforce_can_add_unit_passes_when_room():
 
 
 def test_enforce_network_access_passes_for_business():
+    # Fase 1 Passo 1 (decisão 5 PRD): business agora exige network_access_addon=True.
+    # Tenant business sem addon → 403; COM addon → passa.
     db = _db()
     tenant = _tenant(db, plan="business")
+    tenant.network_access_addon = True
+    db.commit()
     assert svc.enforce_network_access_allowed(tenant, db) is None
 
 

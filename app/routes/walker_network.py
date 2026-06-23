@@ -376,6 +376,7 @@ class ApproveRequirementsPayload(BaseModel):
 
 
 @router.put("/tenants/{tenant_id}/requirements")
+@api_router.put("/tenants/{tenant_id}/requirements")
 def set_tenant_requirements(
     tenant_id: str,
     payload: TenantRequirementsPayload,
@@ -393,6 +394,7 @@ def set_tenant_requirements(
 
 
 @router.get("/tenants/{tenant_id}/requirements")
+@api_router.get("/tenants/{tenant_id}/requirements")
 def get_tenant_requirements(
     tenant_id: str,
     admin: User = Depends(require_permission("walkers.read")),
@@ -404,6 +406,7 @@ def get_tenant_requirements(
 
 
 @router.patch("/{walker_user_id}/tenant/{tenant_id}/requirements")
+@api_router.patch("/{walker_user_id}/tenant/{tenant_id}/requirements")
 def approve_walker_requirements(
     walker_user_id: str,
     tenant_id: str,

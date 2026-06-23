@@ -112,3 +112,83 @@ def test_aceitar_convite_de_tenant_sem_requisitos_fica_ativo():
     refreshed = db.get(TenantWalkerAccess, "inv2")
     assert refreshed.status == "active"
     assert refreshed.requirements_met is True  # sem requisitos → ativo direto
+
+
+# ── Task 4: endpoints (config / submit / approve) ───────────────────────────
+
+from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+from app.core.database import get_db, get_walker_self_db  # noqa: E402
+from app.dependencies.auth import get_current_user  # noqa: E402
+from app.routes import walker_network as wn  # noqa: E402
+from app.routes.walker_network import (  # noqa: E402
+    ApproveRequirementsPayload,
+    TenantRequirementsPayload,
+    approve_walker_requirements,
+    set_tenant_requirements,
+)
+
+
+def _admin_super():
+    return User(id="adm1", email="adm@t.invalid", password_hash="x", role="super_admin",
+                is_active=True, token_version=0, must_change_password=False)
+
+
+def _walker_client(db, walker_id="w1"):
+    app = FastAPI()
+    app.include_router(wn.walker_router)
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_walker_self_db] = lambda: db
+    app.dependency_overrides[get_current_user] = lambda: db.get(User, walker_id)
+    return TestClient(app)
+
+
+def test_fluxo_completo_define_ve_submete_aprova():
+    db = _db()
+    _seed_tenant(db, "tA")
+    _seed_walker(db, "w1")
+    _link(db, "w1", "tA", requirements_met=True)
+    admin = _admin_super()
+    db.add(admin)
+    db.commit()
+
+    # 1) admin (super) define a lista de requisitos
+    out = set_tenant_requirements("tA", TenantRequirementsPayload(requirements=["Curso de primeiros socorros"]), admin, db)
+    assert out["requirements"] == ["Curso de primeiros socorros"]
+
+    # 2) admin marca o par como pendente (re-verificação)
+    approve_walker_requirements("w1", "tA", ApproveRequirementsPayload(requirements_met=False), admin, db)
+
+    client = _walker_client(db)
+    # 3) walker vê pendência
+    g = client.get("/walker/network/tenants/tA/requirements")
+    assert g.status_code == 200, g.text
+    assert g.json()["requirements"] == ["Curso de primeiros socorros"]
+    assert g.json()["status"] == "pending"
+
+    # 4) walker submete → fila do admin
+    s = client.post("/walker/network/tenants/tA/requirements/submit")
+    assert s.status_code == 200 and s.json()["status"] == "submitted"
+    assert client.get("/walker/network/tenants/tA/requirements").json()["status"] == "submitted"
+
+    # 5) admin aprova → liberado
+    approve_walker_requirements("w1", "tA", ApproveRequirementsPayload(requirements_met=True), admin, db)
+    assert client.get("/walker/network/tenants/tA/requirements").json()["status"] == "met"
+
+
+def test_admin_de_tenant_nao_edita_outro_tenant():
+    db = _db()
+    _seed_tenant(db, "tA")
+    _seed_tenant(db, "tB")
+    admin = User(id="adm2", email="a2@t.invalid", password_hash="x", role="admin",
+                 is_active=True, token_version=0, must_change_password=False)
+    admin.tenant_id = "tA"  # admin do tenant tA
+    db.add(admin)
+    db.commit()
+    # tenta editar requisitos do tB → 404 (ensure_tenant_access bloqueia)
+    try:
+        set_tenant_requirements("tB", TenantRequirementsPayload(requirements=["x"]), admin, db)
+        assert False, "deveria ter bloqueado o tenant errado"
+    except HTTPException as e:
+        assert e.status_code == 404

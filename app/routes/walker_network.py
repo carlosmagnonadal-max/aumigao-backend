@@ -365,6 +365,116 @@ def decline_invite(invite_id: str, user: User = Depends(get_current_user), db: S
     return _respond_to_invite(invite_id, "declined", user, db)
 
 
+# ── F3.2: requisitos extras por tenant (config / submit / approve) ───────────
+
+class TenantRequirementsPayload(BaseModel):
+    requirements: list[str] = []
+
+
+class ApproveRequirementsPayload(BaseModel):
+    requirements_met: bool
+
+
+@router.put("/tenants/{tenant_id}/requirements")
+def set_tenant_requirements(
+    tenant_id: str,
+    payload: TenantRequirementsPayload,
+    admin: User = Depends(require_permission("walkers.manage")),
+    db: Session = Depends(get_db),
+):
+    """Tenant-admin (próprio tenant) ou super_admin define a lista de requisitos extras."""
+    ensure_tenant_access(tenant_id, get_admin_tenant_scope(admin, db))
+    tenant = db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant nao encontrado.")
+    tenant.walker_extra_requirements = list(payload.requirements)
+    db.commit()
+    return {"tenant_id": tenant_id, "requirements": tenant.walker_extra_requirements or []}
+
+
+@router.get("/tenants/{tenant_id}/requirements")
+def get_tenant_requirements(
+    tenant_id: str,
+    admin: User = Depends(require_permission("walkers.read")),
+    db: Session = Depends(get_db),
+):
+    ensure_tenant_access(tenant_id, get_admin_tenant_scope(admin, db))
+    tenant = db.get(Tenant, tenant_id)
+    return {"tenant_id": tenant_id, "requirements": (tenant.walker_extra_requirements or []) if tenant else []}
+
+
+@router.patch("/{walker_user_id}/tenant/{tenant_id}/requirements")
+def approve_walker_requirements(
+    walker_user_id: str,
+    tenant_id: str,
+    payload: ApproveRequirementsPayload,
+    admin: User = Depends(require_permission("walkers.manage")),
+    db: Session = Depends(get_db),
+):
+    """Aprova (true) ou reverte (false) o cumprimento dos requisitos do par tenant×passeador."""
+    ensure_tenant_access(tenant_id, get_admin_tenant_scope(admin, db))
+    access = (
+        db.query(TenantWalkerAccess)
+        .filter(TenantWalkerAccess.tenant_id == tenant_id,
+                TenantWalkerAccess.walker_user_id == walker_user_id)
+        .first()
+    )
+    if not access:
+        raise HTTPException(status_code=404, detail="Vinculo nao encontrado.")
+    access.requirements_met = payload.requirements_met
+    access.updated_at = datetime.utcnow()
+    db.commit()
+    return {"walker_user_id": walker_user_id, "tenant_id": tenant_id, "requirements_met": access.requirements_met}
+
+
+@walker_router.get("/tenants/{tenant_id}/requirements")
+def get_my_tenant_requirements(
+    tenant_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_walker_self_db),
+):
+    """O passeador vê os requisitos extras do tenant + seu status (met/pending/submitted)."""
+    _require_walker(user)
+    tenant = db.get(Tenant, tenant_id)
+    access = (
+        db.query(TenantWalkerAccess)
+        .filter(TenantWalkerAccess.tenant_id == tenant_id,
+                TenantWalkerAccess.walker_user_id == user.id)
+        .first()
+    )
+    if access is None:
+        raise HTTPException(status_code=404, detail="Vinculo nao encontrado.")
+    if access.requirements_met:
+        status = "met"
+    elif access.requirements_submitted_at is not None:
+        status = "submitted"
+    else:
+        status = "pending"
+    return {"tenant_id": tenant_id, "requirements": (tenant.walker_extra_requirements or []) if tenant else [], "status": status}
+
+
+@walker_router.post("/tenants/{tenant_id}/requirements/submit")
+def submit_my_tenant_requirements(
+    tenant_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """O passeador sinaliza 'já cumpri' → entra na fila de revisão do admin."""
+    _require_walker(user)
+    access = (
+        db.query(TenantWalkerAccess)
+        .filter(TenantWalkerAccess.tenant_id == tenant_id,
+                TenantWalkerAccess.walker_user_id == user.id)
+        .first()
+    )
+    if access is None:
+        raise HTTPException(status_code=404, detail="Vinculo nao encontrado.")
+    if not access.requirements_met:
+        access.requirements_submitted_at = datetime.utcnow()
+        db.commit()
+    return {"tenant_id": tenant_id, "status": "met" if access.requirements_met else "submitted"}
+
+
 @walker_router.get("/me", response_model=WalkerNetworkMeResponse)
 def network_me(user: User = Depends(get_current_user), db: Session = Depends(get_walker_self_db)):
     """Plano/capabilities do tenant do passeador (net-T4).

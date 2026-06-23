@@ -80,15 +80,22 @@ def has_schedule_conflict(walker_id: str, request: MatchingWalkerRequest, db: Se
         return False
 
     # NOVO: exceção 'block' cobrindo o horário = indisponível (conta como conflito).
-    blocks = (
-        db.query(WalkerAvailabilityException)
-        .filter(
-            WalkerAvailabilityException.walker_user_id == walker_id,
-            WalkerAvailabilityException.exception_date == scheduled_at.date(),
-            WalkerAvailabilityException.kind == "block",
-        )
-        .all()
+    # Filtro de tenant: block global (NULL) conflita sempre; block de tenant só conflita
+    # quando o request é do mesmo tenant.
+    block_q = db.query(WalkerAvailabilityException).filter(
+        WalkerAvailabilityException.walker_user_id == walker_id,
+        WalkerAvailabilityException.exception_date == scheduled_at.date(),
+        WalkerAvailabilityException.kind == "block",
     )
+    req_tenant = getattr(request, "tenant_id", None)
+    if req_tenant is not None:
+        block_q = block_q.filter(
+            (WalkerAvailabilityException.tenant_id.is_(None))
+            | (WalkerAvailabilityException.tenant_id == req_tenant)
+        )
+    else:
+        block_q = block_q.filter(WalkerAvailabilityException.tenant_id.is_(None))
+    blocks = block_q.all()
     if any(_covers(b, scheduled_at.strftime("%H:%M")) for b in blocks):
         return True
 

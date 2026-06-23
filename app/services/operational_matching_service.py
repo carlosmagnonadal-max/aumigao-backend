@@ -491,6 +491,7 @@ def _candidate_request(walk: Walk) -> MatchingWalkerRequest:
         pickup_method=walk.pickup_method,
         modality=getattr(walk, "modality", "standard") or "standard",
         neighborhood=_walk_neighborhood(walk),
+        tenant_id=getattr(walk, "tenant_id", None),
     )
 
 

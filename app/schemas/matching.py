@@ -16,6 +16,7 @@ class MatchingWalkerRequest(BaseModel):
     city: str | None = None
     latitude: float | None = None
     longitude: float | None = None
+    tenant_id: str | None = None
 
 
 class MatchingContext(BaseModel):

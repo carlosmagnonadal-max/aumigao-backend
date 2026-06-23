@@ -30,7 +30,9 @@ from app.models.walk_review import WalkReview
 from app.models.walk_tip import WalkTip
 from app.models.walker_profile import WalkerProfile
 from app.schemas.matching import MatchingWalkerRequest
-from app.services.matching_service import get_eligible_walkers, matched_walker_payload
+from app.services.matching_service import get_eligible_walkers, matched_walker_payload, parse_datetime
+from app.models.walker_availability_exception import WalkerAvailabilityException
+from app.services.walker_availability_service import _covers
 from app.services.operational_observability_service import record_operational_exception, record_operational_log
 from app.services.operational_reliability_service import serialize_operational_event
 from app.services.walker_operational_score_service import calculate_walker_operational_score
@@ -887,6 +889,20 @@ def accept_walk(walk: Walk, walker: User, db: Session) -> Walk:
     tenant_id = getattr(walk, "tenant_id", None)
     if tenant_id and not is_walker_eligible_for_tenant(db, tenant_id, walker.id):
         raise HTTPException(status_code=403, detail="Passeador nao elegivel para este tenant.")
+
+    _walk_dt = parse_datetime(walk.scheduled_date)
+    if _walk_dt is not None:
+        _blocks = (
+            db.query(WalkerAvailabilityException)
+            .filter(
+                WalkerAvailabilityException.walker_user_id == walker.id,
+                WalkerAvailabilityException.exception_date == _walk_dt.date(),
+                WalkerAvailabilityException.kind == "block",
+            )
+            .all()
+        )
+        if any(_covers(b, _walk_dt.strftime("%H:%M")) for b in _blocks):
+            raise HTTPException(status_code=409, detail="Passeador bloqueou disponibilidade nesta data/horario.")
 
     updated = (
         db.query(Walk)

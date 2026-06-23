@@ -893,15 +893,24 @@ def accept_walk(walk: Walk, walker: User, db: Session) -> Walk:
 
     _walk_dt = parse_datetime(walk.scheduled_date)
     if _walk_dt is not None:
-        _blocks = (
+        _bq = (
             db.query(WalkerAvailabilityException)
             .filter(
                 WalkerAvailabilityException.walker_user_id == walker.id,
                 WalkerAvailabilityException.exception_date == _walk_dt.date(),
                 WalkerAvailabilityException.kind == "block",
             )
-            .all()
         )
+        # Filtro de tenant: block global (NULL) sempre bloqueia;
+        # block de tenant só bloqueia passeios do mesmo tenant.
+        if tenant_id is not None:
+            _bq = _bq.filter(
+                (WalkerAvailabilityException.tenant_id.is_(None))
+                | (WalkerAvailabilityException.tenant_id == tenant_id)
+            )
+        else:
+            _bq = _bq.filter(WalkerAvailabilityException.tenant_id.is_(None))
+        _blocks = _bq.all()
         if any(_covers(b, _walk_dt.strftime("%H:%M")) for b in _blocks):
             raise HTTPException(status_code=409, detail="Passeador bloqueou disponibilidade nesta data/horario.")
 

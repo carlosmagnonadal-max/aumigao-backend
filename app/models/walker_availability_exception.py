@@ -7,7 +7,9 @@ from app.core.database import Base
 
 class WalkerAvailabilityException(Base):
     """Exceção pontual à disponibilidade recorrente do passeador, por DATA.
-    Global (decisão 4): sem tenant_id. kind=block (precede recorrente) | open (extra).
+    tenant_id=NULL → global (vale p/ todos os tenants).
+    tenant_id=X   → escopo daquele tenant específico.
+    kind=block (precede recorrente) | open (extra).
     Faixa start_time/end_time (HH:MM); NULL+NULL = dia inteiro."""
 
     __tablename__ = "walker_availability_exceptions"
@@ -18,5 +20,6 @@ class WalkerAvailabilityException(Base):
     kind: Mapped[str] = mapped_column(String(8), nullable=False)
     start_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
     end_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    tenant_id: Mapped[str | None] = mapped_column(String, ForeignKey("tenants.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, server_default=sa.func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, server_default=sa.func.now(), onupdate=datetime.utcnow)

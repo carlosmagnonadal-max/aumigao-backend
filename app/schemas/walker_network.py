@@ -48,6 +48,9 @@ class TenantWalkerAccessResponse(ORMModel):
     walker_user_id: str
     access_type: str
     status: str
+    # F3.2: gate de requisitos extras por tenant (fila de aprovação no admin-web).
+    requirements_met: bool = True
+    requirements_submitted_at: datetime | None = None
     invited_at: datetime | None = None
     responded_at: datetime | None = None
     created_at: datetime

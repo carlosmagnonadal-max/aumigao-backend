@@ -2,11 +2,11 @@ import os
 import logging
 import json
 from typing import Any
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -35,6 +35,7 @@ from app.services.background_check_service import (
 )
 from app.services.background.registry import get_background_provider
 from app.models.walker_availability import WalkerAvailability
+from app.models.walker_availability_exception import WalkerAvailabilityException
 from app.schemas.walker_availability import WalkerAvailabilityUpdate
 from app.schemas.walker_presence import WalkerOnlineUpdate
 from app.schemas.walker_profile import WalkerProfileCreate, WalkerProfileResponse, WalkerProfileUpdate
@@ -1850,6 +1851,81 @@ def update_availability(payload: WalkerAvailabilityUpdate, user: User = Depends(
         db.add(WalkerAvailability(walker_user_id=user.id, schedule_json=schedule_json))
     db.commit()
     return {"ok": True, "user_id": user.id, "schedule": schedule_dict}
+
+
+# WK-03: CRUD de exceções pontuais de disponibilidade (block/open por data).
+class AvailabilityExceptionCreate(BaseModel):
+    exception_date: date
+    kind: str
+    start_time: str | None = None
+    end_time: str | None = None
+
+
+def _exception_dict(exc: WalkerAvailabilityException) -> dict:
+    return {
+        "id": exc.id,
+        "exception_date": exc.exception_date.isoformat(),
+        "kind": exc.kind,
+        "start_time": exc.start_time,
+        "end_time": exc.end_time,
+    }
+
+
+@router.get("/availability/exceptions")
+def list_availability_exceptions(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_walker_self_db),
+    from_: date | None = Query(default=None, alias="from"),
+    to: date | None = Query(default=None),
+):
+    _require_active_walker(user, db)
+    q = db.query(WalkerAvailabilityException).filter(
+        WalkerAvailabilityException.walker_user_id == user.id
+    )
+    if from_ is not None:
+        q = q.filter(WalkerAvailabilityException.exception_date >= from_)
+    if to is not None:
+        q = q.filter(WalkerAvailabilityException.exception_date <= to)
+    return [_exception_dict(exc) for exc in q.all()]
+
+
+@router.post("/availability/exceptions")
+def create_availability_exception(
+    payload: AvailabilityExceptionCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_active_walker(user, db)
+    if payload.kind not in {"block", "open"}:
+        raise HTTPException(status_code=400, detail="kind deve ser 'block' ou 'open'.")
+    exc = WalkerAvailabilityException(
+        id=str(uuid4()),
+        walker_user_id=user.id,
+        exception_date=payload.exception_date,
+        kind=payload.kind,
+        start_time=payload.start_time,
+        end_time=payload.end_time,
+    )
+    db.add(exc)
+    db.commit()
+    db.refresh(exc)
+    return _exception_dict(exc)
+
+
+@router.delete("/availability/exceptions/{exception_id}")
+def delete_availability_exception(
+    exception_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_active_walker(user, db)
+    exc = db.get(WalkerAvailabilityException, exception_id)
+    if not exc or exc.walker_user_id != user.id:
+        raise HTTPException(status_code=404, detail="Exceção não encontrada.")
+    db.delete(exc)
+    db.commit()
+    return {"ok": True}
+
 
 # api-T2: schema permissivo da reconfirmacao do tutor (campo unico `decision`).
 class WalkReconfirmationRequest(BaseModel):

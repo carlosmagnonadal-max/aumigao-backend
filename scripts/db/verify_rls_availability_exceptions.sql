@@ -59,6 +59,11 @@ INSERT INTO walker_availability_exceptions (id, walker_user_id, exception_date, 
     ('rlsverify_exW2', 'rlsverify_walkerW', '2099-07-02', 'block',    now(), now()),
     ('rlsverify_exO',  'rlsverify_walkerO', '2099-07-01', 'block',    now(), now());
 
+-- T4 (tenant-scoped): exceção de W com tenant_id preenchido — isolamento walker-self idêntico às globais.
+-- Inserção separada para usar a coluna tenant_id (dono faz bypass do RLS; ok para seed).
+INSERT INTO walker_availability_exceptions (id, walker_user_id, exception_date, kind, tenant_id, created_at, updated_at) VALUES
+    ('rlsverify_exWT', 'rlsverify_walkerW', '2099-07-03', 'block', 'rlsverify_tenantX', now(), now());
+
 -- ---------------------------------------------------------------------------
 -- ASSERÇÕES — sob aumigao_app (RLS ATIVO). Temp table criada após o SET ROLE.
 -- ---------------------------------------------------------------------------
@@ -73,6 +78,7 @@ DECLARE v int;
   W1 text := 'rlsverify_exW1';
   W2 text := 'rlsverify_exW2';
   EO text := 'rlsverify_exO';
+  WT text := 'rlsverify_exWT';  -- exceção com tenant_id (F3.1)
 BEGIN
   -- -------------------------------------------------------------------------
   -- T1 — RLS permissivo sob '*': escopo global vê TODAS as exceções.
@@ -129,6 +135,24 @@ BEGIN
   SELECT count(*) INTO v FROM walker_availability_exceptions
     WHERE id IN (W1, W2, EO) AND walker_user_id = O;
   INSERT INTO rlsverify_out VALUES (7, 'T3 /walker/availability/exceptions de O retorna so EO', 1, v,
+    CASE WHEN v = 1 THEN 'PASS' ELSE 'FAIL' END);
+
+  -- -------------------------------------------------------------------------
+  -- T4 (F3.1) — tenant_id não quebra walker-self: exceção tenant-scoped de W
+  --   não é visível para O, mesmo sob tenant-scoped (segundo termo da USING).
+  -- -------------------------------------------------------------------------
+  PERFORM set_config('app.current_tenant', 'rlsverify_tenantX', true);
+  PERFORM set_config('app.current_user_id', O, true);
+
+  SELECT count(*) INTO v FROM walker_availability_exceptions WHERE id = WT;
+  INSERT INTO rlsverify_out VALUES (8, 'tenant-scoped exception isolada por walker: O nao ve excecao tenant-scoped de W', 0, v,
+    CASE WHEN v = 0 THEN 'PASS' ELSE 'FAIL' END);
+
+  -- W deve ver sua própria exceção tenant-scoped sob o mesmo tenant.
+  PERFORM set_config('app.current_user_id', W, true);
+
+  SELECT count(*) INTO v FROM walker_availability_exceptions WHERE id = WT;
+  INSERT INTO rlsverify_out VALUES (9, 'tenant-scoped exception isolada por walker: W ve sua propria excecao tenant-scoped', 1, v,
     CASE WHEN v = 1 THEN 'PASS' ELSE 'FAIL' END);
 
 END $$;

@@ -35,6 +35,10 @@ class Tenant(Base):
     network_access_addon: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=sa.text("false")
     )
+    # ── F3.2 (migration 0052) ─────────────────────────────────────────────────
+    # Requisitos extras que ESTE tenant exige do passeador (além do background baseline).
+    # NULL/[] = sem gate (comportamento legado). Ex.: ["Curso de primeiros socorros", "Entrevista"].
+    walker_extra_requirements: Mapped[list | None] = mapped_column(sa.JSON, nullable=True)
 
     branding: Mapped["TenantBranding | None"] = relationship(back_populates="tenant", uselist=False, cascade="all, delete-orphan")
     settings: Mapped["TenantSettings | None"] = relationship(back_populates="tenant", uselist=False, cascade="all, delete-orphan")

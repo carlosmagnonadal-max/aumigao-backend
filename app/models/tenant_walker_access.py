@@ -41,6 +41,8 @@ class TenantWalkerAccess(Base):
     requirements_met: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=sa.text("true")
     )
+    # F3.2: quando o passeador sinaliza "já cumpri" (alimenta a fila de revisão do admin). NULL = não submetido.
+    requirements_submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Quem iniciou a relação: "tenant" (tenant convidou) ou "network" (rede indicou).
     initiated_by: Mapped[str] = mapped_column(
         String(16), nullable=False, default="tenant", server_default="tenant"

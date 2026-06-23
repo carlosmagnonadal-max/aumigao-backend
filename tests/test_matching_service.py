@@ -16,6 +16,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
 from app.models.walk import Walk
+from app.models.walker_availability_exception import WalkerAvailabilityException
 from app.models.walker_profile import WalkerProfile
 from app.models.walker_review import WalkerReview
 from app.schemas.matching import MatchingWalkerRequest
@@ -33,6 +34,7 @@ def _db():
             WalkerProfile.__table__,
             Walk.__table__,
             WalkerReview.__table__,
+            WalkerAvailabilityException.__table__,
         ],
     )
     return sessionmaker(bind=engine)()

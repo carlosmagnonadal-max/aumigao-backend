@@ -10,12 +10,14 @@ logger = logging.getLogger(__name__)
 
 from app.models.pet import Pet
 from app.models.walk import Walk
+from app.models.walker_availability_exception import WalkerAvailabilityException
 from app.models.walker_profile import WalkerProfile
 from app.schemas.matching import MatchingWalkerRequest
 from app.services.badge_service import generate_badges, generate_display_reason
 from app.services.behavior_score_service import get_behavior_score
 from app.services.boost_service import boost_score_for_walker
 from app.services.reputation_service import DEFAULT_WALKER_PHOTO, calculate_hybrid_reputation_score, get_walker_identity, reputation_summary
+from app.services.walker_availability_service import _covers
 from app.services.walker_trust_service import compute_walker_trust
 
 NEARBY_NEIGHBORHOODS = {
@@ -76,6 +78,20 @@ def has_schedule_conflict(walker_id: str, request: MatchingWalkerRequest, db: Se
     scheduled_at = parse_datetime(request.scheduled_at)
     if not scheduled_at:
         return False
+
+    # NOVO: exceção 'block' cobrindo o horário = indisponível (conta como conflito).
+    blocks = (
+        db.query(WalkerAvailabilityException)
+        .filter(
+            WalkerAvailabilityException.walker_user_id == walker_id,
+            WalkerAvailabilityException.exception_date == scheduled_at.date(),
+            WalkerAvailabilityException.kind == "block",
+        )
+        .all()
+    )
+    if any(_covers(b, scheduled_at.strftime("%H:%M")) for b in blocks):
+        return True
+
     active = (
         db.query(Walk)
         .filter(Walk.walker_id == walker_id, Walk.status.in_(["Agendado", "Indo buscar o pet", "Passeando agora"]))

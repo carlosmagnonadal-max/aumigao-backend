@@ -1,28 +1,23 @@
-# NUNCA mandar segredos nem lixo para a imagem.
-.env
-.env.*
-*.db
-ci.db
-ci_check.db
+# Whitelist: exclui TUDO na raiz e re-inclui só o que a imagem precisa.
+# Garante que nenhum lixo local (DBs, logs, uploads/, caches, .env, arquivos de
+# nome malformado de terminal) acabe na imagem via `COPY . .` — isso vinha
+# causando "Container import failed" no Cloud Run.
+*
 
-.git
-.gitignore
-.github
+# Re-inclui o necessário para o runtime (uvicorn app.main:app) e migrações.
+!app/
+!alembic/
+!alembic.ini
+!scripts/
+!requirements.txt
+!server.py
+!Procfile
+!.python-version
 
-.venv
-venv
-__pycache__
-*.pyc
-*.pyo
-.pytest_cache
-.mypy_cache
-.ruff_cache
-
-tests
-tests_legacy
-
-# Docs/artefatos locais que não fazem parte do runtime.
-*.md
-*.log
-.vscode
-.idea
+# Mesmo re-incluindo dirs acima, exclui caches/artefatos que possam estar dentro.
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache

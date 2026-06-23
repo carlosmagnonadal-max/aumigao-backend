@@ -24,3 +24,10 @@ tests_legacy
 *.log
 .vscode
 .idea
+
+# Storage de runtime e artefatos locais — não subir pro Cloud Build.
+# uploads/ acumula milhares de arquivos de teste (~84MB) e estoura o import.
+uploads/
+.pytest-upload-tests/
+.gstack/
+.claude/

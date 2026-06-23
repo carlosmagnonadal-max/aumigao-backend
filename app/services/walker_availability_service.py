@@ -54,16 +54,20 @@ def _covers(exc: WalkerAvailabilityException, hhmm: str) -> bool:
 
 
 def _exceptions_on(
-    db: Session, walker_id: str, dt: datetime
+    db: Session, walker_id: str, dt: datetime, tenant_id: str | None = None
 ) -> list[WalkerAvailabilityException]:
-    return (
-        db.query(WalkerAvailabilityException)
-        .filter(
-            WalkerAvailabilityException.walker_user_id == walker_id,
-            WalkerAvailabilityException.exception_date == dt.date(),
-        )
-        .all()
+    q = db.query(WalkerAvailabilityException).filter(
+        WalkerAvailabilityException.walker_user_id == walker_id,
+        WalkerAvailabilityException.exception_date == dt.date(),
     )
+    if tenant_id is not None:
+        q = q.filter(
+            (WalkerAvailabilityException.tenant_id.is_(None))
+            | (WalkerAvailabilityException.tenant_id == tenant_id)
+        )
+    else:
+        q = q.filter(WalkerAvailabilityException.tenant_id.is_(None))
+    return q.all()
 
 
 def _slot_covers(slot: str, hhmm: str) -> bool:
@@ -116,8 +120,13 @@ def _recurring_allows(db: Session, walker_id: str, dt: datetime) -> bool:
     return any(_slot_covers(slot, hhmm) for slot in slots)
 
 
-def is_walker_available_at(db: Session, walker_id: str, dt: datetime) -> bool:
-    """Retorna True se o passeador walker_id está disponível no instante dt.
+def is_walker_available_at(
+    db: Session, walker_id: str, dt: datetime, tenant_id: str | None = None
+) -> bool:
+    """Disponível no instante dt (opcionalmente no escopo de um tenant).
+
+    Considera exceções globais (tenant_id IS NULL) e, se tenant_id informado,
+    também as daquele tenant. Sem tenant_id = comportamento legado (só globais).
 
     Regras (em ordem de prioridade):
       1. Exceção block cobrindo dt.hour → False.
@@ -126,7 +135,7 @@ def is_walker_available_at(db: Session, walker_id: str, dt: datetime) -> bool:
       4. Default conservador → False.
     """
     hhmm = _hhmm(dt)
-    excs = _exceptions_on(db, walker_id, dt)
+    excs = _exceptions_on(db, walker_id, dt, tenant_id)
 
     if any(e.kind == "block" and _covers(e, hhmm) for e in excs):
         return False

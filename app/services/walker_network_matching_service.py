@@ -38,6 +38,9 @@ def get_tenant_eligible_walker_ids(db: Session, tenant_id: str) -> list[str]:
             User.is_active.is_(True),
             WalkerProfile.status == "active",
             WalkerProfile.active_as_walker.is_(True),
+            # F3.2: gate de requisitos extras por tenant. Linhas existentes são true (default) →
+            # grandfather automático; só exclui quando o admin marcou requirements_met=false.
+            TenantWalkerAccess.requirements_met.is_(True),
             # Null-safe: passa se não exclusivo (NULL) ou exclusivo DESTE tenant
             sa.or_(
                 WalkerNetworkProfile.exclusive_tenant_id.is_(None),
@@ -74,6 +77,9 @@ def is_walker_eligible_for_tenant(db: Session, tenant_id: str, walker_user_id: s
             User.is_active.is_(True),
             WalkerProfile.status == "active",
             WalkerProfile.active_as_walker.is_(True),
+            # F3.2: gate de requisitos extras por tenant. Linhas existentes são true (default) →
+            # grandfather automático; só exclui quando o admin marcou requirements_met=false.
+            TenantWalkerAccess.requirements_met.is_(True),
             # Null-safe: passa se não exclusivo (NULL) ou exclusivo DESTE tenant
             sa.or_(
                 WalkerNetworkProfile.exclusive_tenant_id.is_(None),
@@ -83,6 +89,16 @@ def is_walker_eligible_for_tenant(db: Session, tenant_id: str, walker_user_id: s
         .first()
         is not None
     )
+
+
+def initial_requirements_met(db: Session, tenant_id: str) -> bool:
+    """F3.2: False se o tenant tem requisitos extras (vínculo NOVO nasce pendente);
+    True caso contrário (comportamento legado). Não rebaixa vínculos já existentes."""
+    from app.models.tenant import Tenant
+
+    tenant = db.get(Tenant, tenant_id)
+    reqs = getattr(tenant, "walker_extra_requirements", None) if tenant else None
+    return not (isinstance(reqs, list) and len(reqs) > 0)
 
 
 def get_matching_pool_for_tenant(db: Session, tenant_id: str) -> list[str]:

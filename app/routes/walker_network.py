@@ -145,6 +145,9 @@ def link_walker_to_tenant(
     )
     if not access:
         access = TenantWalkerAccess(tenant_id=tenant_id, walker_user_id=payload.walker_user_id)
+        # F3.2: vínculo NOVO a tenant-com-requisitos nasce pendente (grandfather: existentes intactos).
+        from app.services.walker_network_matching_service import initial_requirements_met
+        access.requirements_met = initial_requirements_met(db, tenant_id)
         db.add(access)
 
     access.access_type = payload.access_type
@@ -343,6 +346,9 @@ def _respond_to_invite(invite_id: str, new_status: str, user: User, db: Session)
     invite.updated_at = datetime.utcnow()
     # Passo 8: ao aceitar convite o passeador passa a servir +1 tenant → recomputa.
     if new_status == "active":
+        # F3.2: vínculo NOVO a tenant-com-requisitos nasce pendente (requirements_met=false).
+        from app.services.walker_network_matching_service import initial_requirements_met
+        invite.requirements_met = initial_requirements_met(db, invite.tenant_id)
         _recompute_tenants_served(user.id, db)
     db.commit()
     db.refresh(invite)

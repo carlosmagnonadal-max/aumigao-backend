@@ -1859,6 +1859,7 @@ class AvailabilityExceptionCreate(BaseModel):
     kind: str
     start_time: str | None = None
     end_time: str | None = None
+    tenant_id: str | None = None
 
 
 def _exception_dict(exc: WalkerAvailabilityException) -> dict:
@@ -1868,6 +1869,7 @@ def _exception_dict(exc: WalkerAvailabilityException) -> dict:
         "kind": exc.kind,
         "start_time": exc.start_time,
         "end_time": exc.end_time,
+        "tenant_id": exc.tenant_id,
     }
 
 
@@ -1895,9 +1897,12 @@ def create_availability_exception(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    from app.services.walker_network_matching_service import is_walker_eligible_for_tenant
     _require_active_walker(user, db)
     if payload.kind not in {"block", "open"}:
         raise HTTPException(status_code=400, detail="kind deve ser 'block' ou 'open'.")
+    if payload.tenant_id is not None and not is_walker_eligible_for_tenant(db, payload.tenant_id, user.id):
+        raise HTTPException(status_code=403, detail="Passeador não vinculado a este tenant.")
     exc = WalkerAvailabilityException(
         id=str(uuid4()),
         walker_user_id=user.id,
@@ -1905,6 +1910,7 @@ def create_availability_exception(
         kind=payload.kind,
         start_time=payload.start_time,
         end_time=payload.end_time,
+        tenant_id=payload.tenant_id,
     )
     db.add(exc)
     db.commit()

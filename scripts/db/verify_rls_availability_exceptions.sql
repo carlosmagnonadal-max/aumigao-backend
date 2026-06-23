@@ -45,6 +45,10 @@ BEGIN;
 -- Membership temporária para poder "vestir" o role do app (revertida no ROLLBACK).
 GRANT aumigao_app TO CURRENT_USER;
 
+-- Tenant sintético (a coluna tenant_id tem FK→tenants.id, enforced em prod). Revertido no ROLLBACK.
+INSERT INTO tenants (id, name, slug, status, plan, created_at, updated_at) VALUES
+    ('rlsverify_tenantX', 'RLS Verify Tenant', 'rlsverify-tenantx', 'active', 'starter', now(), now());
+
 -- ---------------------------------------------------------------------------
 -- SETUP — dados sintéticos (prefixo rlsverify_) inseridos como dono (bypass RLS).
 --   walkerW  e walkerO são dois passeadores distintos.

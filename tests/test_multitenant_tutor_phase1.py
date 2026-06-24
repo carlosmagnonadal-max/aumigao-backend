@@ -117,3 +117,15 @@ def test_tutor_join_flag_off_404(monkeypatch):
     db = _db(); _seed(db)
     r = _client(db, False, monkeypatch).post("/tutor/tenants/join", json={"tenant_slug": "rede-b"})
     assert r.status_code == 404
+
+
+# ─── Gate de vínculo (unidade do serviço) ─────────────────────────────────────
+
+
+def test_gate_reserva_tutor():
+    from app.services.tutor_network_service import is_tutor_eligible_for_tenant
+    db = _db()
+    db.add(TenantTutorAccess(tenant_id="t-vinculado", tutor_user_id="u1", status="active"))
+    db.commit()
+    assert is_tutor_eligible_for_tenant(db, "t-vinculado", "u1") is True
+    assert is_tutor_eligible_for_tenant(db, "t-outro", "u1") is False

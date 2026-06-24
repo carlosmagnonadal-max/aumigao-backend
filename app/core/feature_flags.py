@@ -38,3 +38,18 @@ def multi_tenant_walker_enabled() -> bool:
     em testes sem precisar reimportar o módulo.
     """
     return _flag("MULTI_TENANT_WALKER", False)
+
+
+# Modelo B — Tutor Multi-Tenant (app white-label por tenant).
+# OFF por default: comportamento idêntico ao atual (zero-regressão).
+# Ligar: MULTI_TENANT_TUTOR=true (ou 1/yes/on).
+MULTI_TENANT_TUTOR: bool = _flag("MULTI_TENANT_TUTOR", False)
+
+
+def multi_tenant_tutor_enabled() -> bool:
+    """Relê a env var a cada chamada (sem cache de módulo).
+
+    Permite monkeypatch via monkeypatch.setenv("MULTI_TENANT_TUTOR", "true")
+    em testes sem precisar reimportar o módulo.
+    """
+    return _flag("MULTI_TENANT_TUTOR", False)

@@ -8,7 +8,7 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import NullPool
 from starlette.requests import Request
 
-from app.core.feature_flags import multi_tenant_walker_enabled
+from app.core.feature_flags import multi_tenant_walker_enabled, multi_tenant_tutor_enabled
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 ENV_PATH = ROOT_DIR / ".env"
@@ -215,6 +215,28 @@ def get_walker_self_db(request: Request = None):  # type: ignore[assignment]
     """
     db = SessionLocal()
     if multi_tenant_walker_enabled():
+        db.info["rls_tenant"] = "*"
+    else:
+        tenant_id = getattr(getattr(request, "state", None), "tenant_id", None)
+        db.info["rls_tenant"] = tenant_id or ""
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def get_tutor_self_db(request: Request = None):  # type: ignore[assignment]
+    """Sessão de leitura "minha" do tutor (Modelo B, Passo 2).
+
+    Flag ON  → escopo global RLS (rls_tenant="*"); a QUERY DA ROTA *precisa*
+               filtrar tutor_user_id==user.id — o RLS não isola por tutor neste modo.
+    Flag OFF → idêntico a get_db (tenant-scoped) → zero-regressão.
+
+    app.current_user_id é setado por get_current_user/set_session_user (auth.py),
+    que é chamado antes desta dependency nas rotas.
+    """
+    db = SessionLocal()
+    if multi_tenant_tutor_enabled():
         db.info["rls_tenant"] = "*"
     else:
         tenant_id = getattr(getattr(request, "state", None), "tenant_id", None)

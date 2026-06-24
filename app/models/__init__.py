@@ -33,6 +33,7 @@ from app.models.tenant_onboarding import TenantOnboarding
 from app.models.walker_network_profile import WalkerNetworkProfile
 from app.models.walker_availability_exception import WalkerAvailabilityException  # noqa: F401
 from app.models.tenant_walker_access import TenantWalkerAccess
+from app.models.tenant_tutor_access import TenantTutorAccess
 from app.models.rbac import Role, Permission, RolePermission, UserRoleAssignment
 from app.models.audit_log import AuditLog
 from app.models.tenant_payment_config import TenantPaymentConfig

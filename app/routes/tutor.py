@@ -1,11 +1,15 @@
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.core.database import get_db
+from app.core.database import get_db, get_tutor_self_db
+from app.core.feature_flags import multi_tenant_tutor_enabled
 from app.dependencies.auth import get_current_user
+from app.models.tenant import Tenant
+from app.models.tenant_tutor_access import TenantTutorAccess
 from app.models.tutor_profile import TutorProfile
 from app.models.user import User
 from app.schemas.tutor_profile import TutorProfileCreate, TutorProfileResponse, TutorProfileUpdate
@@ -85,3 +89,82 @@ def update_profile(payload: TutorProfileUpdate, user: User = Depends(get_current
     db.commit()
     db.refresh(profile)
     return profile
+
+
+# ─── Modelo B — Multi-Tenant Tutor ───────────────────────────────────────────
+
+
+class TutorJoinRequest(BaseModel):
+    tenant_slug: str
+
+
+def _tenant_brand_dict(a: TenantTutorAccess, tenant: Tenant) -> dict:
+    b = tenant.branding
+    return {
+        "tenant_id": tenant.id,
+        "slug": tenant.slug,
+        "display_name": (b.display_name if b and b.display_name else tenant.name),
+        "brand_color": (b.primary_color if b else None),
+        "logo_url": (b.logo_url if b else None),
+        "access_status": a.status,
+    }
+
+
+@router.get("/tenants")
+def tutor_tenants(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_tutor_self_db),
+):
+    """Tenants em que o tutor está ATIVO (status=active) — com branding. Modelo B."""
+    if not multi_tenant_tutor_enabled():
+        return []
+    accesses = (
+        db.query(TenantTutorAccess)
+        .filter(TenantTutorAccess.tutor_user_id == user.id, TenantTutorAccess.status == "active")
+        .order_by(TenantTutorAccess.created_at.desc())
+        .all()
+    )
+    out = []
+    for a in accesses:
+        tenant = db.get(Tenant, a.tenant_id)
+        if tenant:
+            out.append(_tenant_brand_dict(a, tenant))
+    return out
+
+
+@router.post("/tenants/join")
+def tutor_join_tenant(
+    payload: TutorJoinRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_tutor_self_db),
+):
+    """Cria ou reativa vínculo tutor↔tenant. Idempotente. Modelo B."""
+    if not multi_tenant_tutor_enabled():
+        raise HTTPException(status_code=404, detail="multi_tenant_tutor_disabled")
+    tenant = (
+        db.query(Tenant)
+        .filter(Tenant.slug == payload.tenant_slug, Tenant.status == "active")
+        .first()
+    )
+    if not tenant:
+        raise HTTPException(status_code=404, detail="tenant_not_found")
+    existing = (
+        db.query(TenantTutorAccess)
+        .filter(TenantTutorAccess.tenant_id == tenant.id, TenantTutorAccess.tutor_user_id == user.id)
+        .first()
+    )
+    if existing:
+        if existing.status != "active":
+            existing.status = "active"
+            db.commit()
+        access = existing
+    else:
+        access = TenantTutorAccess(
+            tenant_id=tenant.id,
+            tutor_user_id=user.id,
+            status="active",
+            initiated_by="tutor",
+        )
+        db.add(access)
+        db.commit()
+    return _tenant_brand_dict(access, tenant)

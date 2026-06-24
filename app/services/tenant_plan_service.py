@@ -1,3 +1,4 @@
+import os
 from copy import deepcopy
 from typing import Any
 
@@ -50,6 +51,7 @@ TENANT_PLAN_STARTER = "starter"
 TENANT_PLAN_BUSINESS = "business"
 TENANT_PLAN_ENTERPRISE = "enterprise"
 
+# ── Pricing v1 (legado — 3 planos) ──────────────────────────────────────────
 TENANT_PLAN_CAPABILITIES: dict[str, dict[str, Any]] = {
     TENANT_PLAN_STARTER: {
         "max_units": 1,
@@ -86,6 +88,73 @@ TENANT_PLAN_CAPABILITIES: dict[str, dict[str, Any]] = {
     },
 }
 
+# ── Pricing v2 (2 planos canônicos: Pro / Enterprise) ───────────────────────
+# Controlado por PRICING_V2_ENABLED (default False → legado ativo, zero-regressão).
+#
+# Decisão Carlos 2026-06-23:
+#   Pro (starter/business → pro):
+#     max_units=2; dedicated_app=ADD-ON (não incluído por padrão);
+#     network_access=True; custom_products=True.
+#   Enterprise:
+#     max_units=4; dedicated_app=INCLUÍDO (dedicated_app_required=True);
+#     network_access=True; custom_products=True; custom_projects=True.
+#
+# dedicated_app é ADD-ON em Pro: dedicated_app_allowed=True (pode contratar),
+# dedicated_app_required=False (NÃO vem por padrão no plano).
+# Em Enterprise: dedicated_app_required=True (já incluído).
+
+TENANT_PLAN_PRO_V2 = "pro"
+TENANT_PLAN_ENTERPRISE_V2 = "enterprise"
+
+# Mapeamento legado → canônico v2 (para resolução de capabilities).
+_LEGACY_TO_V2: dict[str, str] = {
+    "starter": TENANT_PLAN_PRO_V2,
+    "business": TENANT_PLAN_PRO_V2,
+    "enterprise": TENANT_PLAN_ENTERPRISE_V2,
+    "pro": TENANT_PLAN_PRO_V2,
+}
+
+TENANT_PLAN_CAPABILITIES_V2: dict[str, dict[str, Any]] = {
+    TENANT_PLAN_PRO_V2: {
+        "max_units": 2,
+        "max_units_with_addon": 2,          # Pro sem add-on de unidades extra
+        "dedicated_app_allowed": True,       # Pode contratar como add-on
+        "dedicated_app_required": False,     # NÃO incluído automaticamente no plano
+        "powered_by_required": False,
+        "network_access_available": True,
+        "custom_products_allowed": True,
+        "custom_projects_allowed": False,
+        "onboarding_mode": "assisted",
+    },
+    TENANT_PLAN_ENTERPRISE_V2: {
+        "max_units": 4,
+        "max_units_with_addon": 4,
+        "dedicated_app_allowed": True,       # Incluído
+        "dedicated_app_required": True,      # App dedicado faz parte do plano
+        "powered_by_required": False,
+        "network_access_available": True,
+        "custom_products_allowed": True,
+        "custom_projects_allowed": True,
+        "onboarding_mode": "consultative",
+    },
+}
+
+# Módulos de produto gated por plano v2 (Pro = starter/business; Enterprise = enterprise).
+PLAN_GATED_PRODUCT_FEATURES_V2: dict[str, set[str]] = {
+    "recurring_plans": {TENANT_PLAN_PRO_V2, TENANT_PLAN_ENTERPRISE_V2},
+    "shared_walks": {TENANT_PLAN_PRO_V2, TENANT_PLAN_ENTERPRISE_V2},
+    "pet_tour": {TENANT_PLAN_PRO_V2, TENANT_PLAN_ENTERPRISE_V2},
+}
+
+_PRICING_V2_ENABLED: bool = os.getenv("PRICING_V2_ENABLED", "false").lower() in {"1", "true", "yes"}
+
+
+def _canonical_v2(plan: str | None) -> str:
+    """Mapeia chave legada → canônica v2 (pro/enterprise). Uso interno."""
+    normalized = (plan or "").strip().lower()
+    return _LEGACY_TO_V2.get(normalized, TENANT_PLAN_PRO_V2)
+
+
 FEATURE_CAPABILITY_KEYS = {
     "dedicated_app": "dedicated_app_allowed",
     "network_access": "network_access_available",
@@ -101,9 +170,7 @@ ENFORCED_COMMERCIAL_FEATURES = {
     "custom_projects",
 }
 
-# Módulos de PRODUTO que só ficam disponíveis a partir de certo plano.
-# Diferente das features comerciais acima (gated via capability), estes continuam
-# sendo flags opt-in por tenant — mas o PLANO define se podem ser ligados/usados.
+# Módulos de PRODUTO que só ficam disponíveis a partir de certo plano (legado v1).
 # Ausência da chave aqui = disponível em todos os planos (ex.: coupons).
 PLAN_GATED_PRODUCT_FEATURES: dict[str, set[str]] = {
     "recurring_plans": {TENANT_PLAN_BUSINESS, TENANT_PLAN_ENTERPRISE},
@@ -113,6 +180,16 @@ PLAN_GATED_PRODUCT_FEATURES: dict[str, set[str]] = {
 
 
 def get_plan_capabilities(plan: str) -> dict[str, Any]:
+    """Retorna as capabilities do plano, respeitando PRICING_V2_ENABLED.
+
+    Flag OFF (default): usa TENANT_PLAN_CAPABILITIES (legado 3 planos) — zero-regressão.
+    Flag ON:  usa TENANT_PLAN_CAPABILITIES_V2 (2 planos canônicos).
+              Chaves legadas (starter/business/enterprise) são mapeadas automaticamente.
+              Chaves canônicas v2 (pro/enterprise) passam direto.
+    """
+    if _PRICING_V2_ENABLED:
+        canon = _canonical_v2(plan)
+        return deepcopy(TENANT_PLAN_CAPABILITIES_V2.get(canon, TENANT_PLAN_CAPABILITIES_V2[TENANT_PLAN_PRO_V2]))
     return deepcopy(TENANT_PLAN_CAPABILITIES.get(plan or "", TENANT_PLAN_CAPABILITIES[TENANT_PLAN_STARTER]))
 
 
@@ -230,10 +307,21 @@ def enforce_tenant_product_feature(tenant: Tenant, db: Session, feature_key: str
 def plan_allows_product_feature(tenant: Tenant, feature_key: str) -> bool:
     """Se o PLANO do tenant permite o módulo de produto plano-gated.
 
-    Módulos fora de PLAN_GATED_PRODUCT_FEATURES (ex.: coupons) ficam liberados em
-    todos os planos.
+    Flag OFF (default): usa PLAN_GATED_PRODUCT_FEATURES (legado v1 — 3 planos).
+    Flag ON:  usa PLAN_GATED_PRODUCT_FEATURES_V2 com o plano canônico v2.
+              Chaves legadas (starter/business) mapeiam para pro, que está na lista v2.
+              Zero-regressão: módulos liberados em business/enterprise continuam
+              liberados ao mapear para pro/enterprise v2.
+
+    Módulos fora das listas de gating (ex.: coupons) ficam liberados em todos os planos.
     """
-    allowed_plans = PLAN_GATED_PRODUCT_FEATURES.get((feature_key or "").strip())
+    key = (feature_key or "").strip()
+    if _PRICING_V2_ENABLED:
+        allowed_plans = PLAN_GATED_PRODUCT_FEATURES_V2.get(key)
+        if allowed_plans is None:
+            return True
+        return _canonical_v2(tenant.plan) in allowed_plans
+    allowed_plans = PLAN_GATED_PRODUCT_FEATURES.get(key)
     if allowed_plans is None:
         return True
     return (tenant.plan or "").strip().lower() in allowed_plans

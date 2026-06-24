@@ -4,6 +4,13 @@ Determina como o valor de um pagamento se divide entre a plataforma/tenant
 (comissão) e o walker. A comissão vem da config do tenant; na ausência dela,
 usa o padrão. Esta fase apenas REGISTRA o split (contábil) — o repasse real ao
 walker via gateway é a Fase B.
+
+Pricing v2 (2026-06-24):
+  resolve_network_take_rate() retorna o take-rate de REDE do plano (Pro 18% /
+  Enterprise 10%). Chamado quando o sinal "passeio de rede" for confirmado:
+  is_network_walk(db, tenant_id, walker_id) verifica TenantWalkerAccess.access_type
+  ∈ {"shared_network", "tenant_exclusive"} com status=active.
+  get_commission_percent_for_walk() encapsula a lógica completa (rede vs próprio).
 """
 from __future__ import annotations
 
@@ -13,6 +20,7 @@ from app.models.tenant_payment_config import (
     DEFAULT_COMMISSION_PERCENT,
     TenantPaymentConfig,
     commission_default_for_plan,
+    network_commission_default_for_plan,
 )
 
 
@@ -84,6 +92,104 @@ def get_commission_percent(
 
     # Nível 3: fallback por plano.
     return _commission_fallback_for_tenant(db, tenant_id)
+
+
+# ── Pricing v2: take-rate de REDE ───────────────────────────────────────────
+
+def _tenant_plan(db: Session, tenant_id: str | None) -> str | None:
+    """Retorna o plano do tenant de forma defensiva (None se não encontrado)."""
+    if not tenant_id:
+        return None
+    try:
+        from app.models.tenant import Tenant
+        tenant = db.get(Tenant, tenant_id)
+        return tenant.plan if tenant else None
+    except Exception:
+        return None
+
+
+def resolve_network_take_rate(plan: str | None) -> float:
+    """Take-rate de REDE por plano (Rede Aumigão fornece o passeador).
+
+    Pro → 18% / Enterprise → 10%. Aplica o mapeamento legado:
+    starter/business → Pro (18%); enterprise → Enterprise (10%).
+
+    Independe de PRICING_V2_ENABLED — a taxa de rede é sempre calculada pela
+    tabela v2 porque o conceito de Rede só existe em v2.
+    """
+    return network_commission_default_for_plan(plan)
+
+
+_NETWORK_ACCESS_TYPES = {"shared_network", "tenant_exclusive"}
+
+
+def is_network_walk(db: Session, tenant_id: str | None, walker_id: str | None) -> bool:
+    """Retorna True se o walker atende o tenant via Rede Aumigão.
+
+    Sinal real: TenantWalkerAccess com access_type ∈ {shared_network, tenant_exclusive}
+    e status=active para o par (tenant_id, walker_id).
+
+    Retorna False quando qualquer argumento for None (sem sinal = passeio próprio).
+    """
+    if not tenant_id or not walker_id:
+        return False
+    try:
+        from app.models.tenant_walker_access import TenantWalkerAccess
+        twa = (
+            db.query(TenantWalkerAccess)
+            .filter(
+                TenantWalkerAccess.tenant_id == tenant_id,
+                TenantWalkerAccess.walker_user_id == walker_id,
+                TenantWalkerAccess.status == "active",
+                TenantWalkerAccess.access_type.in_(list(_NETWORK_ACCESS_TYPES)),
+            )
+            .first()
+        )
+        return twa is not None
+    except Exception:
+        return False
+
+
+def get_commission_percent_for_walk(
+    db: Session,
+    tenant_id: str | None,
+    *,
+    walker_id: str | None = None,
+) -> float:
+    """Comissão completa para um passeio — escolhe entre taxa própria e de REDE.
+
+    Lógica (v2):
+      1. Override por par (TenantWalkerAccess.commission_percent) — sempre tem prioridade.
+      2. Se is_network_walk(tenant_id, walker_id) → resolve_network_take_rate(plan).
+      3. Caso contrário → get_commission_percent() (taxa própria, inclui config do tenant).
+
+    Quando walker_id for None, cai direto em get_commission_percent() (zero-regressão).
+    """
+    # Nível 1: override por par (idêntico ao get_commission_percent nível 1).
+    if tenant_id and walker_id:
+        try:
+            from app.models.tenant_walker_access import TenantWalkerAccess
+            twa = (
+                db.query(TenantWalkerAccess)
+                .filter(
+                    TenantWalkerAccess.tenant_id == tenant_id,
+                    TenantWalkerAccess.walker_user_id == walker_id,
+                    TenantWalkerAccess.status == "active",
+                )
+                .first()
+            )
+            if twa is not None and twa.commission_percent is not None:
+                return float(twa.commission_percent)
+        except Exception:
+            pass
+
+    # Nível 2: se passeio de rede → taxa de rede do plano.
+    if is_network_walk(db, tenant_id, walker_id):
+        plan = _tenant_plan(db, tenant_id)
+        return resolve_network_take_rate(plan)
+
+    # Nível 3: taxa própria (config do tenant ou default do plano).
+    return get_commission_percent(db, tenant_id, walker_id=walker_id)
 
 
 def get_tenant_margin_percent(db: Session, tenant_id: str | None) -> float:

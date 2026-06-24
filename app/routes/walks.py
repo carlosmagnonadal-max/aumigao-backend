@@ -338,13 +338,14 @@ def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db:
         selected_walker_id = data.pop("walker_id", None)
         requested_selection_mode = data.pop("walker_selection_mode", None)
         pet = db.get(Pet, data.get("pet_id")) if data.get("pet_id") else None
-        tenant_id = user.tenant_id or (pet.tenant_id if pet else None) or default_tenant_id(db)
+        _default_tenant = default_tenant_id(db)
+        tenant_id = user.tenant_id or (pet.tenant_id if pet else None) or _default_tenant
         user.tenant_id = user.tenant_id or tenant_id
         if pet and not pet.tenant_id:
             pet.tenant_id = tenant_id
 
         # Gate de vínculo do tutor (Modelo B). OFF ou tenant default → bypass (= comportamento atual).
-        if multi_tenant_tutor_enabled() and tenant_id != default_tenant_id(db):
+        if multi_tenant_tutor_enabled() and tenant_id != _default_tenant:
             if not is_tutor_eligible_for_tenant(db, tenant_id, user.id):
                 raise HTTPException(status_code=403, detail="tutor_not_linked_to_tenant")
 

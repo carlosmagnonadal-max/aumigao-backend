@@ -22,6 +22,17 @@ def _db():
     return sessionmaker(bind=engine)()
 
 
+def test_is_tutor_eligible_for_tenant():
+    from app.services.tutor_network_service import is_tutor_eligible_for_tenant
+    db = _db()
+    db.add(TenantTutorAccess(tenant_id="t1", tutor_user_id="u1", status="active"))
+    db.add(TenantTutorAccess(tenant_id="t2", tutor_user_id="u1", status="revoked"))
+    db.commit()
+    assert is_tutor_eligible_for_tenant(db, "t1", "u1") is True
+    assert is_tutor_eligible_for_tenant(db, "t2", "u1") is False
+    assert is_tutor_eligible_for_tenant(db, "t9", "u1") is False
+
+
 def test_tenant_tutor_access_defaults():
     db = _db()
     row = TenantTutorAccess(tenant_id="t1", tutor_user_id="u1")

@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-import sqlalchemy as sa
 from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 

@@ -8,6 +8,14 @@ from app.core.database import Base
 from app.models.tenant_tutor_access import TenantTutorAccess
 
 
+def test_multi_tenant_tutor_flag(monkeypatch):
+    from app.core import feature_flags
+    monkeypatch.delenv("MULTI_TENANT_TUTOR", raising=False)
+    assert feature_flags.multi_tenant_tutor_enabled() is False
+    monkeypatch.setenv("MULTI_TENANT_TUTOR", "true")
+    assert feature_flags.multi_tenant_tutor_enabled() is True
+
+
 def _db():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)

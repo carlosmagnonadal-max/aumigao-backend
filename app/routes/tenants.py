@@ -147,6 +147,10 @@ def create_tenant(payload: TenantCreate, admin: User = Depends(get_current_user)
     # Criar um novo tenant é ação de plataforma — apenas super_admin (Onda 1).
     if not is_super_admin(admin):
         raise HTTPException(status_code=403, detail="Apenas super_admin pode criar tenants.")
+    # Injeta o escopo RLS global do super_admin (app.current_tenant='*') nesta sessão.
+    # Sem isso, o INSERT do audit_log do tenant recém-criado (tenant_id = id novo)
+    # viola a policy WITH CHECK de audit_logs, pois o GUC ficaria no tenant da request.
+    get_admin_tenant_scope(admin, db)
     slug = _normalize_slug(payload.slug)
     _ensure_status(payload.status, TENANT_STATUSES, "status")
     _ensure_plan(payload.plan)

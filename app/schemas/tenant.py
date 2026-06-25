@@ -6,7 +6,9 @@ from app.schemas.common import ORMModel
 
 
 TENANT_STATUSES = {"draft", "active", "paused", "suspended", "cancelled"}
-TENANT_PLANS = {"starter", "business", "enterprise"}
+# Pricing v2: planos canônicos = pro/enterprise. Legados (starter/business)
+# mantidos para não invalidar tenants antigos em edição/validação.
+TENANT_PLANS = {"pro", "enterprise", "starter", "business"}
 TENANT_UNIT_STATUSES = {"active", "paused", "inactive"}
 
 
@@ -14,7 +16,7 @@ class TenantCreate(BaseModel):
     name: str
     slug: str
     status: str = "draft"
-    plan: str = "starter"
+    plan: str = "pro"
     legal_name: str | None = None
     document_number: str | None = None
     contact_email: str | None = None

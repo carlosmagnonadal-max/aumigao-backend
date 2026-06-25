@@ -465,7 +465,7 @@ def _build_split_config_for_payment(db: Session, walk_id: str | None, tenant_id:
 
 
 @router.post("/create", response_model=PaymentResponse)
-async def create_payment(payload: PaymentCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def create_payment(payload: PaymentCreate, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     # Valida o modo antes de qualquer coisa (levanta 400 para modo desconhecido,
     # 503 para live sem chave configurada).
     cfg = _get_asaas_config()
@@ -536,8 +536,13 @@ async def create_payment(payload: PaymentCreate, user: User = Depends(get_curren
     # comportamento idêntico ao original (zero-regressão).
     _walk_for_split = db.get(Walk, payload.walk_id) if payload.walk_id else None
     _walker_id_for_split = _walk_for_split.walker_id if _walk_for_split else None
-    split = build_payment_split(db, user.tenant_id, payload.amount, walker_id=_walker_id_for_split)
-    split_config = _build_split_config_for_payment(db, payload.walk_id, user.tenant_id, split)
+    # A4 (Modelo B): o pagamento pertence ao TENANT ATIVO (header X-Tenant-Slug →
+    # request.state.tenant_id), igual ao walk. Alinha o split/comissão e o
+    # Payment.tenant_id ao GUC RLS da sessão (evita WITH CHECK violation). Sem header
+    # cai em user.tenant_id → zero-regressão (app base/single-tenant).
+    _payment_tenant_id = getattr(request.state, "tenant_id", None) or user.tenant_id
+    split = build_payment_split(db, _payment_tenant_id, payload.amount, walker_id=_walker_id_for_split)
+    split_config = _build_split_config_for_payment(db, payload.walk_id, _payment_tenant_id, split)
     # Injeta split_config via ContextVar (async-safe) antes de chamar create_asaas_payment,
     # mantendo a assinatura pública (payload, user) compatível com mocks de teste.
     _split_config_ctx.set(split_config)
@@ -584,7 +589,7 @@ async def create_payment(payload: PaymentCreate, user: User = Depends(get_curren
 
     payment = Payment(
         id=str(uuid4()),
-        tenant_id=user.tenant_id,
+        tenant_id=_payment_tenant_id,
         tutor_id=user.id,
         walk_id=payload.walk_id,
         amount=payload.amount,

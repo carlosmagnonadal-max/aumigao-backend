@@ -8,7 +8,7 @@ from app.core.database import get_db, get_walker_self_db
 from app.dependencies.auth import get_current_user, require_admin
 from app.dependencies.rbac import require_permission
 from app.dependencies.tenant_scope import ensure_tenant_access, get_admin_tenant_scope, is_super_admin
-from app.models.tenant import Tenant
+from app.models.tenant import Tenant, TenantBranding
 from app.models.tenant_walker_access import TenantWalkerAccess
 from app.models.user import User
 from app.models.walker_network_profile import WalkerNetworkProfile
@@ -149,6 +149,8 @@ def link_walker_to_tenant(
         # F3.2: vínculo NOVO a tenant-com-requisitos nasce pendente (grandfather: existentes intactos).
         from app.services.walker_network_matching_service import initial_requirements_met
         access.requirements_met = initial_requirements_met(db, tenant_id)
+        # C15: registra quando o vínculo foi criado pelo admin (data de convite).
+        access.invited_at = datetime.utcnow()
         db.add(access)
 
     access.access_type = payload.access_type
@@ -305,6 +307,12 @@ def _own_invite_or_404(invite_id: str, walker_user_id: str, db: Session) -> Tena
 
 def _invite_to_response(invite: TenantWalkerAccess, db: Session) -> WalkerNetworkInviteResponse:
     tenant = db.get(Tenant, invite.tenant_id)
+    # C8: busca o primary_color do branding do tenant para colorir o chip no app.
+    branding = (
+        db.query(TenantBranding)
+        .filter(TenantBranding.tenant_id == invite.tenant_id)
+        .first()
+    )
     return WalkerNetworkInviteResponse(
         id=invite.id,
         tenant_id=invite.tenant_id,
@@ -313,6 +321,8 @@ def _invite_to_response(invite: TenantWalkerAccess, db: Session) -> WalkerNetwor
         access_type=invite.access_type,
         invited_at=invite.invited_at,
         responded_at=invite.responded_at,
+        tenant_brand_color=branding.primary_color if branding else None,
+        message=None,
     )
 
 

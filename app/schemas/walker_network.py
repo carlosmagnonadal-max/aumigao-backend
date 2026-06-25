@@ -67,6 +67,9 @@ class WalkerNetworkInviteResponse(ORMModel):
     access_type: str
     invited_at: datetime | None = None
     responded_at: datetime | None = None
+    # C8: cor da marca do tenant (para chip colorido no app) e mensagem opcional.
+    tenant_brand_color: str | None = None
+    message: str | None = None
 
 
 class WalkerNetworkMeResponse(BaseModel):

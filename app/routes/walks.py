@@ -6,7 +6,7 @@ from uuid import uuid4
 from datetime import date, datetime, timedelta
 import json
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session, aliased
@@ -324,7 +324,7 @@ def _require_payment_before_matching() -> bool:
 
 
 @router.post("", response_model=WalkResponse)
-def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_walk(payload: WalkCreate, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     logger.warning(
         "create_walk.start user_id=%s role=%s payload=%s",
         user.id,
@@ -339,7 +339,12 @@ def create_walk(payload: WalkCreate, user: User = Depends(get_current_user), db:
         requested_selection_mode = data.pop("walker_selection_mode", None)
         pet = db.get(Pet, data.get("pet_id")) if data.get("pet_id") else None
         _default_tenant = default_tenant_id(db)
-        tenant_id = user.tenant_id or (pet.tenant_id if pet else None) or _default_tenant
+        # A4 (Modelo B): o passeio pertence ao TENANT ATIVO do tutor, resolvido pelo
+        # header X-Tenant-Slug (request.state.tenant_id, setado pelo TenantResolverMiddleware).
+        # Isso também alinha o walk.tenant_id ao GUC RLS da sessão (mesmo header), evitando
+        # violação de WITH CHECK. Sem header (app base/single-tenant) cai no default → zero-regressão.
+        runtime_tenant_id = getattr(request.state, "tenant_id", None)
+        tenant_id = runtime_tenant_id or user.tenant_id or (pet.tenant_id if pet else None) or _default_tenant
         user.tenant_id = user.tenant_id or tenant_id
         if pet and not pet.tenant_id:
             pet.tenant_id = tenant_id

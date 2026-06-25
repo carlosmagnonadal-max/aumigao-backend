@@ -1,3 +1,4 @@
+import os
 from copy import deepcopy
 from typing import Any
 
@@ -115,8 +116,11 @@ NEXT_RECOMMENDED_PLAN_V2 = {
     TENANT_PLAN_ENTERPRISE_V2: None,
 }
 
-BILLING_ENABLED = False
-BILLING_STATUS = "not_configured"
+# Controlado por env (default False → comportamento atual). Para ligar a cobrança
+# real (Asaas live), setar BILLING_ENABLED=true no Cloud Run junto com
+# PAYMENT_MODE=asaas_live + ASAAS_LIVE_API_KEY + ASAAS_WEBHOOK_TOKEN.
+BILLING_ENABLED = os.getenv("BILLING_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+BILLING_STATUS = "active" if BILLING_ENABLED else "not_configured"
 
 
 def normalize_commercial_plan(plan: str | None) -> str:

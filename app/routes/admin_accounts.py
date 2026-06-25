@@ -172,6 +172,10 @@ def update_account(
     db: Session = Depends(get_db),
 ):
     """Atualiza full_name, role e/ou is_active de uma conta admin."""
+    # Injeta o escopo RLS (super_admin → '*'; admin → próprio tenant) ANTES do
+    # db.get: sem isso o super_admin não enxerga contas de outro tenant (404) e o
+    # UPDATE viola a policy WITH CHECK de users. Espelha list_accounts/create_account.
+    get_admin_tenant_scope(admin, db)
     target = db.get(User, user_id)
     if not target or target.role not in ADMIN_ROLES:
         raise HTTPException(status_code=404, detail="Conta admin nao encontrada.")

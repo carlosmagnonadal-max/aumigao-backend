@@ -11,6 +11,11 @@ Pricing v2 (2026-06-24):
   is_network_walk(db, tenant_id, walker_id) verifica TenantWalkerAccess.access_type
   ∈ {"shared_network", "tenant_exclusive"} com status=active.
   get_commission_percent_for_walk() encapsula a lógica completa (rede vs próprio).
+
+  Flag PRICING_V2_ENABLED (default False):
+    OFF → get_commission_percent_for_walk ≡ get_commission_percent (zero-regressão).
+          Ramo de rede NÃO é ativado — walks de rede usam a taxa própria legada.
+    ON  → ramo de rede ativo: is_network_walk → resolve_network_take_rate (18/10).
 """
 from __future__ import annotations
 
@@ -19,6 +24,7 @@ from sqlalchemy.orm import Session
 from app.models.tenant_payment_config import (
     DEFAULT_COMMISSION_PERCENT,
     TenantPaymentConfig,
+    _PRICING_V2_ENABLED,
     commission_default_for_plan,
     network_commission_default_for_plan,
 )
@@ -158,13 +164,23 @@ def get_commission_percent_for_walk(
 ) -> float:
     """Comissão completa para um passeio — escolhe entre taxa própria e de REDE.
 
-    Lógica (v2):
+    Com PRICING_V2_ENABLED=False (default): comportamento IDÊNTICO a
+    get_commission_percent — o ramo de rede NÃO é ativado. Zero-regressão
+    garantida: walks de rede usam a taxa própria/config legada do tenant.
+
+    Com PRICING_V2_ENABLED=True:
       1. Override por par (TenantWalkerAccess.commission_percent) — sempre tem prioridade.
       2. Se is_network_walk(tenant_id, walker_id) → resolve_network_take_rate(plan).
       3. Caso contrário → get_commission_percent() (taxa própria, inclui config do tenant).
 
-    Quando walker_id for None, cai direto em get_commission_percent() (zero-regressão).
+    Quando walker_id for None, cai direto em get_commission_percent() em ambos os modos.
     """
+    # Flag OFF → comportamento legado completo (equivalente a get_commission_percent).
+    if not _PRICING_V2_ENABLED:
+        return get_commission_percent(db, tenant_id, walker_id=walker_id)
+
+    # Flag ON → lógica v2 com ramo de rede.
+
     # Nível 1: override por par (idêntico ao get_commission_percent nível 1).
     if tenant_id and walker_id:
         try:
@@ -288,13 +304,18 @@ def build_payment_split(
 ) -> dict[str, float]:
     """Monta o split para um pagamento.
 
-    Quando walker_id for fornecido, usa get_commission_percent com precedência
-    por par (TenantWalkerAccess.commission_percent → config → plano).
-    Quando walker_id for None, comportamento idêntico ao original.
+    Delega a resolução de comissão a get_commission_percent_for_walk, que:
+    - Com PRICING_V2_ENABLED=False (default): equivale a get_commission_percent —
+      zero-regressão em todos os call sites (mesmo comportamento de hoje).
+    - Com PRICING_V2_ENABLED=True: ativa o ramo de rede (18/10% quando o walker
+      atende via Rede Aumigão).
+
+    Quando walker_id for None, o comportamento é IDÊNTICO ao original em ambos
+    os modos (sem walker → sem sinal de rede → mesma comissão de antes).
     """
     return compute_split(
         amount,
-        get_commission_percent(db, tenant_id, walker_id=walker_id),
+        get_commission_percent_for_walk(db, tenant_id, walker_id=walker_id),
         get_tenant_margin_percent(db, tenant_id),
     )
 

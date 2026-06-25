@@ -49,3 +49,7 @@ from app.models.walker_program_action import WalkerProgramAction
 from app.models.support_ticket import SupportTicket
 from app.models.password_reset_code import PasswordResetCode
 from app.models.walk_location_ping import WalkLocationPing
+from app.models.walker_cr_wallet import WalkerCrWallet
+from app.models.walker_cr_transaction import WalkerCrTransaction
+from app.models.walker_gamification_event import WalkerGamificationEvent
+from app.models.walker_smart_notification import WalkerSmartNotification

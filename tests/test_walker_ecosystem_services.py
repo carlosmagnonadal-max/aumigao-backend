@@ -620,3 +620,246 @@ class TestAlreadyAwarded:
         )
         db.commit()
         assert cr_svc.already_awarded(db, "walker-1", "no_show", "walk-999")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Boost self-serve via CR (POST /walker/me/boost)
+# ════════════════════════════════════════════════════════════════════════════
+
+import uuid as _uuid
+from datetime import datetime as _dt, timedelta as _td
+
+from app.models.walker_boost import WalkerBoost
+from app.services.boost_service import active_boost_for_walker
+
+
+def _give_cr(db, walker_id: str, amount: int) -> None:
+    """Helper: credita CR sem log de gamificação."""
+    cr_svc.earn_cr(db, walker_id, amount, "walk_completed", log_event=False)
+    db.commit()
+
+
+def _activate_boost_logic(db, walker_id: str) -> dict:
+    """Réplica da lógica do endpoint POST /walker/me/boost para testes de serviço.
+
+    Espelha exatamente a lógica do endpoint: verifica saldo antes de criar o boost,
+    de forma que uma falha por CR insuficiente não persiste nenhum registro.
+    """
+    from app.services.walker_cr_rules import CR_SPEND
+
+    cost = CR_SPEND["boost_24h"]
+
+    existing = active_boost_for_walker(walker_id, db)
+    if existing is not None:
+        return {"error": "already_active"}
+
+    # Verificar saldo antes de criar qualquer registro.
+    wallet = cr_svc.get_or_create_wallet(db, walker_id)
+    if wallet.balance < cost:
+        return {"error": "insufficient_cr"}
+
+    now = _dt.utcnow()
+    expires_at = now + _td(hours=24)
+    boost = WalkerBoost(
+        id=str(_uuid.uuid4()),
+        walker_id=walker_id,
+        boost_enabled=True,
+        boost_type="cr_boost_24h",
+        boost_score=3,
+        boost_start_at=now,
+        boost_end_at=expires_at,
+        boost_reason="Ativado pelo passeador via CR",
+        boost_status="active",
+    )
+    db.add(boost)
+    db.flush()
+
+    tx = cr_svc.spend_cr(
+        db,
+        walker_id,
+        cost,
+        source="boost_24h",
+        description="Boost de visibilidade 24h",
+        related_entity_type="walker_boost",
+        related_entity_id=boost.id,
+        log_event=True,
+    )
+
+    if tx is None:
+        # Race condition defense — rollback completo.
+        db.rollback()
+        return {"error": "insufficient_cr"}
+
+    db.commit()
+    db.refresh(boost)
+    wallet = cr_svc.get_or_create_wallet(db, walker_id)
+    return {"ok": True, "boost": boost, "cr_spent": cost, "cr_balance": wallet.balance}
+
+
+class TestBoostSelfServe:
+    """Testes da lógica de ativação de boost via CR (espelha o endpoint POST /walker/me/boost)."""
+
+    def test_walker_with_enough_cr_activates_boost(self):
+        """Passeador com 50+ CR ativa boost: saldo cai, boost criado."""
+        db = _db()
+        _user(db)
+        _give_cr(db, "walker-1", 60)
+
+        result = _activate_boost_logic(db, "walker-1")
+
+        assert result.get("ok") is True
+        assert result["cr_spent"] == 50
+        assert result["cr_balance"] == 10  # 60 - 50
+        boost = result["boost"]
+        assert boost.boost_enabled is True
+        assert boost.boost_status == "active"
+        assert boost.boost_type == "cr_boost_24h"
+        assert boost.boost_end_at is not None
+        assert boost.boost_end_at > _dt.utcnow()
+
+    def test_wallet_balance_decreases_by_cost(self):
+        """Verifica que o saldo é decrementado exatamente em 50."""
+        db = _db()
+        _user(db)
+        _give_cr(db, "walker-1", 100)
+
+        _activate_boost_logic(db, "walker-1")
+
+        assert cr_svc.get_balance(db, "walker-1") == 50
+
+    def test_spend_transaction_created(self):
+        """Verifica que a transação de gasto é criada com os campos corretos."""
+        db = _db()
+        _user(db)
+        _give_cr(db, "walker-1", 60)
+
+        result = _activate_boost_logic(db, "walker-1")
+
+        txs = cr_svc.list_transactions(db, "walker-1")
+        spend_txs = [t for t in txs if t.tx_type == "spend"]
+        assert len(spend_txs) == 1
+        assert spend_txs[0].source == "boost_24h"
+        assert spend_txs[0].amount == -50
+        assert spend_txs[0].related_entity_type == "walker_boost"
+        assert spend_txs[0].related_entity_id == result["boost"].id
+
+    def test_gamification_event_boost_activated_logged(self):
+        """spend_cr com log_event=True deve criar evento boost_activated."""
+        db = _db()
+        _user(db)
+        _give_cr(db, "walker-1", 60)
+
+        _activate_boost_logic(db, "walker-1")
+
+        events = gami_svc.list_events(db, "walker-1")
+        boost_events = [e for e in events if e.event_type == "boost_activated"]
+        assert len(boost_events) == 1
+
+    def test_walker_with_insufficient_cr_gets_error(self):
+        """Passeador com menos de 50 CR recebe erro e saldo não muda."""
+        db = _db()
+        _user(db)
+        _give_cr(db, "walker-1", 30)
+
+        result = _activate_boost_logic(db, "walker-1")
+
+        assert result.get("error") == "insufficient_cr"
+        # Saldo inalterado
+        assert cr_svc.get_balance(db, "walker-1") == 30
+
+    def test_insufficient_cr_does_not_create_boost(self):
+        """Quando CR insuficiente, nenhum WalkerBoost deve ser persistido."""
+        db = _db()
+        _user(db)
+        _give_cr(db, "walker-1", 10)
+
+        _activate_boost_logic(db, "walker-1")
+
+        boost = active_boost_for_walker("walker-1", db)
+        assert boost is None
+
+    def test_insufficient_cr_does_not_create_spend_transaction(self):
+        """Falha por saldo insuficiente não deve gerar transação de gasto."""
+        db = _db()
+        _user(db)
+        _give_cr(db, "walker-1", 10)
+
+        _activate_boost_logic(db, "walker-1")
+
+        txs = cr_svc.list_transactions(db, "walker-1")
+        spend_txs = [t for t in txs if t.tx_type == "spend"]
+        assert len(spend_txs) == 0
+
+    def test_walker_with_zero_cr_gets_error(self):
+        """Passeador sem CR algum recebe erro de CR insuficiente."""
+        db = _db()
+        _user(db)
+
+        result = _activate_boost_logic(db, "walker-1")
+
+        assert result.get("error") == "insufficient_cr"
+        assert cr_svc.get_balance(db, "walker-1") == 0
+
+    def test_walker_with_active_boost_gets_409(self):
+        """Passeador com boost já ativo recebe erro already_active (→ HTTP 409)."""
+        db = _db()
+        _user(db)
+        _give_cr(db, "walker-1", 200)
+
+        # Ativa o primeiro boost
+        first = _activate_boost_logic(db, "walker-1")
+        assert first.get("ok") is True
+
+        # Tenta ativar novamente
+        second = _activate_boost_logic(db, "walker-1")
+        assert second.get("error") == "already_active"
+
+    def test_active_boost_guard_preserves_cr(self):
+        """Tentativa bloqueada por boost ativo não consome CR."""
+        db = _db()
+        _user(db)
+        _give_cr(db, "walker-1", 200)
+
+        _activate_boost_logic(db, "walker-1")
+        balance_after_first = cr_svc.get_balance(db, "walker-1")  # 200 - 50 = 150
+
+        _activate_boost_logic(db, "walker-1")  # bloqueado
+        assert cr_svc.get_balance(db, "walker-1") == balance_after_first  # inalterado
+
+    def test_boost_expires_and_new_boost_can_be_activated(self):
+        """Após expiração do boost, deve ser possível ativar outro."""
+        db = _db()
+        _user(db)
+        _give_cr(db, "walker-1", 200)
+
+        # Cria boost já expirado manualmente
+        expired_boost = WalkerBoost(
+            id=str(_uuid.uuid4()),
+            walker_id="walker-1",
+            boost_enabled=True,
+            boost_type="cr_boost_24h",
+            boost_score=3,
+            boost_start_at=_dt.utcnow() - _td(hours=48),
+            boost_end_at=_dt.utcnow() - _td(hours=1),  # expirado há 1h
+            boost_status="active",
+        )
+        db.add(expired_boost)
+        db.commit()
+
+        # active_boost_for_walker deve retornar None (e mudar status para expired)
+        assert active_boost_for_walker("walker-1", db) is None
+
+        # Novo boost pode ser ativado
+        result = _activate_boost_logic(db, "walker-1")
+        assert result.get("ok") is True
+
+    def test_boost_exactly_50_cr_activates(self):
+        """Passeador com exatamente 50 CR consegue ativar o boost."""
+        db = _db()
+        _user(db)
+        _give_cr(db, "walker-1", 50)
+
+        result = _activate_boost_logic(db, "walker-1")
+
+        assert result.get("ok") is True
+        assert result["cr_balance"] == 0

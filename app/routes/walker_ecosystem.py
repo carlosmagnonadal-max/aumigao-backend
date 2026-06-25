@@ -9,6 +9,9 @@ Todos os endpoints exigem passeador autenticado (get_current_user).
 """
 from __future__ import annotations
 
+import uuid
+from datetime import datetime, timedelta
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -16,9 +19,11 @@ from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.user import User
 from app.models.walk_tip import WalkTip
+from app.models.walker_boost import WalkerBoost
 from app.models.walker_incentive import WalkerIncentive
 from app.models.walker_kit_submission import WalkerKitSubmission
 from app.models.walker_monitoring_alert import WalkerMonitoringAlert
+from app.services.boost_service import active_boost_for_walker
 from app.services.incentive_engine_service import incentive_payload, list_incentives
 from app.services.monitoring_service import alert_payload, open_alerts
 from app.services.recovery_service import get_or_create_recovery_plan, recovery_payload
@@ -26,6 +31,7 @@ from app.services.reputation_service import calculate_hybrid_reputation_score, r
 from app.services import walker_cr_service
 from app.services import walker_gamification_service
 from app.services import walker_smart_notification_service
+from app.services.walker_cr_rules import CR_SPEND
 
 walker_router = APIRouter(prefix="/walker/me", tags=["walker-ecosystem"])
 api_walker_router = APIRouter(prefix="/api/walker/me", tags=["walker-ecosystem"])
@@ -246,13 +252,117 @@ def _next_level_key(current_level: str) -> str | None:
 @walker_router.get("/cr")
 @api_walker_router.get("/cr")
 def my_cr(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Carteira de CR + histórico de transações do passeador autenticado."""
+    """Carteira de CR + histórico de transações + status de boost ativo."""
     wallet = walker_cr_service.get_or_create_wallet(db, user.id)
     db.commit()  # commit da criação de wallet se necessário
     transactions = walker_cr_service.list_transactions(db, user.id)
+    boost = active_boost_for_walker(user.id, db)
+    active_boost_payload = (
+        {
+            "id": boost.id,
+            "expires_at": boost.boost_end_at.isoformat() if boost.boost_end_at else None,
+            "boost_type": boost.boost_type,
+            "boost_score": boost.boost_score,
+        }
+        if boost
+        else None
+    )
     return {
         "wallet": _wallet_payload(wallet),
         "transactions": [_tx_payload(tx) for tx in transactions],
+        "active_boost": active_boost_payload,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 1b. POST /walker/me/boost  — ativar boost de visibilidade 24h via CR
+# ---------------------------------------------------------------------------
+
+@walker_router.post("/boost")
+@api_walker_router.post("/boost")
+def activate_boost(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Gasta 50 CR para ativar um boost de visibilidade de 24h.
+
+    Regras:
+    - 409 se já há um boost ativo (não-expirado) — evita empilhamento e desperdício.
+    - 400 se CR insuficiente (custo = CR_SPEND["boost_24h"] = 50).
+    - Em sucesso: cria WalkerBoost + debita CR atomicamente (1 commit).
+    """
+    cost = CR_SPEND["boost_24h"]
+
+    # Guard: não permitir boost enquanto houver um ativo.
+    existing = active_boost_for_walker(user.id, db)
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Voce ja tem um boost ativo.",
+        )
+
+    # Verificar saldo ANTES de criar qualquer registro (fail-fast sem flush desnecessário).
+    wallet = walker_cr_service.get_or_create_wallet(db, user.id)
+    if wallet.balance < cost:
+        raise HTTPException(
+            status_code=400,
+            detail=f"CR insuficiente para ativar o boost (custa {cost} CR).",
+        )
+
+    # Criar o WalkerBoost — saldo confirmado, ID necessário para rastreabilidade.
+    now = datetime.utcnow()
+    expires_at = now + timedelta(hours=24)
+    boost = WalkerBoost(
+        id=str(uuid.uuid4()),
+        walker_id=user.id,
+        boost_enabled=True,
+        boost_type="cr_boost_24h",
+        boost_score=3,          # score padrão para boost auto-comprado (mesmo teto max=5)
+        boost_start_at=now,
+        boost_end_at=expires_at,
+        boost_reason="Ativado pelo passeador via CR",
+        boost_status="active",
+    )
+    db.add(boost)
+    db.flush()  # garante boost.id disponível para related_entity_id
+
+    # Debitar CR — passa o boost.id como related_entity_id para rastreabilidade.
+    # spend_cr verifica saldo novamente (defesa dupla), mas já conferimos acima.
+    tx = walker_cr_service.spend_cr(
+        db,
+        user.id,
+        cost,
+        source="boost_24h",
+        description="Boost de visibilidade 24h ativado pelo passeador",
+        related_entity_type="walker_boost",
+        related_entity_id=boost.id,
+        log_event=True,  # spend_cr já loga event_type="boost_activated"
+    )
+
+    if tx is None:
+        # Não deveria chegar aqui (saldo verificado acima), mas em caso de race condition:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"CR insuficiente para ativar o boost (custa {cost} CR).",
+        )
+
+    # Commit atômico: boost + transação de CR em um único commit.
+    db.commit()
+    db.refresh(boost)
+
+    # Saldo pós-gasto
+    wallet = walker_cr_service.get_or_create_wallet(db, user.id)
+
+    return {
+        "ok": True,
+        "boost": {
+            "id": boost.id,
+            "boost_type": boost.boost_type,
+            "boost_score": boost.boost_score,
+            "boost_start_at": boost.boost_start_at.isoformat() if boost.boost_start_at else None,
+            "expires_at": boost.boost_end_at.isoformat() if boost.boost_end_at else None,
+            "boost_status": boost.boost_status,
+        },
+        "cr_spent": cost,
+        "cr_balance": wallet.balance,
     }
 
 

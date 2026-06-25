@@ -283,6 +283,10 @@ def tenant_tem_rede(tenant: Tenant, db: Session) -> bool:  # noqa: ARG001
     plan = (tenant.plan or "").strip().lower()
     if plan == TENANT_PLAN_ENTERPRISE:
         return True
+    # Pricing v2: plano canônico Pro inclui acesso à Rede (capability
+    # network_access_available=True). Coerente com TENANT_PLAN_CAPABILITIES_V2.
+    if plan == TENANT_PLAN_PRO_V2:
+        return True
     if plan == TENANT_PLAN_BUSINESS:
         return bool(getattr(tenant, "network_access_addon", False))
     # starter e demais planos → sem rede

@@ -49,6 +49,10 @@ from app.constants import PAID_PAYMENT_STATUSES as _PAID_PAYMENT_STATUSES
 from app.constants import WALK_COMPLETED_STATUSES as COMPLETED_WALK_STATUSES
 from app.constants import WALK_COMPLETED_STATUSES as DIRECT_COMPLETION_STATUSES
 
+# ── CR / gamificação (Fase 4) ────────────────────────────────────────────────
+import app.services.walker_cr_service as _cr_svc
+from app.services.walker_cr_rules import CR_EARN
+
 router = APIRouter(prefix="/walks", tags=["walks"])
 logger = logging.getLogger(__name__)
 REVIEWABLE_COMPLETION_STATUSES = {"ride_completed"}
@@ -582,6 +586,24 @@ def create_walk_review(walk_id: str, payload: WalkReviewCreate, user: User = Dep
                 comment=(payload.comment or "").strip() or None,
             )
         )
+
+    # ── Gancho B: CR por avaliação 5 estrelas (idempotente via already_awarded) ─
+    _review_walker_id = walk.walker_id or walk.assigned_walker_id
+    if payload.rating == 5 and _review_walker_id:
+        try:
+            if not _cr_svc.already_awarded(db, _review_walker_id, "review_5star", review.id):
+                _cr_svc.earn_cr(
+                    db,
+                    _review_walker_id,
+                    CR_EARN["review_5star"],
+                    "review_5star",
+                    description=f"Avaliação 5 estrelas recebida no passeio {walk.id}.",
+                    related_entity_type="walk_review",
+                    related_entity_id=review.id,
+                )
+        except Exception as _cr_exc:
+            logger.warning("Gancho CR review_5star falhou (review=%s): %s", review.id, _cr_exc)
+
     db.commit()
     db.refresh(review)
     db.refresh(walk)

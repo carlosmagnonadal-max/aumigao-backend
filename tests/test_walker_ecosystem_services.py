@@ -524,3 +524,99 @@ class TestSmartNotificationService:
         db.commit()
         assert notif_svc.count_unread(db, "w1") == 2
         assert notif_svc.count_unread(db, "w2") == 0
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# already_awarded — idempotência (Fase 4, CRÍTICO)
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestAlreadyAwarded:
+    """Garante que already_awarded detecta duplicatas e que earn_cr duas vezes
+    pela mesma entidade NÃO dobra o saldo quando a lógica de chamada usa o guard."""
+
+    def test_returns_false_before_any_transaction(self):
+        db = _db()
+        _user(db)
+        assert not cr_svc.already_awarded(db, "walker-1", "walk_completed", "walk-abc")
+
+    def test_returns_true_after_earn(self):
+        db = _db()
+        _user(db)
+        cr_svc.earn_cr(
+            db, "walker-1", 10, "walk_completed",
+            related_entity_id="walk-abc", log_event=False,
+        )
+        db.commit()
+        assert cr_svc.already_awarded(db, "walker-1", "walk_completed", "walk-abc")
+
+    def test_different_entity_id_is_not_awarded(self):
+        db = _db()
+        _user(db)
+        cr_svc.earn_cr(
+            db, "walker-1", 10, "walk_completed",
+            related_entity_id="walk-abc", log_event=False,
+        )
+        db.commit()
+        assert not cr_svc.already_awarded(db, "walker-1", "walk_completed", "walk-xyz")
+
+    def test_different_source_is_not_awarded(self):
+        db = _db()
+        _user(db)
+        cr_svc.earn_cr(
+            db, "walker-1", 10, "walk_completed",
+            related_entity_id="entity-1", log_event=False,
+        )
+        db.commit()
+        assert not cr_svc.already_awarded(db, "walker-1", "review_5star", "entity-1")
+
+    def test_different_walker_is_not_awarded(self):
+        db = _db()
+        _user(db, "w1")
+        _user(db, "w2")
+        cr_svc.earn_cr(
+            db, "w1", 10, "walk_completed",
+            related_entity_id="walk-abc", log_event=False,
+        )
+        db.commit()
+        assert not cr_svc.already_awarded(db, "w2", "walk_completed", "walk-abc")
+
+    def test_idempotent_earn_does_not_double_balance(self):
+        """Simula o guard: earn chamado 2x pela mesma entidade NÃO dobra saldo."""
+        db = _db()
+        _user(db)
+        entity_id = "walk-idempotent"
+        for _ in range(2):
+            if not cr_svc.already_awarded(db, "walker-1", "walk_completed", entity_id):
+                cr_svc.earn_cr(
+                    db, "walker-1", CR_EARN["walk_completed"], "walk_completed",
+                    related_entity_id=entity_id, log_event=False,
+                )
+            db.commit()
+        assert cr_svc.get_balance(db, "walker-1") == CR_EARN["walk_completed"]
+
+    def test_idempotent_penalty_does_not_double(self):
+        """Guard no_show: penalty chamado 2x pela mesma entidade NÃO dobra penalidade."""
+        db = _db()
+        _user(db)
+        entity_id = "walk-noshow"
+        cr_svc.earn_cr(db, "walker-1", 30, "walk_completed", log_event=False)
+        db.commit()
+        for _ in range(2):
+            if not cr_svc.already_awarded(db, "walker-1", "no_show", entity_id):
+                cr_svc.penalty_cr(
+                    db, "walker-1", CR_PENALTY["no_show"], "no_show",
+                    related_entity_id=entity_id, log_event=False,
+                )
+            db.commit()
+        # 30 - 15 = 15 (penalidade aplicada apenas 1x)
+        assert cr_svc.get_balance(db, "walker-1") == 30 - CR_PENALTY["no_show"]
+
+    def test_returns_true_after_penalty(self):
+        db = _db()
+        _user(db)
+        cr_svc.penalty_cr(
+            db, "walker-1", 15, "no_show",
+            related_entity_id="walk-999", log_event=False,
+        )
+        db.commit()
+        assert cr_svc.already_awarded(db, "walker-1", "no_show", "walk-999")

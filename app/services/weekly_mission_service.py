@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -10,6 +11,8 @@ from app.models.walker_profile import WalkerProfile
 from app.models.walker_review import WalkerReview
 from app.models.walker_weekly_mission import WalkerWeeklyMission
 from app.services.reputation_service import COMPLETED_STATUSES
+
+_logger = logging.getLogger("aumigao.weekly_missions")
 
 MISSION_TEMPLATES = [
     {
@@ -231,8 +234,46 @@ def refresh_weekly_missions(walker_id: str, db: Session) -> list[WalkerWeeklyMis
         .all()
     )
     for mission in missions:
+        prev_status = mission.status
         mission.current_value = mission_current_value(walker_id, mission, db)
         update_mission_status(mission)
+
+        # ── Gancho C: CR por missão semanal concluída ────────────────────────
+        # Dispara apenas na TRANSIÇÃO para "completed" (prev != completed).
+        # Idempotente: already_awarded verifica se a missão já ganhou CR.
+        if mission.status == "completed" and prev_status != "completed":
+            try:
+                # Import tardio para evitar ciclo de importação.
+                import app.services.walker_cr_service as _cr_svc
+                from app.services.walker_cr_rules import CR_EARN
+                from app.services.walker_gamification_service import log_event as _gami_log_event
+
+                if not _cr_svc.already_awarded(db, walker_id, "weekly_mission", mission.id):
+                    _cr_svc.earn_cr(
+                        db,
+                        walker_id,
+                        CR_EARN["weekly_mission"],
+                        "weekly_mission",
+                        description=f"Missão semanal '{mission.title}' concluída.",
+                        related_entity_type="walker_weekly_mission",
+                        related_entity_id=mission.id,
+                    )
+                    _gami_log_event(
+                        db,
+                        walker_id,
+                        event_type="mission_completed",
+                        title=f"Missão concluída: {mission.title}",
+                        description=f"Missão semanal concluída com {mission.current_value}/{mission.target_value}.",
+                        related_entity_type="walker_weekly_mission",
+                        related_entity_id=mission.id,
+                    )
+            except Exception as _cr_exc:
+                _logger.warning(
+                    "Gancho CR weekly_mission falhou (mission=%s): %s",
+                    mission.id,
+                    _cr_exc,
+                )
+
     db.commit()
     return missions
 

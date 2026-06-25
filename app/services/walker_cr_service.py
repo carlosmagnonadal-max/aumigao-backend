@@ -27,6 +27,39 @@ from app.models.walker_cr_transaction import WalkerCrTransaction
 from app.models.walker_cr_wallet import WalkerCrWallet
 
 
+def already_awarded(
+    db: Session,
+    walker_user_id: str,
+    source: str,
+    related_entity_id: str,
+) -> bool:
+    """Verifica se um CR já foi concedido para esta entidade específica.
+
+    Garante idempotência: retorna True se já existe WalkerCrTransaction com
+    (walker_user_id, source, related_entity_id) iguais. Use antes de cada
+    earn/penalty ligado a uma entidade para evitar concessão dupla em caso
+    de reprocessamento.
+
+    Args:
+        db: Sessão SQLAlchemy.
+        walker_user_id: ID do usuário passeador.
+        source: Origem da transação (ex.: "walk_completed", "review_5star").
+        related_entity_id: ID da entidade relacionada (ex.: walk.id, review.id).
+
+    Returns:
+        True se já existe transação com esses parâmetros, False caso contrário.
+    """
+    return (
+        db.query(WalkerCrTransaction)
+        .filter(
+            WalkerCrTransaction.walker_user_id == walker_user_id,
+            WalkerCrTransaction.source == source,
+            WalkerCrTransaction.related_entity_id == related_entity_id,
+        )
+        .first()
+    ) is not None
+
+
 def get_or_create_wallet(db: Session, walker_user_id: str) -> WalkerCrWallet:
     """Retorna a carteira de CR do passeador, criando-a com saldo 0 se não existir.
 

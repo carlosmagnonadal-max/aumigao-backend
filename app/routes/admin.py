@@ -113,6 +113,12 @@ from app.services.background_check_service import (
 )
 from app.services.tenant_feature_runtime_service import is_tenant_feature_enabled
 
+# ── CR / gamificação (Fase 4) ────────────────────────────────────────────────
+import app.services.walker_cr_service as _cr_svc
+from app.services.walker_cr_rules import CR_EARN, CR_PENALTY, BADGE_WALK_MILESTONES
+from app.services.walker_gamification_service import log_event as _gami_log_event
+from app.models.walker_incentive import WalkerIncentive
+
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_permission("admin.access"))])
 api_router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_permission("admin.access"))])
 
@@ -1890,6 +1896,68 @@ def approve_walk_completion(review_id: str, payload: WalkCompletionDecisionReque
                 },
             ),
         )
+
+    # ── Gancho A: CR por passeio concluído (idempotente via already_awarded) ──
+    if walker_id:
+        try:
+            if not _cr_svc.already_awarded(db, walker_id, "walk_completed", walk.id):
+                _cr_svc.earn_cr(
+                    db,
+                    walker_id,
+                    CR_EARN["walk_completed"],
+                    "walk_completed",
+                    description=f"Passeio {walk.id} concluído e aprovado.",
+                    related_entity_type="walk",
+                    related_entity_id=walk.id,
+                )
+            # ── Badge por marco de passeios concluídos ──────────────────────
+            completed_count = (
+                db.query(Walk)
+                .filter(
+                    Walk.walker_id == walker_id,
+                    Walk.operational_status == "ride_completed",
+                )
+                .count()
+            )
+            # Inclui o passeio atual (já marcado como ride_completed acima).
+            for milestone in BADGE_WALK_MILESTONES:
+                if completed_count < milestone:
+                    continue
+                badge_source = f"badge_walks_{milestone}"
+                badge_entity = f"milestone_{milestone}"
+                already_has_badge = (
+                    db.query(WalkerIncentive)
+                    .filter(
+                        WalkerIncentive.walker_id == walker_id,
+                        WalkerIncentive.source == badge_source,
+                    )
+                    .first()
+                ) is not None
+                if not already_has_badge:
+                    badge = WalkerIncentive(
+                        id=str(uuid4()),
+                        walker_id=walker_id,
+                        incentive_type="badge",
+                        title=f"{milestone} passeios concluídos",
+                        description=f"Marco de {milestone} passeios alcançado.",
+                        source=badge_source,
+                        reward_type="recognition",
+                        status="active",
+                        granted_at=datetime.utcnow(),
+                    )
+                    db.add(badge)
+                    _gami_log_event(
+                        db,
+                        walker_id,
+                        event_type="badge_earned",
+                        title=f"Badge: {milestone} passeios",
+                        description=f"Você alcançou o marco de {milestone} passeios concluídos.",
+                        related_entity_type="walker_incentive",
+                        related_entity_id=badge.id,
+                    )
+        except Exception as _cr_exc:
+            _logger.warning("Gancho CR walk_completed falhou (walk=%s): %s", walk.id, _cr_exc)
+
     db.commit()
     db.refresh(review)
     db.refresh(walk)
@@ -2039,6 +2107,22 @@ def approve_walker_kit(submission_id: str, admin: User = Depends(require_permiss
         source="admin.kit.approve",
         metadata={"walker_user_id": submission.walker_user_id},
     )
+
+    # ── Gancho D: CR por kit aprovado (idempotente via already_awarded) ──────
+    try:
+        if not _cr_svc.already_awarded(db, submission.walker_user_id, "kit_approved", submission.id):
+            _cr_svc.earn_cr(
+                db,
+                submission.walker_user_id,
+                CR_EARN["kit_approved"],
+                "kit_approved",
+                description="Kit de passeador aprovado pela auditoria.",
+                related_entity_type="walker_kit_submission",
+                related_entity_id=submission.id,
+            )
+    except Exception as _cr_exc:
+        _logger.warning("Gancho CR kit_approved falhou (submission=%s): %s", submission.id, _cr_exc)
+
     db.commit()
     db.refresh(submission)
     return _serialize_walker_kit_submission(submission, db)

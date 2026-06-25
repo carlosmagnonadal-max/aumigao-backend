@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -8,6 +9,8 @@ from sqlalchemy.orm import Session
 
 from app.models.walk import Walk
 from app.models.walk_operational_event import WalkOperationalEvent
+
+_logger = logging.getLogger("aumigao.operational_reliability")
 
 WALKER_LATE = "walker_late"
 TUTOR_UNREACHABLE = "tutor_unreachable"
@@ -101,6 +104,34 @@ def create_operational_event(
         notes=notes or EVENT_LABELS.get(event_type, "Evento operacional registrado."),
     )
     db.add(event)
+
+    # ── Gancho E: penalidade CR por no-show do passeador ────────────────────
+    # Dispara apenas quando WALKER_NO_SHOW é criado pela primeira vez
+    # (dedupe acima já garante idempotência de evento; also_awarded garante
+    # idempotência de CR caso o dedupe seja contornado).
+    if event_type == WALKER_NO_SHOW:
+        _walker_id = walk.walker_id or walk.assigned_walker_id
+        if _walker_id:
+            try:
+                # Import tardio para evitar ciclo de importação.
+                import app.services.walker_cr_service as _cr_svc
+                from app.services.walker_cr_rules import CR_PENALTY
+
+                if not _cr_svc.already_awarded(db, _walker_id, "no_show", walk.id):
+                    _cr_svc.penalty_cr(
+                        db,
+                        _walker_id,
+                        CR_PENALTY["no_show"],
+                        "no_show",
+                        description=f"No-show registrado para o passeio {walk.id}.",
+                        related_entity_type="walk",
+                        related_entity_id=walk.id,
+                    )
+            except Exception as _cr_exc:
+                _logger.warning(
+                    "Gancho CR no_show falhou (walk=%s): %s", walk.id, _cr_exc
+                )
+
     return event
 
 

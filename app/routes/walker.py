@@ -115,6 +115,7 @@ ALLOWED_UPLOAD_TYPES = {
     "identity_back",
     "address_proof",
     "selfie",
+    "background_certificate",  # FIX 5: tipo dedicado para certidão de antecedentes
 }
 ALLOWED_UPLOAD_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
 FAKE_WALKER_TOKENS = (
@@ -328,10 +329,13 @@ def _walk_payload(walk: Walk, db: Session) -> dict:
 
 
 def _completed_walks(user: User, db: Session, limit: int = 200) -> list[Walk]:
-    # F16: limite são para evitar carga excessiva; status "Finalizado" é o canônico.
+    # F16: limite são para evitar carga excessiva.
+    # FIX 1: usar conjunto canônico de status concluídos (_WALK_COMPLETED_STATUSES)
+    # em vez de apenas "Finalizado", para não zerar ganhos de walks com status
+    # canônico "ride_completed" ou outros variantes.
     return (
         db.query(Walk)
-        .filter(Walk.walker_id == user.id, Walk.status == "Finalizado")
+        .filter(Walk.walker_id == user.id, Walk.status.in_(_WALK_COMPLETED_STATUSES))
         .order_by(Walk.created_at.desc())
         .limit(limit)
         .all()
@@ -764,6 +768,24 @@ def _available_balance(user: User, db: Session) -> float:
 
     # Gorjetas pagas
     gross += _walker_tips_total(user.id, db)
+
+    # FIX 7: descontar saques pendentes/aprovados para evitar double-spend.
+    # Espelha a lógica de débito de _balance_by_tenant (provider='pix', walk_id IS NULL, amount<0).
+    _pending_withdrawal_statuses = _PENDING_PAYMENT_STATUSES | frozenset({"approved"})
+    pending_withdrawals = (
+        db.query(Payment)
+        .filter(
+            Payment.tutor_id == user.id,
+            Payment.provider == "pix",
+            Payment.walk_id.is_(None),
+            Payment.amount < 0,
+            Payment.status.in_(_pending_withdrawal_statuses),
+        )
+        .all()
+    )
+    # amount já é negativo; somar reduz o saldo disponível
+    gross += sum(float(p.amount or 0) for p in pending_withdrawals)
+
     return round(gross, 2)
 
 
@@ -990,7 +1012,7 @@ class BackgroundConsentPayload(BaseModel):
 class BackgroundCertificatePayload(BaseModel):
     cert_type: str
     uf: str | None = None
-    cert_number: str
+    cert_number: str | None = None  # FIX 4: opcional — front-end pode não enviar
     document_url: str | None = None
 
     @field_validator("document_url", mode="before")
@@ -1084,7 +1106,22 @@ def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_
     # F16: carrega only active/accepted/available sem limite; completed com limite 200.
     active = db.query(Walk).filter(Walk.walker_id == user.id, Walk.status.in_(["Indo buscar o pet", "Passeando agora"])).all()
     accepted = db.query(Walk).filter(Walk.walker_id == user.id).all()
-    available = db.query(Walk).filter(Walk.walker_id.is_(None), Walk.status == "Agendado").all()
+    # FIX 2: filtrar pelos tenants permitidos ao walker para não vazar walks de outros tenants.
+    _allowed_tenant_ids = [
+        row[0] for row in db.query(TenantWalkerAccess.tenant_id).filter(
+            TenantWalkerAccess.walker_user_id == user.id,
+            TenantWalkerAccess.status == "active",
+        ).distinct().all()
+    ]
+    available = (
+        db.query(Walk)
+        .filter(
+            Walk.walker_id.is_(None),
+            Walk.status == "Agendado",
+            Walk.tenant_id.in_(_allowed_tenant_ids),
+        )
+        .all()
+    )
     completed = _completed_walks(user, db)  # limitado a 200
 
     # F01: valores reais do banco; sem fallback fake
@@ -1292,6 +1329,9 @@ def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_w
             .first()
         )
         _walk_tenant_id = _pay.tenant_id if _pay else getattr(walk, "tenant_id", None)
+        # FIX 8: usar walker_amount (líquido após split) quando disponível;
+        # fallback para walk.price apenas quando o Payment não tem split calculado.
+        _tx_amount = float(_pay.walker_amount) if (_pay and _pay.walker_amount is not None) else float(walk.price or 0)
         transactions.append({
             "id": f"walk-{walk.id}",
             "type": "walk",
@@ -1300,7 +1340,7 @@ def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_w
             "duration": wpl["duration"],
             "date": wpl["date"],
             "time": wpl["time"],
-            "amount": float(walk.price or 0),
+            "amount": _tx_amount,
             "status": "paid",
             # Campos novos (Fase 1 Passo 4 §B) — não existiam antes:
             "tenant_id": _walk_tenant_id,
@@ -1339,6 +1379,10 @@ def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_w
     from app.services.walker_trust_service import compute_walker_trust as _compute_trust
     level_str = _compute_trust(db, user.id)["level"]
 
+    # FIX 6c: ler pix_key do perfil do walker para expor no response de earnings
+    _walker_profile_earnings = db.query(WalkerProfile).filter(WalkerProfile.user_id == user.id).first()
+    _pix_key = _walker_profile_earnings.pix_key if _walker_profile_earnings else None
+
     return {
         # ── Chaves EXISTENTES (contrato inalterado — zero-regressão) ────────
         "available_balance": _available_balance(user, db),
@@ -1357,7 +1401,37 @@ def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_w
         # ── Chaves NOVAS (Fase 1 Passo 4 §B) — não quebram cliente antigo ───
         "by_tenant": by_tenant_list,
         "consolidated": consolidated,
+        # FIX 6c: chave Pix do walker (null se não cadastrada)
+        "pix_key": _pix_key,
     }
+
+
+class PixKeyPayload(BaseModel):
+    pix_key: str
+
+
+@router.patch("/pix-key")
+def update_pix_key(
+    payload: PixKeyPayload,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """FIX 6d: Self-service para o walker cadastrar/atualizar a própria chave Pix.
+
+    Valida que a chave não está vazia e persiste no WalkerProfile. A chave é
+    retornada no GET /walker/earnings para o app exibir e para o processamento
+    de saques.
+    """
+    _require_active_walker(user, db)
+    key = (payload.pix_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=422, detail="pix_key nao pode ser vazio.")
+    profile = _walker_profile_for_user(user, db)
+    profile.pix_key = key
+    profile.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(profile)
+    return {"ok": True, "pix_key": profile.pix_key}
 
 
 @router.get("/goals-evolution")
@@ -2832,6 +2906,15 @@ def request_withdrawal(payload: WithdrawalRequest, user: User = Depends(get_curr
     if amount < 20:
         raise HTTPException(status_code=400, detail="Valor minimo para saque e R$ 20,00")
 
+    # FIX 6e: validar que walker tem chave Pix cadastrada antes de criar o saque.
+    _wp = db.query(WalkerProfile).filter(WalkerProfile.user_id == user.id).first()
+    _pix_key_for_withdrawal = (_wp.pix_key or "").strip() if _wp else ""
+    if not _pix_key_for_withdrawal:
+        raise HTTPException(
+            status_code=400,
+            detail="Cadastre sua chave Pix em Configuracoes antes de solicitar um saque.",
+        )
+
     if payload.tenant_id is not None:
         # ── Fase 1 Passo 4 §C: saque vinculado a tenant ─────────────────────
         # Valida contra o saldo disponível DESTE tenant especificamente.
@@ -2859,4 +2942,10 @@ def request_withdrawal(payload: WithdrawalRequest, user: User = Depends(get_curr
 
     db.add(payment)
     db.commit()
-    return {"ok": True, "withdrawal_id": payment.id, "amount": amount, "status": "pending"}
+    return {
+        "ok": True,
+        "withdrawal_id": payment.id,
+        "amount": amount,
+        "status": "pending",
+        "pix_key": _pix_key_for_withdrawal,  # FIX 6e: confirmar a chave usada
+    }

@@ -107,6 +107,7 @@ def _seed_base(db):
         user_id=WALKER_ID,
         status="active",
         active_as_walker=True,
+        pix_key="walker@pix.com",  # FIX 6e: necessário para POST /walker/withdrawals
     ))
 
     # Pet

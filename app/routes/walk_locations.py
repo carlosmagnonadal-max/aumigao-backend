@@ -30,7 +30,8 @@ router = APIRouter(prefix="/walks", tags=["walk-locations"])
 api_router = APIRouter(prefix="/api/walks", tags=["walk-locations"])
 
 # Operational statuses que indicam passeio em execução ativa (indo buscar + passeando).
-ACTIVE_WALK_STATUSES = {WALKER_ARRIVING, RIDE_IN_PROGRESS}
+# FIX 3: inclui pet_handover_confirmed para não rejeitar pings GPS durante o handover.
+ACTIVE_WALK_STATUSES = {WALKER_ARRIVING, "pet_handover_confirmed", RIDE_IN_PROGRESS}
 
 # Limite de pings antes de parar de aceitar novos (proteção de volume).
 MAX_PINGS_PER_WALK = 5_000

@@ -48,7 +48,7 @@ router = APIRouter(prefix="/api/partner-applications", tags=["partner-applicatio
 LOGGER = logging.getLogger("aumigao.walker_applications")
 
 # G6: extensões permitidas para documentos (identidade/endereço) incluem PDF.
-_DOCUMENT_TYPES_ALLOW_PDF = {"identity_front", "identity_back", "address_proof"}
+_DOCUMENT_TYPES_ALLOW_PDF = {"identity_front", "identity_back", "address_proof", "background_certificate"}  # FIX 5
 _DOCUMENT_UPLOAD_EXTENSIONS = ALLOWED_UPLOAD_EXTENSIONS | {".pdf"}
 
 

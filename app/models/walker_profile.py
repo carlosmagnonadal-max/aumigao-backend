@@ -46,6 +46,9 @@ class WalkerProfile(Base):
     # ID da carteira Asaas do walker para split real (Fase B — dormente até PAYMENT_MODE=asaas_live).
     # Configurável via PATCH /admin/walkers/{user_id}/wallet com permissão finance.manage.
     asaas_wallet_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # FIX 6a: chave Pix cadastrada pelo próprio walker para receber saques.
+    # Nullable — walker pode ainda não ter configurado.
+    pix_key: Mapped[str | None] = mapped_column(String, nullable=True)
     # Background Check Fase 0 — status agregado das certidoes de antecedentes.
     # none|submitted|partial|verified|flagged. Default "none" => ZERO efeito ate ligarem a flag.
     background_check_status: Mapped[str] = mapped_column(

@@ -136,6 +136,11 @@ def create_account(
     # Verifica permissão do actor
     _assert_can_manage_target(admin, payload.tenant_id, payload.role)
 
+    # Injeta o escopo RLS na sessão (super_admin → '*'; admin → próprio tenant).
+    # Sem isso, o INSERT do user com tenant_id do tenant-alvo viola a policy
+    # WITH CHECK de users (InsufficientPrivilege/500). Espelha list_accounts.
+    get_admin_tenant_scope(admin, db)
+
     # Unicidade de e-mail
     existing = db.query(User).filter(User.email == email).first()
     if existing:

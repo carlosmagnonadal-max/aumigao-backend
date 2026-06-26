@@ -2,8 +2,9 @@ from sqlalchemy.orm import Session
 from app.models.fiscal import TenantFiscalConfig
 
 _EDITABLE = {
+    "tax_regime",
     "commission_tax_percent", "subscription_tax_percent", "walker_tax_percent",
-    "iss_percent", "municipal_service_code", "simples_nacional", "cnae",
+    "iss_percent", "municipal_service_code", "cnae",
     "service_description", "active",
 }
 

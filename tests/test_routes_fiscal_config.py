@@ -72,3 +72,29 @@ def test_put_fiscal_config_forbidden_tutor():
     client.app.dependency_overrides[get_current_user] = lambda: db.get(User, TUTOR_ID)
     r = client.put(f"/admin/tenants/{T1}/fiscal-config", json={"commission_tax_percent": 5})
     assert r.status_code == 403
+
+
+def test_put_tax_regime_round_trip():
+    """PUT com tax_regime válido aparece no GET seguinte."""
+    client, _ = build()
+    r = client.put(f"/admin/tenants/{T1}/fiscal-config", json={"tax_regime": "simples_nacional"})
+    assert r.status_code == 200, r.text
+    assert r.json()["tax_regime"] == "simples_nacional"
+    g = client.get(f"/admin/tenants/{T1}/fiscal-config")
+    assert g.status_code == 200
+    assert g.json()["tax_regime"] == "simples_nacional"
+
+
+def test_put_tax_regime_invalid_returns_422():
+    """PUT com tax_regime inválido retorna 422."""
+    client, _ = build()
+    r = client.put(f"/admin/tenants/{T1}/fiscal-config", json={"tax_regime": "regime_invalido"})
+    assert r.status_code == 422
+
+
+def test_get_fiscal_config_has_no_simples_nacional_field():
+    """A resposta da rota não deve conter o campo legado simples_nacional."""
+    client, _ = build()
+    g = client.get(f"/admin/tenants/{T1}/fiscal-config")
+    assert g.status_code == 200
+    assert "simples_nacional" not in g.json()

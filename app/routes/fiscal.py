@@ -29,12 +29,12 @@ def _ensure_scope(admin: User, tenant_id: str, db: Session):
 def _serialize(tenant_id, cfg) -> dict:
     return {
         "tenant_id": tenant_id,
+        "tax_regime": cfg.tax_regime,
         "commission_tax_percent": float(cfg.commission_tax_percent or 0),
         "subscription_tax_percent": float(cfg.subscription_tax_percent or 0),
         "walker_tax_percent": float(cfg.walker_tax_percent or 0),
         "iss_percent": float(cfg.iss_percent) if cfg.iss_percent is not None else None,
         "municipal_service_code": cfg.municipal_service_code,
-        "simples_nacional": cfg.simples_nacional,
         "cnae": cfg.cnae,
         "service_description": cfg.service_description,
         "active": bool(cfg.active) if cfg.active is not None else True,

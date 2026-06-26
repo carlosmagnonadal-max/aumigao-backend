@@ -13,18 +13,22 @@ REVENUE_WALK_COMMISSION = "walk_commission"
 REVENUE_SAAS_SUBSCRIPTION = "saas_subscription"
 REVENUE_TIP = "tip"
 
+# Valores permitidos para tax_regime (fonte única de verdade)
+ALLOWED_TAX_REGIMES = ("mei", "simples_nacional", "lucro_presumido", "lucro_real")
+
 class TenantFiscalConfig(Base):
     __tablename__ = "tenant_fiscal_config"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     tenant_id: Mapped[str] = mapped_column(String, ForeignKey("tenants.id"), nullable=False, unique=True, index=True)
-    # Provisão (percentuais; default 0 -> provisão zero até configurar)
+    # Perfil fiscal — BASE DA ESTIMATIVA DE IMPOSTO (não emissão de nota).
+    # tax_regime + as 3 alíquotas abaixo determinam a provisão; null = não informado (provisão zero).
+    tax_regime: Mapped[str | None] = mapped_column(String, nullable=True)
     commission_tax_percent: Mapped[float] = mapped_column(Money, default=0, nullable=False)
     subscription_tax_percent: Mapped[float] = mapped_column(Money, default=0, nullable=False)
     walker_tax_percent: Mapped[float] = mapped_column(Money, default=0, nullable=False)
-    # Estruturais NFS-e (usados quando a emissão ligar)
+    # Metadados opcionais de nota fiscal — só relevantes se a parte for emitir NFS-e.
     iss_percent: Mapped[float | None] = mapped_column(Money, nullable=True)
     municipal_service_code: Mapped[str | None] = mapped_column(String, nullable=True)
-    simples_nacional: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     cnae: Mapped[str | None] = mapped_column(String, nullable=True)
     service_description: Mapped[str | None] = mapped_column(String, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

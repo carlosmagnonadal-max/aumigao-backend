@@ -975,6 +975,9 @@ def delete_walk(walk_id: str, user: User = Depends(get_current_user), db: Sessio
             status_code=409,
             detail="Nao e possivel excluir um passeio que ja foi pago, esta em andamento ou foi concluido.",
         )
+    # Projeto A: deletar passeio coberto por assinatura devolve o crédito.
+    from app.services.recurring_plan_service import refund_credit_for_walk
+    refund_credit_for_walk(db, walk)
     db.delete(walk)
     db.commit()
     return {"ok": True}

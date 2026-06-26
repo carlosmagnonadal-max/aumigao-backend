@@ -11,6 +11,7 @@ import app.models  # registra todas as tabelas no Base
 from app.core.database import Base, get_db, get_global_db
 from app.dependencies.auth import get_current_user
 from app.routes import payments as payments_module
+from app.routes import walks as walks_module
 from app.models.tenant import Tenant, TenantFeature
 from app.models.user import User
 from app.models.pet import Pet
@@ -222,6 +223,14 @@ def _make_payments_client(db):
     return TestClient(app_t)
 
 
+def _make_walks_client(db):
+    app_t = FastAPI()
+    app_t.include_router(walks_module.router)
+    app_t.dependency_overrides[get_db] = lambda: db
+    app_t.dependency_overrides[get_current_user] = lambda: db.get(User, TUTOR_ID)
+    return TestClient(app_t)
+
+
 def test_payment_create_rejected_for_covered_walk():
     db = _make_db(); tenant = _tenant(db)
     plan = _make_plan(db, tenant, walks_per_cycle=4)
@@ -279,3 +288,22 @@ def test_cancel_walk_refunds_credit():
     db.refresh(sub)
     assert sub.credits_remaining == 4
     assert walk.credit_refunded is True
+
+
+def test_delete_walk_refunds_credit():
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)
+    consume_credit_if_available(db, tenant, TUTOR_ID); db.commit()  # 4 -> 3
+    walk = _make_covered_walk(db, tenant, sub)
+    # operational_status padrão ("ride_scheduled") está no conjunto bloqueado de deleção;
+    # muda para "pending_walker_confirmation" para que o DELETE seja permitido.
+    walk.operational_status = "pending_walker_confirmation"
+    db.commit()
+    client = _make_walks_client(db)
+
+    resp = client.delete(f"/walks/{walk.id}")
+    assert resp.status_code in (200, 204), resp.text
+
+    db.refresh(sub)
+    assert sub.credits_remaining == 4

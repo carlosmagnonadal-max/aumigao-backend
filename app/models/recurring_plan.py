@@ -66,5 +66,7 @@ class TutorSubscription(Base):
     # ID da subscription nativa no Asaas — preenchido quando o pagamento recorrente
     # é criado via API nativa do Asaas (Fase 7 $-2). Nullable: sem Asaas fica None.
     asaas_subscription_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Projeto A: créditos só concedidos após confirmação do 1º pagamento (anti passeio-grátis).
+    credits_granted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

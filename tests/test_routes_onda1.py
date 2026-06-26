@@ -124,16 +124,38 @@ def test_shared_walks_create_then_get_and_checkout():
 
 # ----- fluxo POPULADO ponta a ponta (flag ligada) -----
 def test_recurring_plans_subscribe_happy_path():
-    from app.models.recurring_plan import RecurringPlan
+    from app.models.recurring_plan import RecurringPlan, TutorSubscription
+    from app.services.recurring_plan_service import grant_credits_on_payment
     client, db = build(features={"recurring_plans"})
     db.add(RecurringPlan(id="plan1", tenant_id=TENANT_ID, name="Mensal 8", price=99.0, walks_per_cycle=8, active=True))
     db.commit()
     view = client.get("/recurring-plans").json()
     assert view["available"] is True and len(view["plans"]) == 1
     sub = client.post("/recurring-plans/plan1/subscribe").json()
-    assert sub["status"] == "active" and sub["credits_remaining"] == 8 and sub["plan_name"] == "Mensal 8"
+    # COMPORTAMENTO GATED (anti passeio-grátis): créditos só são concedidos após
+    # confirmação do 1º pagamento via webhook. Imediatamente após assinar,
+    # credits_remaining == 0 (pendente de pagamento).
+    assert sub["status"] == "active"
+    assert sub["credits_remaining"] == 0, (
+        "subscribe_async deve criar assinatura com créditos zerados (gate anti passeio-grátis); "
+        "créditos só são concedidos via grant_credits_on_payment ao confirmar o 1º pagamento"
+    )
+    assert sub["plan_name"] == "Mensal 8"
     # GET agora reflete a assinatura ativa
     assert client.get("/recurring-plans").json()["subscription"]["plan_id"] == "plan1"
+
+    # Verifica que grant_credits_on_payment concede os créditos do ciclo
+    # (simula confirmação do 1º pagamento, normalmente acionada pelo webhook).
+    sub_obj = db.query(TutorSubscription).filter(TutorSubscription.tutor_id == TUTOR_ID).first()
+    assert sub_obj is not None
+    granted = grant_credits_on_payment(db, sub_obj)
+    db.commit()
+    db.refresh(sub_obj)
+    assert granted is True
+    assert sub_obj.credits_remaining == 8
+    assert sub_obj.credits_granted is True
+    # Idempotência: segunda chamada não concede novamente
+    assert grant_credits_on_payment(db, sub_obj) is False
 
 
 def test_shared_walk_full_lifecycle_two_tutors():

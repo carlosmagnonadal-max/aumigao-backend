@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -37,6 +37,14 @@ class Walk(Base):
     matching_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     matching_finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     no_walker_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Passeio coberto por crédito de assinatura mensal do tutor (Projeto A).
+    # NULL = passeio avulso. FK→tutor_subscriptions.id.
+    subscription_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("tutor_subscriptions.id"), nullable=True, index=True
+    )
+    # Idempotência do estorno de crédito no cancelamento/deleção.
+    credit_refunded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     tutor = relationship("User", back_populates="walks", foreign_keys=[tutor_id])
 

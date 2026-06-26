@@ -366,7 +366,9 @@ class TestSubscribeAsync:
         subscription = _run(_coro())
 
         assert subscription.status == SUBSCRIPTION_ACTIVE
-        assert subscription.credits_remaining == 8
+        # Gate Projeto A: créditos só concedidos após confirmação do 1º pagamento.
+        assert subscription.credits_remaining == 0
+        assert subscription.credits_granted is False
         assert subscription.asaas_subscription_id in ("asaas-sub-abc", None)
 
     def test_subscribe_async_raises_502_on_asaas_failure(self):

@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException
+from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session
 
 from app.models.recurring_plan import (
@@ -18,6 +19,7 @@ from app.models.recurring_plan import (
     TutorSubscription,
 )
 from app.models.tenant import Tenant
+from app.models.walk import Walk
 from app.services.tenant_plan_service import enforce_tenant_product_feature, tenant_has_feature
 
 FEATURE_LABEL = "Planos recorrentes"
@@ -119,6 +121,37 @@ def get_active_subscription(db: Session, tenant_id: str, tutor_id: str) -> Tutor
     )
 
 
+def consume_credit_if_available(db: Session, tenant: Tenant, tutor_id: str) -> TutorSubscription | None:
+    """Consome 1 crédito da assinatura ativa do tutor, de forma ATÔMICA.
+
+    Usa UPDATE ... WHERE credits_remaining > 0 (condicional no banco) para evitar
+    double-spend em requisições concorrentes — dois POST /walks simultâneos do mesmo
+    tutor não conseguem consumir o mesmo último crédito.
+
+    Retorna a TutorSubscription (recarregada, com credits_remaining já decrementado;
+    sem commit — o caller commita) ou None quando não há assinatura ativa com crédito.
+    """
+    result = db.execute(
+        sa_update(TutorSubscription)
+        .where(
+            TutorSubscription.tenant_id == tenant.id,
+            TutorSubscription.tutor_id == tutor_id,
+            TutorSubscription.status == SUBSCRIPTION_ACTIVE,
+            TutorSubscription.credits_remaining > 0,
+        )
+        .values(
+            credits_remaining=TutorSubscription.credits_remaining - 1,
+            updated_at=datetime.utcnow(),
+        )
+        .returning(TutorSubscription.id)
+    )
+    row = result.first()
+    if row is None:
+        return None
+    db.expire_all()
+    return db.get(TutorSubscription, row[0])
+
+
 def subscribe(db: Session, tenant: Tenant, tutor_id: str, plan_id: str) -> TutorSubscription:
     """Versão síncrona (legada) — usada pelos testes existentes.
 
@@ -146,6 +179,7 @@ def subscribe(db: Session, tenant: Tenant, tutor_id: str, plan_id: str) -> Tutor
         price=plan.price,
         walks_per_cycle=plan.walks_per_cycle,
         credits_remaining=plan.walks_per_cycle,
+        credits_granted=True,
         current_period_start=now,
         current_period_end=_period_end(now, plan.interval),
     )
@@ -212,7 +246,8 @@ async def subscribe_async(
         status=SUBSCRIPTION_ACTIVE,
         price=plan.price,
         walks_per_cycle=plan.walks_per_cycle,
-        credits_remaining=plan.walks_per_cycle,
+        credits_remaining=0,
+        credits_granted=False,
         current_period_start=now,
         current_period_end=_period_end(now, plan.interval),
     )
@@ -313,3 +348,90 @@ def plan_name_for(db: Session, subscription: TutorSubscription | None) -> str | 
         return None
     plan = db.get(RecurringPlan, subscription.plan_id)
     return plan.name if plan else None
+
+
+def reset_credits_if_renewal(db: Session, subscription: TutorSubscription) -> bool:
+    """Reabastece os créditos na renovação mensal paga, idempotente e thread-safe.
+
+    Só reseta quando o período atual já venceu (current_period_end < now). Isso evita
+    reabastecer na 1ª cobrança (período recém-criado) e em reentrega do mesmo evento.
+    Releitura com with_for_update serializa duas entregas concorrentes (a 2ª vê o
+    período já avançado e desiste). Avança o período. Não commita. Retorna True se resetou.
+    """
+    now = datetime.utcnow()
+    locked = (
+        db.query(TutorSubscription)
+        .filter(TutorSubscription.id == subscription.id)
+        .with_for_update()
+        .first()
+    )
+    if locked is None:
+        return False
+    end = locked.current_period_end
+    if end is None or end > now:
+        return False
+    plan = db.get(RecurringPlan, locked.plan_id)
+    interval = plan.interval if plan else "monthly"
+    locked.credits_remaining = locked.walks_per_cycle
+    locked.current_period_start = now
+    locked.current_period_end = _period_end(now, interval)
+    locked.updated_at = now
+    db.add(locked)
+    return True
+
+
+def grant_credits_on_payment(db: Session, subscription: TutorSubscription) -> bool:
+    """Concede os créditos do ciclo na 1ª confirmação de pagamento (idempotente).
+
+    Só age uma vez por assinatura: se credits_granted é False, concede
+    walks_per_cycle créditos e marca credits_granted=True. Não commita.
+    Retorna True se concedeu. Renovações de ciclos seguintes são tratadas por
+    reset_credits_if_renewal (que reabastece quando o período vence).
+    """
+    if subscription.credits_granted:
+        return False
+    subscription.credits_remaining = subscription.walks_per_cycle
+    subscription.credits_granted = True
+    subscription.updated_at = datetime.utcnow()
+    db.add(subscription)
+    return True
+
+
+def refund_credit_for_walk(db: Session, walk) -> bool:
+    """Estorna 1 crédito quando um passeio coberto por assinatura é cancelado/deletado.
+
+    Atômico: o flip de credit_refunded é feito via UPDATE condicional (só 1 requisição
+    concorrente vence), evitando estorno duplo. Só estorna se: subscription_id setado,
+    ainda não estornado, assinatura ativa, e passeio do ciclo atual. Não commita.
+    """
+    if not getattr(walk, "subscription_id", None) or getattr(walk, "credit_refunded", False):
+        return False
+    sub = db.get(TutorSubscription, walk.subscription_id)
+    # Política: se a assinatura já foi cancelada, não estorna — o crédito seria
+    # inútil (consume_credit_if_available exige status ACTIVE). Sem perda de dinheiro.
+    if sub is None or sub.status != SUBSCRIPTION_ACTIVE:
+        return False
+    period_start = sub.current_period_start
+    walk_created = getattr(walk, "created_at", None)
+    if period_start and walk_created and walk_created < period_start:
+        return False
+    # Test-and-set atômico: só quem conseguir virar credit_refunded de False→True estorna.
+    flipped = db.execute(
+        sa_update(Walk)
+        .where(Walk.id == walk.id, Walk.credit_refunded.is_(False))
+        .values(credit_refunded=True)
+        .returning(Walk.id)
+    ).first()
+    if flipped is None:
+        return False
+    db.execute(
+        sa_update(TutorSubscription)
+        .where(TutorSubscription.id == sub.id)
+        .values(
+            credits_remaining=TutorSubscription.credits_remaining + 1,
+            updated_at=datetime.utcnow(),
+        )
+    )
+    walk.credit_refunded = True  # sincroniza o objeto em memória
+    db.expire(sub)               # próxima leitura reflete o incremento
+    return True

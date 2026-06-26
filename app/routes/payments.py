@@ -17,6 +17,7 @@ from app.core.database import get_db, get_global_db
 from app.dependencies.auth import get_current_user
 from app.models.notification import Notification
 from app.models.payment import Payment
+from app.models.fiscal import REVENUE_WALK_COMMISSION, REVENUE_SAAS_SUBSCRIPTION, REVENUE_TIP
 from app.models.tenant import Tenant
 from app.models.tenant_saas_subscription import TenantSaasSubscription, SAAS_ACTIVE, SAAS_OVERDUE
 from app.models.user import User
@@ -819,6 +820,18 @@ def _handle_tip_webhook(db, event: str, payment_data: dict) -> bool:
         db.rollback()
         logger.exception("_handle_tip_webhook: falha ao persistir tip_id=%s", tip.id if tip else "desconhecido")
         raise
+
+    # Provisão fiscal best-effort (gorjeta confirmada)
+    if tip.status == "paid":
+        import types as _types
+        _tip_payment_like = _types.SimpleNamespace(
+            id=provider_payment_id or f"tip:{tip.id}",
+            amount=float(tip.amount),
+            platform_amount=None,
+            walker_amount=None,
+        )
+        _provision_safe(db, tip.tenant_id, _tip_payment_like, REVENUE_TIP)
+
     return True
 
 
@@ -925,6 +938,16 @@ def _handle_tenant_saas_subscription_webhook(db, event: str, payment_data: dict)
                 db.rollback()
             except Exception:
                 pass
+
+        # Provisão fiscal best-effort (mensalidade SaaS confirmada)
+        import types as _types
+        _saas_payment_like = _types.SimpleNamespace(
+            id=pid or f"saas:{sub.id}",
+            amount=float(sub.price),
+            platform_amount=None,
+            walker_amount=None,
+        )
+        _provision_safe(db, sub.tenant_id, _saas_payment_like, REVENUE_SAAS_SUBSCRIPTION)
 
         return True
 
@@ -1198,6 +1221,10 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                         logger.info("asaas_webhook.walk_liberado walk_id=%s payment_id=%s", walk.id, payment.id)
 
                 db.commit()
+
+                # Provisão fiscal best-effort (passeio confirmado)
+                if new_status == _PAYMENT_CONFIRMED_STATUS:
+                    _provision_safe(db, payment.tenant_id, payment, REVENUE_WALK_COMMISSION)
             else:
                 # R3: pagamento órfão (provider_payment_id sem Payment local) NÃO é
                 # silencioso — loga para auditoria e ainda responde 200 ao Asaas.
@@ -1253,3 +1280,17 @@ def _handle_nfse_webhook(db, event: str, invoice_data: dict) -> None:
     """
     from app.services.nfse_service import handle_nfse_webhook_event
     handle_nfse_webhook_event(db, event, invoice_data)
+
+
+def _provision_safe(db, tenant_id, payment_like, revenue_type) -> None:
+    """Best-effort: registra a provisão fiscal do pagamento confirmado.
+    NUNCA propaga exceção — provisão jamais pode quebrar o webhook de pagamento."""
+    try:
+        from app.services.provision_service import compute_and_store_provision
+        compute_and_store_provision(db, tenant_id, payment_like, revenue_type)
+    except Exception:
+        logger.exception("provision: falha best-effort tenant_id=%s revenue_type=%s", tenant_id, revenue_type)
+        try:
+            db.rollback()
+        except Exception:
+            pass

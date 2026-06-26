@@ -395,3 +395,17 @@ def test_grant_credits_on_first_payment():
     assert grant_credits_on_payment(db, sub) is False
     # agora consome normalmente
     assert consume_credit_if_available(db, tenant, TUTOR_ID) is not None
+
+
+def test_refund_double_call_same_walk_no_double_credit():
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)
+    consume_credit_if_available(db, tenant, TUTOR_ID); db.commit()  # 4 -> 3
+    walk = _make_covered_walk(db, tenant, sub)
+
+    assert refund_credit_for_walk(db, walk) is True
+    db.commit()
+    assert refund_credit_for_walk(db, walk) is False  # 2ª chamada não estorna de novo
+    db.commit(); db.refresh(sub)
+    assert sub.credits_remaining == 4  # voltou exatamente 1 crédito, não 2

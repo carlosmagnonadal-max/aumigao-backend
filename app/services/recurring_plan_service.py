@@ -19,6 +19,7 @@ from app.models.recurring_plan import (
     TutorSubscription,
 )
 from app.models.tenant import Tenant
+from app.models.walk import Walk
 from app.services.tenant_plan_service import enforce_tenant_product_feature, tenant_has_feature
 
 FEATURE_LABEL = "Planos recorrentes"
@@ -178,6 +179,7 @@ def subscribe(db: Session, tenant: Tenant, tutor_id: str, plan_id: str) -> Tutor
         price=plan.price,
         walks_per_cycle=plan.walks_per_cycle,
         credits_remaining=plan.walks_per_cycle,
+        credits_granted=True,
         current_period_start=now,
         current_period_end=_period_end(now, plan.interval),
     )
@@ -398,9 +400,9 @@ def grant_credits_on_payment(db: Session, subscription: TutorSubscription) -> bo
 def refund_credit_for_walk(db: Session, walk) -> bool:
     """Estorna 1 crédito quando um passeio coberto por assinatura é cancelado/deletado.
 
-    Só estorna se: subscription_id != None, ainda não estornado (credit_refunded False),
-    a assinatura existe e está ativa, e o passeio pertence ao ciclo atual
-    (walk.created_at >= current_period_start). Idempotente. Não commita.
+    Atômico: o flip de credit_refunded é feito via UPDATE condicional (só 1 requisição
+    concorrente vence), evitando estorno duplo. Só estorna se: subscription_id setado,
+    ainda não estornado, assinatura ativa, e passeio do ciclo atual. Não commita.
     """
     if not getattr(walk, "subscription_id", None) or getattr(walk, "credit_refunded", False):
         return False
@@ -413,8 +415,23 @@ def refund_credit_for_walk(db: Session, walk) -> bool:
     walk_created = getattr(walk, "created_at", None)
     if period_start and walk_created and walk_created < period_start:
         return False
-    sub.credits_remaining += 1
-    sub.updated_at = datetime.utcnow()
-    walk.credit_refunded = True
-    db.add(sub); db.add(walk)
+    # Test-and-set atômico: só quem conseguir virar credit_refunded de False→True estorna.
+    flipped = db.execute(
+        sa_update(Walk)
+        .where(Walk.id == walk.id, Walk.credit_refunded.is_(False))
+        .values(credit_refunded=True)
+        .returning(Walk.id)
+    ).first()
+    if flipped is None:
+        return False
+    db.execute(
+        sa_update(TutorSubscription)
+        .where(TutorSubscription.id == sub.id)
+        .values(
+            credits_remaining=TutorSubscription.credits_remaining + 1,
+            updated_at=datetime.utcnow(),
+        )
+    )
+    walk.credit_refunded = True  # sincroniza o objeto em memória
+    db.expire(sub)               # próxima leitura reflete o incremento
     return True

@@ -17,6 +17,7 @@ def upgrade() -> None:
         "tutor_subscriptions",
         sa.Column("credits_granted", sa.Boolean(), nullable=False, server_default=sa.false()),
     )
+    op.execute("UPDATE tutor_subscriptions SET credits_granted = true")
 
 
 def downgrade() -> None:

@@ -30,3 +30,6 @@ class UserResponse(ORMModel):
     # legados (sem coluna no DB ainda) e objetos criados sem persistir veem False.
     must_change_password: bool | None = False
     created_at: datetime
+    # Plumbing tenant_id: permite que o admin-web saiba qual tenant o usuário pertence
+    # (necessário para tenant-admin ver o próprio extrato de provisão fiscal).
+    tenant_id: str | None = None

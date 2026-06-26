@@ -249,6 +249,49 @@ def test_login_happy_path():
     body = r.json()
     assert body["access_token"]
     assert body["user"]["email"] == "login@test.com"
+    # tenant_id deve estar presente na resposta (plumbing para provisão fiscal)
+    assert "tenant_id" in body["user"]
+    assert body["user"]["tenant_id"] == TENANT_ID
+
+
+def test_user_response_includes_tenant_id():
+    """UserResponse.model_validate expõe tenant_id do objeto User."""
+    from app.schemas.user import UserResponse
+    from app.models.user import User as UserModel
+    from datetime import timezone
+
+    user = UserModel(
+        id="u-schema-test",
+        email="schema@test.com",
+        full_name="Schema Test",
+        role="admin",
+        is_active=True,
+        tenant_id="t1",
+        password_hash="x",
+        created_at=__import__("datetime").datetime(2024, 1, 1, tzinfo=timezone.utc),
+    )
+    result = UserResponse.model_validate(user)
+    assert result.tenant_id == "t1"
+
+
+def test_user_response_tenant_id_none_when_missing():
+    """tenant_id deve ser None quando o User não tem tenant_id."""
+    from app.schemas.user import UserResponse
+    from app.models.user import User as UserModel
+    from datetime import timezone
+
+    user = UserModel(
+        id="u-no-tenant",
+        email="notenant@test.com",
+        full_name="No Tenant",
+        role="tutor",
+        is_active=True,
+        tenant_id=None,
+        password_hash="x",
+        created_at=__import__("datetime").datetime(2024, 1, 1, tzinfo=timezone.utc),
+    )
+    result = UserResponse.model_validate(user)
+    assert result.tenant_id is None
 
 
 def test_login_wrong_password_401():

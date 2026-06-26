@@ -76,3 +76,24 @@ def test_customer_idempotent_when_already_set():
     from app.services.tenant_saas_billing_service import ensure_tenant_asaas_customer
     db = _make_db(); t = db.get(Tenant, TENANT_ID); t.asaas_customer_id = "cus_existing"; db.commit()
     assert asyncio.run(ensure_tenant_asaas_customer(db, t)) == "cus_existing"
+
+
+# ------------------------------------------------ subscription (Task 5) ---
+
+def test_start_subscription_persists(monkeypatch):
+    import asyncio, app.services.tenant_saas_billing_service as svc
+    db = _make_db(); t = db.get(Tenant, TENANT_ID)
+    monkeypatch.setattr(svc, "ensure_tenant_asaas_customer", _acoro("cus_1"))
+    monkeypatch.setattr(svc, "create_asaas_subscription_native", _acoro("asaas_sub_1"))
+    sub = asyncio.run(svc.start_subscription(db, t))
+    assert sub.status == SAAS_ACTIVE and float(sub.price) == 129.90 and sub.asaas_subscription_id == "asaas_sub_1"
+
+def test_start_subscription_anti_zombie(monkeypatch):
+    import asyncio, app.services.tenant_saas_billing_service as svc
+    db = _make_db(); t = db.get(Tenant, TENANT_ID)
+    monkeypatch.setattr(svc, "ensure_tenant_asaas_customer", _acoro("cus_1"))
+    async def _boom(*a, **k): raise HTTPException(502, "asaas down")
+    monkeypatch.setattr(svc, "create_asaas_subscription_native", _boom)
+    with pytest.raises(HTTPException):
+        asyncio.run(svc.start_subscription(db, t))
+    assert db.query(TenantSaasSubscription).count() == 0  # nada persistido

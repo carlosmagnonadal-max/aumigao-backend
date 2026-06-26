@@ -66,14 +66,24 @@ async def create_asaas_subscription(
     customer_id: str,
     value: float,
     interval: str,
-    tutor_subscription_id: str,
+    tutor_subscription_id: str | None = None,
+    external_reference: str | None = None,
     next_due_date: date | None = None,
 ) -> str | None:
     """Cria subscription no Asaas e retorna o ID remoto.
 
     Retorna None quando o Asaas não está configurado (modo internal_mock).
     Levanta HTTPException 502 em caso de falha remota.
+
+    Ao menos um dos parâmetros ``tutor_subscription_id`` ou
+    ``external_reference`` deve ser fornecido para montar o externalReference
+    do payload. Se nenhum for informado, levanta ValueError.
     """
+    if not external_reference and not tutor_subscription_id:
+        raise ValueError("Informe tutor_subscription_id ou external_reference")
+
+    ext_ref = external_reference or f"sub:{tutor_subscription_id}"
+
     cfg = _get_config()
     if cfg is None:
         return None
@@ -96,7 +106,7 @@ async def create_asaas_subscription(
         "value": value,
         "nextDueDate": str(due),
         "cycle": cycle,
-        "externalReference": f"sub:{tutor_subscription_id}",
+        "externalReference": ext_ref,
         "description": "Assinatura recorrente Aumigao",
     }
 
@@ -124,8 +134,8 @@ async def create_asaas_subscription(
             data = response.json()
             sub_id = data.get("id")
             logger.info(
-                "asaas_subscription created id=%s tutor_sub=%s cycle=%s",
-                sub_id, tutor_subscription_id, cycle,
+                "asaas_subscription created id=%s ext_ref=%s cycle=%s",
+                sub_id, ext_ref, cycle,
             )
             return sub_id
     except HTTPException:

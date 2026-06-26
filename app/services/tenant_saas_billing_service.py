@@ -1,26 +1,66 @@
-"""Serviço de cobrança SaaS para tenants (Projeto B — Task 4).
+"""Serviço de cobrança SaaS para tenants (Projeto B).
 
-Responsabilidades deste módulo (Task 4):
+Task 4:
   - ensure_tenant_asaas_customer: garante que o tenant possui um customer_id
     no Asaas, criando-o se necessário. Idempotente: retorna o id existente sem
     tocar a rede. A validação de documento/e-mail ocorre ANTES de qualquer
     acesso à rede (testes offline passam).
 
-Tasks seguintes (Task 5) adicionarão start_tenant_saas_subscription e
-cancel_tenant_saas_subscription aqui.
+Task 5:
+  - start_subscription: cria assinatura SaaS local + remote no Asaas.
+    Anti-zumbi: a subscription local só persiste após sucesso remoto.
+    Idempotência parcial: cancela assinatura ativa anterior antes de criar nova.
+  - cancel_subscription: cancela assinatura ativa do tenant (local + Asaas).
 """
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 import httpx
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.tenant import Tenant
+from app.models.tenant_saas_subscription import (
+    TenantSaasSubscription,
+    SAAS_ACTIVE,
+    SAAS_CANCELLED,
+)
+from app.services.asaas_subscription_service import (
+    create_asaas_subscription as create_asaas_subscription_native,
+    cancel_asaas_subscription,
+)
+from app.services.tenant_saas_pricing import resolve_saas_price
 
 logger = logging.getLogger("aumigao.tenant_saas_billing_service")
 
+
+# ─────────────────────────────────────────────── helpers ──────────────────────
+
+def get_active_saas_subscription(
+    db: Session, tenant_id: str
+) -> TenantSaasSubscription | None:
+    """Retorna a assinatura SaaS ativa mais recente do tenant, ou None."""
+    return (
+        db.query(TenantSaasSubscription)
+        .filter(
+            TenantSaasSubscription.tenant_id == tenant_id,
+            TenantSaasSubscription.status == SAAS_ACTIVE,
+        )
+        .order_by(TenantSaasSubscription.created_at.desc())
+        .first()
+    )
+
+
+def _period_end_month(now: datetime) -> datetime:
+    """Retorna data de fim do período mensal (now + 1 mês)."""
+    from app.services.recurring_plan_service import _period_end
+    return _period_end(now, "monthly")
+
+
+# ─────────────────────────────────── ensure_tenant_asaas_customer ─────────────
 
 async def ensure_tenant_asaas_customer(db: Session, tenant: Tenant) -> str:
     """Garante que o tenant possui um customer_id no Asaas.
@@ -162,3 +202,120 @@ async def ensure_tenant_asaas_customer(db: Session, tenant: Tenant) -> str:
         customer_id, tenant.id,
     )
     return customer_id
+
+
+# ──────────────────────────────────────── start_subscription ──────────────────
+
+async def start_subscription(
+    db: Session,
+    tenant: Tenant,
+    price: float | None = None,
+) -> TenantSaasSubscription:
+    """Cria assinatura SaaS para o tenant.
+
+    Ordem de operações (anti-zumbi):
+      1. Resolve preço canônico.
+      2. ensure_tenant_asaas_customer — commita o customer isoladamente.
+         Isso garante que o commit subsequente NÃO carrega dados não-desejados.
+      3. Cancela assinatura ativa anterior (idempotente no Asaas).
+      4. Cria objeto TenantSaasSubscription local + db.flush() (gera id, mas
+         NÃO commita — a sessão ainda está suja).
+      5. Chama Asaas para criar a subscription remota.
+         Em falha → db.rollback() remove o flush; NADA persiste (zero-zumbi).
+      6. Sucesso → persiste asaas_subscription_id e commit.
+
+    Raises:
+        HTTPException 400/502: validação ou gateway.
+        HTTPException 409: race condition (sub ativa duplicada).
+        Qualquer exceção do Asaas: propagada; subscription local não persiste.
+    """
+    # ── 1. Resolve preço ──────────────────────────────────────────────────────
+    value = resolve_saas_price(tenant.plan, price)
+
+    # ── 2. Garante customer no Asaas (commit próprio — isola o flush do sub) ──
+    # IMPORTANTE: ensure_tenant_asaas_customer faz db.commit() internamente.
+    # Chamá-la ANTES de adicionar o TenantSaasSubscription à sessão garante
+    # que esse commit não persista o sub prematuramente. Após este ponto,
+    # a sessão está limpa (nenhum objeto pendente).
+    customer_id = await ensure_tenant_asaas_customer(db, tenant)
+
+    # ── 3. Cancela assinatura ativa anterior ─────────────────────────────────
+    existing = get_active_saas_subscription(db, tenant.id)
+    if existing:
+        if existing.asaas_subscription_id:
+            await cancel_asaas_subscription(existing.asaas_subscription_id)
+        existing.status = SAAS_CANCELLED
+        db.add(existing)
+        # Não commitamos aqui — vamos commitar tudo junto no passo 6.
+
+    # ── 4. Cria objeto local + flush (gera id; NÃO commita) ───────────────────
+    now = datetime.utcnow()
+    sub = TenantSaasSubscription(
+        tenant_id=tenant.id,
+        plan=tenant.plan,
+        price=value,
+        status=SAAS_ACTIVE,
+        current_period_start=now,
+        current_period_end=_period_end_month(now),
+    )
+    db.add(sub)
+    db.flush()  # gera sub.id sem commit
+
+    # ── 5. Cria subscription no Asaas (se falhar → rollback, sem zumbi) ───────
+    try:
+        asaas_sub_id = await create_asaas_subscription_native(
+            customer_id=customer_id,
+            value=float(value),
+            interval="monthly",
+            external_reference=f"tenant_sub:{sub.id}",
+        )
+    except Exception:
+        db.rollback()  # descarta o flush do sub (e o pending de existing)
+        raise
+
+    sub.asaas_subscription_id = asaas_sub_id
+
+    # ── 6. Commit final ───────────────────────────────────────────────────────
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Já existe assinatura ativa para este tenant.",
+        )
+
+    db.refresh(sub)
+    logger.info(
+        "start_subscription: tenant=%s plan=%s asaas_sub=%s",
+        tenant.id, tenant.plan, asaas_sub_id,
+    )
+    return sub
+
+
+# ──────────────────────────────────────── cancel_subscription ─────────────────
+
+async def cancel_subscription(
+    db: Session,
+    tenant: Tenant,
+) -> TenantSaasSubscription | None:
+    """Cancela a assinatura SaaS ativa do tenant.
+
+    Idempotente: retorna None se não há assinatura ativa.
+    Cancela no Asaas antes de marcar localmente (falha no Asaas = não cancela local).
+    """
+    sub = get_active_saas_subscription(db, tenant.id)
+    if sub is None:
+        logger.info("cancel_subscription: tenant=%s sem assinatura ativa", tenant.id)
+        return None
+
+    if sub.asaas_subscription_id:
+        await cancel_asaas_subscription(sub.asaas_subscription_id)
+
+    sub.status = SAAS_CANCELLED
+    db.commit()
+
+    logger.info(
+        "cancel_subscription: tenant=%s sub=%s cancelada", tenant.id, sub.id,
+    )
+    return sub

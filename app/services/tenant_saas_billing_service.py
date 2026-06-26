@@ -240,8 +240,16 @@ async def start_subscription(
     # a sessão está limpa (nenhum objeto pendente).
     customer_id = await ensure_tenant_asaas_customer(db, tenant)
 
-    # ── 3. Cancela assinatura ativa anterior ─────────────────────────────────
-    existing = get_active_saas_subscription(db, tenant.id)
+    # ── 3. Cancela assinatura ativa OU inadimplente anterior ─────────────────
+    existing = (
+        db.query(TenantSaasSubscription)
+        .filter(
+            TenantSaasSubscription.tenant_id == tenant.id,
+            TenantSaasSubscription.status.in_([SAAS_ACTIVE, SAAS_OVERDUE]),
+        )
+        .order_by(TenantSaasSubscription.created_at.desc())
+        .first()
+    )
     if existing:
         if existing.asaas_subscription_id:
             await cancel_asaas_subscription(existing.asaas_subscription_id)
@@ -273,6 +281,14 @@ async def start_subscription(
     except Exception:
         db.rollback()  # descarta o flush do sub (e o pending de existing)
         raise
+
+    # ── M2: guarda contra id falsy (gateway não configurado retornou None) ────
+    if not asaas_sub_id:
+        db.rollback()
+        raise HTTPException(
+            status_code=502,
+            detail="Gateway de pagamento não retornou a assinatura. Tente novamente.",
+        )
 
     sub.asaas_subscription_id = asaas_sub_id
 

@@ -277,3 +277,31 @@ def test_saas_revenue_separated(monkeypatch):
     assert abs(float(rev["gross_revenue_plans"]) - 0.0) < 0.01, (
         f"gross_revenue_plans={rev['gross_revenue_plans']} deve ser 0.0, SaaS excluído"
     )
+
+
+# ----------------------------------------- B1 + M2 / Task 11 ---
+
+def test_start_subscription_cancels_overdue_previous(monkeypatch):
+    import asyncio, app.services.tenant_saas_billing_service as svc
+    db = _make_db(); t = db.get(Tenant, TENANT_ID)
+    old = TenantSaasSubscription(tenant_id=t.id, plan="pro", price=129.90, status=SAAS_OVERDUE, asaas_subscription_id="old_as")
+    db.add(old); db.commit(); old_id = old.id
+    cancelled = {}
+    async def _cancel(asaas_id): cancelled["id"] = asaas_id
+    monkeypatch.setattr(svc, "cancel_asaas_subscription", _cancel)
+    monkeypatch.setattr(svc, "ensure_tenant_asaas_customer", _acoro("cus_1"))
+    monkeypatch.setattr(svc, "create_asaas_subscription_native", _acoro("new_as"))
+    sub = asyncio.run(svc.start_subscription(db, t))
+    db.refresh(db.get(TenantSaasSubscription, old_id))
+    assert db.get(TenantSaasSubscription, old_id).status == SAAS_CANCELLED  # antiga cancelada
+    assert cancelled.get("id") == "old_as"  # cancelou no Asaas
+    assert sub.status == SAAS_ACTIVE and sub.asaas_subscription_id == "new_as"
+
+def test_start_subscription_rejects_when_asaas_returns_none(monkeypatch):
+    import asyncio, app.services.tenant_saas_billing_service as svc
+    db = _make_db(); t = db.get(Tenant, TENANT_ID)
+    monkeypatch.setattr(svc, "ensure_tenant_asaas_customer", _acoro("cus_1"))
+    monkeypatch.setattr(svc, "create_asaas_subscription_native", _acoro(None))  # gateway não configurado
+    with pytest.raises(HTTPException):
+        asyncio.run(svc.start_subscription(db, t))
+    assert db.query(TenantSaasSubscription).filter(TenantSaasSubscription.status==SAAS_ACTIVE).count() == 0

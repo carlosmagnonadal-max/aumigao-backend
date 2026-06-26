@@ -307,3 +307,30 @@ def test_delete_walk_refunds_credit():
 
     db.refresh(sub)
     assert sub.credits_remaining == 4
+
+
+def test_subscription_renewal_resets_credits(monkeypatch):
+    monkeypatch.setenv("ASAAS_WEBHOOK_TOKEN", "tok-credits")
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)
+    sub.credits_remaining = 0
+    sub.current_period_end = datetime.utcnow() - timedelta(days=1)
+    sub.asaas_subscription_id = "asaas-sub-1"
+    db.add(sub); db.commit()
+    client = _make_payments_client(db)
+
+    payload = {
+        "event": "PAYMENT_RECEIVED",
+        "payment": {
+            "id": "pay-renew-1", "status": "RECEIVED",
+            "externalReference": f"sub:{sub.id}", "subscription": "asaas-sub-1",
+        },
+    }
+    resp = client.post("/payments/webhooks/asaas", json=payload,
+                       headers={"asaas-access-token": "tok-credits"})
+    assert resp.status_code == 200, resp.text
+
+    db.refresh(sub)
+    assert sub.credits_remaining == 4
+    assert sub.current_period_end > datetime.utcnow()

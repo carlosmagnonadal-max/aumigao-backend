@@ -1096,6 +1096,10 @@ def update_operational_status(walk: Walk, status: str, db: Session, actor: User 
     walk.status = OPERATIONAL_TO_LEGACY_STATUS.get(walk.operational_status, status)
     if walk.operational_status in {RIDE_COMPLETED, RIDE_CANCELLED}:
         walk.matching_finished_at = walk.matching_finished_at or utcnow()
+    # Projeto A: passeio coberto por assinatura cancelado → estorna o crédito.
+    if walk.operational_status == RIDE_CANCELLED:
+        from app.services.recurring_plan_service import refund_credit_for_walk
+        refund_credit_for_walk(db, walk)
     log_event(db, walk.id, "status_changed", actor_type=(actor.role if actor else "system"), actor_id=(actor.id if actor else None), metadata={"status": walk.status, "operational_status": walk.operational_status})
     return walk
 

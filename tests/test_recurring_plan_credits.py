@@ -260,3 +260,22 @@ def test_internal_payment_passes_walker_id(monkeypatch):
     assert captured["walker_id"] == "walker-xyz"
     pay = db.query(Payment).filter(Payment.walk_id == "walk-internal").first()
     assert pay is not None and pay.walker_amount == 90.0
+
+
+from app.services.operational_matching_service import update_operational_status
+
+
+def test_cancel_walk_refunds_credit():
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)
+    consume_credit_if_available(db, tenant, TUTOR_ID); db.commit()  # 4 -> 3
+    walk = _make_covered_walk(db, tenant, sub)
+
+    # "Cancelado" é a string legada que LEGACY_STATUS_TO_OPERATIONAL traduz para RIDE_CANCELLED
+    update_operational_status(walk, "Cancelado", db)
+    db.commit()
+
+    db.refresh(sub)
+    assert sub.credits_remaining == 4
+    assert walk.credit_refunded is True

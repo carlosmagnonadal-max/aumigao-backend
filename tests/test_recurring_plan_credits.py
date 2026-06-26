@@ -20,6 +20,7 @@ from app.models.recurring_plan import (
 )
 from app.services.recurring_plan_service import (
     subscribe, get_active_subscription, consume_credit_if_available,
+    refund_credit_for_walk,
 )
 from app.services.tenant_seed_service import DEFAULT_TENANT_SLUG
 
@@ -89,3 +90,45 @@ def test_consume_credit_none_when_no_credits():
     subscribe(db, tenant, TUTOR_ID, plan.id)
     consume_credit_if_available(db, tenant, TUTOR_ID); db.commit()  # 1 -> 0
     assert consume_credit_if_available(db, tenant, TUTOR_ID) is None  # 0 -> None
+
+
+def test_refund_returns_credit_for_current_cycle():
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)
+    consume_credit_if_available(db, tenant, TUTOR_ID); db.commit()  # 4 -> 3
+    walk = _make_covered_walk(db, tenant, sub)
+
+    assert refund_credit_for_walk(db, walk) is True
+    db.commit()
+    db.refresh(sub)
+    assert sub.credits_remaining == 4
+    assert walk.credit_refunded is True
+
+
+def test_refund_is_idempotent():
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)
+    walk = _make_covered_walk(db, tenant, sub)
+    refund_credit_for_walk(db, walk); db.commit()
+    assert refund_credit_for_walk(db, walk) is False  # já estornado
+
+
+def test_refund_skips_previous_cycle():
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)
+    walk = _make_covered_walk(db, tenant, sub, created_at=datetime.utcnow() - timedelta(days=40))
+    assert refund_credit_for_walk(db, walk) is False
+
+
+def test_refund_skips_walk_without_subscription():
+    db = _make_db(); tenant = _tenant(db)
+    walk = Walk(
+        id="walk-avulso", tutor_id=TUTOR_ID, tenant_id=tenant.id, pet_id="pet-1",
+        scheduled_date="2026-07-01", duration_minutes=30, price=50.0,
+        status="Agendado", subscription_id=None, credit_refunded=False,
+    )
+    db.add(walk); db.commit()
+    assert refund_credit_for_walk(db, walk) is False

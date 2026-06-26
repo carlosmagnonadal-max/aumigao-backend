@@ -345,3 +345,26 @@ def plan_name_for(db: Session, subscription: TutorSubscription | None) -> str | 
         return None
     plan = db.get(RecurringPlan, subscription.plan_id)
     return plan.name if plan else None
+
+
+def refund_credit_for_walk(db: Session, walk) -> bool:
+    """Estorna 1 crédito quando um passeio coberto por assinatura é cancelado/deletado.
+
+    Só estorna se: subscription_id != None, ainda não estornado (credit_refunded False),
+    a assinatura existe e está ativa, e o passeio pertence ao ciclo atual
+    (walk.created_at >= current_period_start). Idempotente. Não commita.
+    """
+    if not getattr(walk, "subscription_id", None) or getattr(walk, "credit_refunded", False):
+        return False
+    sub = db.get(TutorSubscription, walk.subscription_id)
+    if sub is None or sub.status != SUBSCRIPTION_ACTIVE:
+        return False
+    period_start = sub.current_period_start
+    walk_created = getattr(walk, "created_at", None)
+    if period_start and walk_created and walk_created < period_start:
+        return False
+    sub.credits_remaining += 1
+    sub.updated_at = datetime.utcnow()
+    walk.credit_refunded = True
+    db.add(sub); db.add(walk)
+    return True

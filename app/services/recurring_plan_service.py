@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException
+from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session
 
 from app.models.recurring_plan import (
@@ -117,6 +118,37 @@ def get_active_subscription(db: Session, tenant_id: str, tutor_id: str) -> Tutor
         .order_by(TutorSubscription.created_at.desc())
         .first()
     )
+
+
+def consume_credit_if_available(db: Session, tenant: Tenant, tutor_id: str) -> TutorSubscription | None:
+    """Consome 1 crédito da assinatura ativa do tutor, de forma ATÔMICA.
+
+    Usa UPDATE ... WHERE credits_remaining > 0 (condicional no banco) para evitar
+    double-spend em requisições concorrentes — dois POST /walks simultâneos do mesmo
+    tutor não conseguem consumir o mesmo último crédito.
+
+    Retorna a TutorSubscription (recarregada, com credits_remaining já decrementado;
+    sem commit — o caller commita) ou None quando não há assinatura ativa com crédito.
+    """
+    result = db.execute(
+        sa_update(TutorSubscription)
+        .where(
+            TutorSubscription.tenant_id == tenant.id,
+            TutorSubscription.tutor_id == tutor_id,
+            TutorSubscription.status == SUBSCRIPTION_ACTIVE,
+            TutorSubscription.credits_remaining > 0,
+        )
+        .values(
+            credits_remaining=TutorSubscription.credits_remaining - 1,
+            updated_at=datetime.utcnow(),
+        )
+        .returning(TutorSubscription.id)
+    )
+    row = result.first()
+    if row is None:
+        return None
+    db.expire_all()
+    return db.get(TutorSubscription, row[0])
 
 
 def subscribe(db: Session, tenant: Tenant, tutor_id: str, plan_id: str) -> TutorSubscription:

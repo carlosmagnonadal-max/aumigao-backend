@@ -405,6 +405,8 @@ def refund_credit_for_walk(db: Session, walk) -> bool:
     if not getattr(walk, "subscription_id", None) or getattr(walk, "credit_refunded", False):
         return False
     sub = db.get(TutorSubscription, walk.subscription_id)
+    # Política: se a assinatura já foi cancelada, não estorna — o crédito seria
+    # inútil (consume_credit_if_available exige status ACTIVE). Sem perda de dinheiro.
     if sub is None or sub.status != SUBSCRIPTION_ACTIVE:
         return False
     period_start = sub.current_period_start

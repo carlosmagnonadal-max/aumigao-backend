@@ -48,7 +48,7 @@ from app.services.tutor_network_service import is_tutor_eligible_for_tenant
 from app.constants import PAID_PAYMENT_STATUSES as _PAID_PAYMENT_STATUSES
 from app.constants import WALK_COMPLETED_STATUSES as COMPLETED_WALK_STATUSES
 from app.constants import WALK_COMPLETED_STATUSES as DIRECT_COMPLETION_STATUSES
-from app.services.recurring_plan_service import consume_credit_if_available
+from app.services.recurring_plan_service import consume_credit_if_available, refund_credit_for_walk
 
 # ── CR / gamificação (Fase 4) ────────────────────────────────────────────────
 import app.services.walker_cr_service as _cr_svc
@@ -976,7 +976,6 @@ def delete_walk(walk_id: str, user: User = Depends(get_current_user), db: Sessio
             detail="Nao e possivel excluir um passeio que ja foi pago, esta em andamento ou foi concluido.",
         )
     # Projeto A: deletar passeio coberto por assinatura devolve o crédito.
-    from app.services.recurring_plan_service import refund_credit_for_walk
     refund_credit_for_walk(db, walk)
     db.delete(walk)
     db.commit()

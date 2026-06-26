@@ -137,6 +137,8 @@ def test_refund_skips_walk_without_subscription():
 
 
 def test_reset_refills_on_genuine_renewal():
+    # Nota: with_for_update() em reset_credits_if_renewal é no-op no SQLite dos testes;
+    # a serialização real contra webhooks duplicados só vale em PostgreSQL (prod).
     db = _make_db(); tenant = _tenant(db)
     plan = _make_plan(db, tenant, walks_per_cycle=4)
     sub = subscribe(db, tenant, TUTOR_ID, plan.id)

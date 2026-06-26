@@ -21,6 +21,8 @@ from app.models.nfse import (
     NFSE_CANCELED,
     NFSE_ERROR,
 )
+from app.models.fiscal import TenantFiscalConfig
+from app.services.fiscal_config_service import resolve_fiscal_config
 from app.services.nfse_config import (
     nfse_enabled,
     get_municipal_service_code,
@@ -40,27 +42,39 @@ def _build_invoice_payload(
     asaas_payment_id: str,
     value: float,
     service_type: str,  # noqa: ARG001 — reservado para futura diferenciação por tipo
+    cfg: TenantFiscalConfig,
 ) -> dict:
     """Monta o body do POST /v3/invoices para emissão no Asaas.
+
+    Parâmetros fiscais: config do tenant tem precedência; env/default é fallback
+    quando o campo da config for None/0/vazio.
 
     TODO: Os campos `taxes` e `municipalServiceCode` dependem de definição do
     contador (regime tributário, CNAE, alíquota ISS, deduções). Enquanto não
     forem definidos, o payload é enviado sem esses campos — o Asaas pode exigir
     `municipalServiceCode` dependendo da prefeitura configurada na conta.
     """
+    # serviceDescription: tenant config > env/default
+    service_desc = cfg.service_description if cfg.service_description else get_service_description()
+
     payload: dict = {
         "payment": asaas_payment_id,
         "value": float(value),
-        "serviceDescription": get_service_description(),
+        "serviceDescription": service_desc,
         "deductions": get_deductions(),
         "effectiveDate": datetime.utcnow().date().isoformat(),
     }
 
-    mun_code = get_municipal_service_code()
+    # municipalServiceCode: tenant config > env/default; omitido se nenhum
+    mun_code = cfg.municipal_service_code if cfg.municipal_service_code else get_municipal_service_code()
     if mun_code:
         payload["municipalServiceCode"] = mun_code
 
-    iss_rate = get_iss_rate()
+    # ISS rate: tenant config > env/default; omitido se zero
+    if cfg.iss_percent is not None and float(cfg.iss_percent) > 0:
+        iss_rate = float(cfg.iss_percent)
+    else:
+        iss_rate = get_iss_rate()
     if iss_rate > 0:
         # TODO: confirmar estrutura exata de `taxes` com o contador e a
         # documentação da prefeitura no Asaas — o campo pode variar.
@@ -151,10 +165,12 @@ async def issue_nfse_for_saas_payment(
         return existing
 
     # ---- Emissão -------------------------------------------------------------
+    fiscal_cfg = resolve_fiscal_config(db, tenant_id)
     payload = _build_invoice_payload(
         asaas_payment_id=asaas_payment_id,
         value=value,
         service_type="saas",
+        cfg=fiscal_cfg,
     )
 
     try:

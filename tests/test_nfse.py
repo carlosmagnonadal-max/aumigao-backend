@@ -20,6 +20,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.models.fiscal import TenantFiscalConfig
+
 import app.models  # noqa: F401 — registra todas as tabelas no Base.metadata
 from app.core.database import Base, get_db, get_global_db
 from app.dependencies.auth import get_current_user
@@ -589,17 +591,26 @@ def test_invoice_event_without_invoice_field_is_noop(monkeypatch):
 # 6. _build_invoice_payload unit tests
 # ---------------------------------------------------------------------------
 
+def _empty_cfg() -> TenantFiscalConfig:
+    """cfg transitório vazio (campos NFS-e None) para usar como fallback nos testes."""
+    return TenantFiscalConfig(
+        tenant_id="t-test",
+        commission_tax_percent=0,
+        subscription_tax_percent=0,
+        walker_tax_percent=0,
+    )
+
+
 def test_build_invoice_payload_contains_required_fields(monkeypatch):
     """_build_invoice_payload sempre inclui payment, value, serviceDescription, effectiveDate."""
     from app.services.nfse_service import _build_invoice_payload
-    import app.services.nfse_config as cfg
 
     monkeypatch.setenv("NFSE_MUNICIPAL_SERVICE_CODE", "")
     monkeypatch.setenv("NFSE_ISS_RATE", "0.0")
     monkeypatch.setenv("NFSE_SERVICE_DESCRIPTION", "Descricao teste")
 
     payload = _build_invoice_payload(
-        asaas_payment_id="pay_build", value=99.0, service_type="saas"
+        asaas_payment_id="pay_build", value=99.0, service_type="saas", cfg=_empty_cfg()
     )
 
     assert payload["payment"] == "pay_build"
@@ -609,14 +620,14 @@ def test_build_invoice_payload_contains_required_fields(monkeypatch):
 
 
 def test_build_invoice_payload_with_iss_rate(monkeypatch):
-    """Com NFSE_ISS_RATE > 0, inclui taxes no payload."""
+    """Com NFSE_ISS_RATE > 0 (env fallback), inclui taxes no payload."""
     from app.services.nfse_service import _build_invoice_payload
 
     monkeypatch.setenv("NFSE_ISS_RATE", "2.5")
     monkeypatch.setenv("NFSE_MUNICIPAL_SERVICE_CODE", "1.07")
 
     payload = _build_invoice_payload(
-        asaas_payment_id="pay_iss", value=129.90, service_type="saas"
+        asaas_payment_id="pay_iss", value=129.90, service_type="saas", cfg=_empty_cfg()
     )
 
     assert "taxes" in payload
@@ -631,8 +642,71 @@ def test_build_invoice_payload_without_iss_rate(monkeypatch):
     monkeypatch.setenv("NFSE_MUNICIPAL_SERVICE_CODE", "")
 
     payload = _build_invoice_payload(
-        asaas_payment_id="pay_no_iss", value=50.0, service_type="saas"
+        asaas_payment_id="pay_no_iss", value=50.0, service_type="saas", cfg=_empty_cfg()
     )
 
     assert "taxes" not in payload
     assert "municipalServiceCode" not in payload
+
+
+# ---------------------------------------------------------------------------
+# 7. Precedência tenant_fiscal_config vs env
+# ---------------------------------------------------------------------------
+
+def test_payload_uses_tenant_config_when_present(monkeypatch):
+    """cfg do tenant preenchido → payload usa valores do tenant (ignora env)."""
+    from app.services.nfse_service import _build_invoice_payload
+
+    # env com valores diferentes para garantir que não interferem
+    monkeypatch.setenv("NFSE_ISS_RATE", "1.0")
+    monkeypatch.setenv("NFSE_MUNICIPAL_SERVICE_CODE", "9.99")
+    monkeypatch.setenv("NFSE_SERVICE_DESCRIPTION", "Descricao do env")
+
+    cfg = TenantFiscalConfig(
+        tenant_id="t-prec",
+        commission_tax_percent=0,
+        subscription_tax_percent=0,
+        walker_tax_percent=0,
+        iss_percent=5,
+        municipal_service_code="1.05",
+        service_description="X",
+    )
+
+    payload = _build_invoice_payload(
+        asaas_payment_id="pay_prec", value=200.0, service_type="saas", cfg=cfg
+    )
+
+    assert payload["taxes"] == {"iss": 5.0}
+    assert payload["municipalServiceCode"] == "1.05"
+    assert payload["serviceDescription"] == "X"
+
+
+def test_payload_falls_back_to_env_when_config_empty(monkeypatch):
+    """cfg vazio (campos None) → payload usa valores de env."""
+    from app.services.nfse_service import _build_invoice_payload
+
+    monkeypatch.setenv("NFSE_ISS_RATE", "3.0")
+    monkeypatch.setenv("NFSE_MUNICIPAL_SERVICE_CODE", "2.01")
+    monkeypatch.setenv("NFSE_SERVICE_DESCRIPTION", "Desc do env fallback")
+
+    payload = _build_invoice_payload(
+        asaas_payment_id="pay_fb", value=150.0, service_type="saas", cfg=_empty_cfg()
+    )
+
+    assert payload["taxes"] == {"iss": 3.0}
+    assert payload["municipalServiceCode"] == "2.01"
+    assert payload["serviceDescription"] == "Desc do env fallback"
+
+
+def test_payload_no_taxes_when_both_zero(monkeypatch):
+    """cfg vazio + env ISS 0 → sem chave 'taxes' no payload."""
+    from app.services.nfse_service import _build_invoice_payload
+
+    monkeypatch.setenv("NFSE_ISS_RATE", "0.0")
+    monkeypatch.setenv("NFSE_MUNICIPAL_SERVICE_CODE", "")
+
+    payload = _build_invoice_payload(
+        asaas_payment_id="pay_zero", value=99.0, service_type="saas", cfg=_empty_cfg()
+    )
+
+    assert "taxes" not in payload

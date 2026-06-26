@@ -55,3 +55,4 @@ from app.models.walker_cr_transaction import WalkerCrTransaction
 from app.models.walker_gamification_event import WalkerGamificationEvent
 from app.models.walker_smart_notification import WalkerSmartNotification
 from app.models.nfse import Nfse  # noqa: F401 — NFS-e (dormente, gated por NFS_E_ENABLED)
+from app.models.fiscal import TenantFiscalConfig, PaymentProvision  # noqa: F401

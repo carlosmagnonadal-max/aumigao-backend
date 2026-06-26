@@ -912,8 +912,9 @@ def _handle_subscription_webhook(db, event: str, payment_data: dict) -> bool:
             except Exception:
                 logger.exception("falha ao notificar tutor subscription payment tutor_id=%s", sub.tutor_id)
 
-        # Projeto A: renovação paga reabastece os créditos do ciclo (idempotente).
-        from app.services.recurring_plan_service import reset_credits_if_renewal
+        # Projeto A: 1º pagamento concede créditos; renovações rebastecem.
+        from app.services.recurring_plan_service import grant_credits_on_payment, reset_credits_if_renewal
+        grant_credits_on_payment(db, sub)
         reset_credits_if_renewal(db, sub)
 
     try:

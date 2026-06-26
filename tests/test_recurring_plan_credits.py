@@ -361,3 +361,35 @@ def test_subscription_renewal_resets_credits(monkeypatch):
     db.refresh(sub)
     assert sub.credits_remaining == 4
     assert sub.current_period_end > datetime.utcnow()
+
+
+from app.services.recurring_plan_service import grant_credits_on_payment
+
+
+def test_async_subscribe_does_not_grant_credits_before_payment():
+    import asyncio
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    # tutor_user=None → subscribe_async pula o Asaas e commita a assinatura local
+    from app.services.recurring_plan_service import subscribe_async
+    sub = asyncio.run(subscribe_async(db, tenant, TUTOR_ID, plan.id, tutor_user=None))
+    assert sub.credits_remaining == 0
+    assert sub.credits_granted is False
+    # crédito não usável antes do pagamento
+    assert consume_credit_if_available(db, tenant, TUTOR_ID) is None
+
+
+def test_grant_credits_on_first_payment():
+    import asyncio
+    from app.services.recurring_plan_service import subscribe_async
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    sub = asyncio.run(subscribe_async(db, tenant, TUTOR_ID, plan.id, tutor_user=None))
+
+    assert grant_credits_on_payment(db, sub) is True
+    db.commit(); db.refresh(sub)
+    assert sub.credits_remaining == 4 and sub.credits_granted is True
+    # idempotente: 2ª vez não concede de novo
+    assert grant_credits_on_payment(db, sub) is False
+    # agora consome normalmente
+    assert consume_credit_if_available(db, tenant, TUTOR_ID) is not None

@@ -244,7 +244,8 @@ async def subscribe_async(
         status=SUBSCRIPTION_ACTIVE,
         price=plan.price,
         walks_per_cycle=plan.walks_per_cycle,
-        credits_remaining=plan.walks_per_cycle,
+        credits_remaining=0,
+        credits_granted=False,
         current_period_start=now,
         current_period_end=_period_end(now, plan.interval),
     )
@@ -374,6 +375,23 @@ def reset_credits_if_renewal(db: Session, subscription: TutorSubscription) -> bo
     locked.current_period_end = _period_end(now, interval)
     locked.updated_at = now
     db.add(locked)
+    return True
+
+
+def grant_credits_on_payment(db: Session, subscription: TutorSubscription) -> bool:
+    """Concede os créditos do ciclo na 1ª confirmação de pagamento (idempotente).
+
+    Só age uma vez por assinatura: se credits_granted é False, concede
+    walks_per_cycle créditos e marca credits_granted=True. Não commita.
+    Retorna True se concedeu. Renovações de ciclos seguintes são tratadas por
+    reset_credits_if_renewal (que reabastece quando o período vence).
+    """
+    if subscription.credits_granted:
+        return False
+    subscription.credits_remaining = subscription.walks_per_cycle
+    subscription.credits_granted = True
+    subscription.updated_at = datetime.utcnow()
+    db.add(subscription)
     return True
 
 

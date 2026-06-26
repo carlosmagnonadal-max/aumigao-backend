@@ -186,3 +186,22 @@ def test_middleware_blocks_suspended_tenant():
     assert c.get("/walks/1", headers=hdr).status_code == 403
     assert c.get("/health", headers=hdr).status_code == 200
     clear_tenant_cache()
+
+
+# -------------------------------------------------- sweep / Task 8 ---
+
+def test_sweep_suspends_overdue_over_7d():
+    from app.services.tenant_saas_billing_service import sweep_overdue_tenants
+    db = _make_db(); t = db.get(Tenant, TENANT_ID)
+    db.add(TenantSaasSubscription(tenant_id=t.id, plan="pro", price=129.90, status=SAAS_OVERDUE,
+                                  overdue_since=datetime.utcnow()-timedelta(days=8))); db.commit()
+    assert sweep_overdue_tenants(db) == 1; db.commit()
+    db.refresh(t); assert t.status=="suspended" and t.suspended_reason=="billing"
+
+def test_sweep_skips_recent_and_paused():
+    from app.services.tenant_saas_billing_service import sweep_overdue_tenants
+    db = _make_db(); t = db.get(Tenant, TENANT_ID); t.status="paused"; db.commit()
+    db.add(TenantSaasSubscription(tenant_id=t.id, plan="pro", price=129.90, status=SAAS_OVERDUE,
+                                  overdue_since=datetime.utcnow()-timedelta(days=8))); db.commit()
+    assert sweep_overdue_tenants(db) == 0
+    db.refresh(t); assert t.status=="paused"  # não toca paused

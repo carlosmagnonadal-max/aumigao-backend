@@ -27,6 +27,7 @@ from app.models.tenant_saas_subscription import (
     TenantSaasSubscription,
     SAAS_ACTIVE,
     SAAS_CANCELLED,
+    SAAS_OVERDUE,
 )
 from app.services.asaas_subscription_service import (
     create_asaas_subscription as create_asaas_subscription_native,
@@ -319,3 +320,34 @@ async def cancel_subscription(
         "cancel_subscription: tenant=%s sub=%s cancelada", tenant.id, sub.id,
     )
     return sub
+
+
+# ──────────────────────────────────────── sweep_overdue_tenants ───────────────
+
+def sweep_overdue_tenants(db: Session, now: datetime | None = None, grace_days: int = 7) -> int:
+    """Suspende tenants com assinatura SaaS vencida há mais de grace_days.
+
+    Não toca tenants já suspensos/cancelados/pausados. Marca suspended_reason='billing'.
+    Não commita (o caller commita). Retorna a contagem suspensa.
+    """
+    from datetime import timedelta
+    cutoff = (now or datetime.utcnow()) - timedelta(days=grace_days)
+    overdue = (
+        db.query(TenantSaasSubscription)
+        .filter(
+            TenantSaasSubscription.status == SAAS_OVERDUE,
+            TenantSaasSubscription.overdue_since.isnot(None),
+            TenantSaasSubscription.overdue_since < cutoff,
+        )
+        .all()
+    )
+    n = 0
+    for sub in overdue:
+        tenant = db.get(Tenant, sub.tenant_id)
+        if tenant and tenant.status not in ("suspended", "cancelled", "paused"):
+            tenant.status = "suspended"
+            tenant.suspended_reason = "billing"
+            db.add(tenant)
+            n += 1
+    logger.info("sweep_overdue_tenants: %d tenant(s) suspensos (grace_days=%d)", n, grace_days)
+    return n

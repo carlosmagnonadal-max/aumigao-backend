@@ -12,7 +12,7 @@ _logger = logging.getLogger("aumigao.admin")
 
 from sqlalchemy import and_, exists, func, inspect, not_, or_
 from sqlalchemy.orm import Session, selectinload
-from app.core.database import get_db
+from app.core.database import get_db, get_global_db
 from app.services.app_settings_service import (
     append_walker_program_action,
     get_setting,
@@ -2814,3 +2814,18 @@ def platform_summary(
         },
         "generated_at": now.isoformat() + "Z",
     }
+
+
+# ─────────────────────────── internal sweep endpoint (Task 8) ─────────────────
+
+@router.post("/internal/saas-billing/sweep")
+def saas_billing_sweep(request: Request, db: Session = Depends(get_global_db)):
+    import os, secrets
+    from app.services.tenant_saas_billing_service import sweep_overdue_tenants
+    expected = os.getenv("INTERNAL_SWEEP_TOKEN")
+    got = request.headers.get("x-internal-token")
+    if not expected or not got or not secrets.compare_digest(got, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    n = sweep_overdue_tenants(db)
+    db.commit()
+    return {"suspended": n}

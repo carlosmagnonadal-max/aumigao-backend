@@ -150,3 +150,39 @@ def test_manual_suspension_not_reactivated(monkeypatch):
                "externalReference": f"tenant_sub:{sub.id}", "subscription": "as_3", "value": 129.90}}
     client.post("/payments/webhooks/asaas", json=payload, headers={"asaas-access-token": "tok"})
     db.refresh(t); assert t.status == "suspended"  # NÃO reativa suspensão manual
+
+
+# ------------------------------------------------ middleware / Task 7 ---
+
+def test_is_path_allowlisted():
+    from app.services.tenant_status_service import is_path_allowlisted
+    assert is_path_allowlisted("/admin/x") and is_path_allowlisted("/payments/webhooks/asaas")
+    assert is_path_allowlisted("/health") and not is_path_allowlisted("/walks/1")
+
+
+def test_get_tenant_status():
+    from app.services.tenant_status_service import get_tenant_status
+    db = _make_db()
+    assert get_tenant_status(TENANT_ID, _sessionmaker_for(db)) == "active"
+    assert get_tenant_status("inexistente", _sessionmaker_for(db)) is None
+
+
+def test_middleware_blocks_suspended_tenant():
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.responses import JSONResponse
+    from starlette.testclient import TestClient as STC
+    from app.middleware.tenant_resolver import TenantResolverMiddleware
+    from app.services.tenant_resolver_service import clear_tenant_cache
+    clear_tenant_cache()
+    db = _make_db(); t = db.get(Tenant, TENANT_ID); t.status = "suspended"; db.commit()
+    Session = _sessionmaker_for(db)
+    async def dummy(request): return JSONResponse({"ok": True})
+    star = Starlette(routes=[Route("/walks/1", dummy), Route("/health", dummy)])
+    star.add_middleware(TenantResolverMiddleware, session_factory=Session)
+    c = STC(star)
+    # resolve_tenant_identity reads X-Tenant-Id header (via resolve_tenant_from_headers)
+    hdr = {"X-Tenant-Id": TENANT_ID}
+    assert c.get("/walks/1", headers=hdr).status_code == 403
+    assert c.get("/health", headers=hdr).status_code == 200
+    clear_tenant_cache()

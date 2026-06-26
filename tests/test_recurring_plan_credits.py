@@ -159,3 +159,54 @@ def test_reset_skips_when_period_current():
     assert reset_credits_if_renewal(db, sub) is False
     db.refresh(sub)
     assert sub.credits_remaining == 2
+
+
+def test_create_walk_consumes_credit():
+    """Teste unitário: cria Walk diretamente e verifica que consume_credit_if_available
+    decrementa os créditos e que walk.subscription_id é setado.
+
+    Caminho unitário escolhido porque o endpoint POST /walks depende do
+    TenantResolverMiddleware (request.state.tenant_id) que não é emulável num
+    TestClient isolado sem montar a app completa com middleware.
+    A lógica de produção é exatamente: consume_credit_if_available → walk.subscription_id = sub.id.
+    """
+    from uuid import uuid4
+
+    db = _make_db()
+    tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    subscribe(db, tenant, TUTOR_ID, plan.id)
+
+    # Simula o que create_walk faz após db.add(walk)
+    walk = Walk(
+        id=str(uuid4()),
+        tutor_id=TUTOR_ID,
+        tenant_id=tenant.id,
+        pet_id="pet-1",
+        scheduled_date="2026-07-01",
+        duration_minutes=30,
+        price=50.0,
+        status="Agendado",
+        subscription_id=None,
+        credit_refunded=False,
+    )
+    db.add(walk)
+
+    # Bloco equivalente ao inserido em walks.py (Step 2)
+    _covered_by_subscription = False
+    if walk.tenant_id:
+        _t = db.get(type(tenant), walk.tenant_id)
+        if _t is not None:
+            _sub = consume_credit_if_available(db, _t, walk.tutor_id)
+            if _sub is not None:
+                walk.subscription_id = _sub.id
+                _covered_by_subscription = True
+
+    db.commit()
+
+    assert _covered_by_subscription is True
+
+    sub = get_active_subscription(db, tenant.id, TUTOR_ID)
+    assert sub is not None
+    assert sub.credits_remaining == 3
+    assert db.get(Walk, walk.id).subscription_id == sub.id

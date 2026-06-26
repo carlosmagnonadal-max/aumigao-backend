@@ -51,6 +51,7 @@ from app.services.tenant_plan_service import (
     tenant_tem_rede,
 )
 from app.services import tenant_saas_billing_service as saas_billing
+from app.services.recurring_plan_seed import seed_base_recurring_plans
 
 
 # ── Schema local (Fase 1 Passo 1) ─────────────────────────────────────────────
@@ -174,6 +175,11 @@ def create_tenant(payload: TenantCreate, admin: User = Depends(get_current_user)
     db.add(_default_branding(tenant))
     db.add(_default_settings(tenant))
     db.add(_default_onboarding(tenant))
+    # Semeia o catálogo base de planos recorrentes para tenants elegíveis.
+    # Roda dentro desta transação (flush sem commit): idempotente e gated por plano.
+    # O escopo RLS global (app.current_tenant='*') já foi injetado acima via
+    # get_admin_tenant_scope, portanto o INSERT com tenant_id novo passa no WITH CHECK.
+    seed_base_recurring_plans(db, tenant)
     record_audit_log(
         db, action="tenant.created", entity_type="tenant", entity_id=tenant.id, actor=admin,
         after={"name": tenant.name, "slug": tenant.slug, "plan": tenant.plan}, tenant_id=tenant.id,

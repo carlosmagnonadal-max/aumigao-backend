@@ -894,6 +894,38 @@ def _handle_tenant_saas_subscription_webhook(db, event: str, payment_data: dict)
             ))
 
         db.commit()
+
+        # ---- NFS-e best-effort (Projeto NFS-e, dormente por NFS_E_ENABLED=false) --------
+        # Emite nota fiscal para mensalidade SaaS confirmada.
+        # NUNCA propaga exceção: falha de NFS-e jamais pode quebrar o webhook de cobrança.
+        # Chamada async dentro de handler sync (FastAPI roda sync routes em thread pool,
+        # portanto não há event loop ativo nesta thread — asyncio.run() é seguro aqui).
+        #
+        # TODO: comissão de passeio — NÃO implementada aqui. A base de cálculo (valor
+        # líquido ao passeador vs. valor bruto do pagamento) depende de definição do
+        # contador. Quando implementada, seguirá o mesmo padrão best-effort abaixo.
+        try:
+            from app.services.nfse_service import issue_nfse_for_saas_payment
+            asyncio.run(
+                issue_nfse_for_saas_payment(
+                    db,
+                    tenant_id=sub.tenant_id,
+                    asaas_payment_id=pid or f"saas:{sub.id}:{now.date().isoformat()}",
+                    value=float(sub.price),
+                    subscription_id=sub.asaas_subscription_id,
+                )
+            )
+        except Exception:
+            logger.exception(
+                "_handle_tenant_saas_subscription_webhook: falha best-effort NFS-e tenant_id=%s",
+                sub.tenant_id,
+            )
+            # rollback parcial apenas da NFS-e; o pagamento já foi commitado acima.
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
         return True
 
     # Evento não tratado (ex.: PAYMENT_CREATED, PAYMENT_UPDATED) — noop seguro
@@ -1033,11 +1065,31 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
     _payment_raw = payload.get("payment")
     if _payment_raw is not None and not isinstance(_payment_raw, dict):
         raise HTTPException(status_code=400, detail="Campo 'payment' deve ser um objeto no webhook.")
+    _invoice_raw = payload.get("invoice")
+    if _invoice_raw is not None and not isinstance(_invoice_raw, dict):
+        raise HTTPException(status_code=400, detail="Campo 'invoice' deve ser um objeto no webhook.")
 
     event = payload.get("event")
     payment_data = payload.get("payment") or {}
     provider_payment_id = payment_data.get("id")
     external_ref = payment_data.get("externalReference") or ""
+
+    # ---------------------------------------------------------------------------
+    # INVOICE_* — eventos de NFS-e (nota fiscal). Processados ANTES dos eventos
+    # PAYMENT_* para evitar qualquer interferência com o caminho de dinheiro.
+    # Dormente enquanto a tabela nfse estiver vazia (flag NFS_E_ENABLED=false).
+    # ---------------------------------------------------------------------------
+    if isinstance(event, str) and event.startswith("INVOICE"):
+        try:
+            _handle_nfse_webhook(db, event, payload.get("invoice") or {})
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "asaas_webhook.nfse_error event=%s",
+                event,
+            )
+            raise HTTPException(status_code=500, detail="Erro ao processar webhook de NFS-e.")
+        return {"ok": True, "received": event}
 
     # ---------------------------------------------------------------------------
     # 2. Processamento de DB com escopo global — via get_global_db (rls_tenant="*").
@@ -1191,3 +1243,13 @@ def _is_tip_payment(db, provider_payment_id: str, external_ref: str) -> bool:
         .filter(WalkTip.provider_payment_id == provider_payment_id)
         .first()
     ) is not None
+
+
+def _handle_nfse_webhook(db, event: str, invoice_data: dict) -> None:
+    """Wrapper síncrono para handle_nfse_webhook_event do nfse_service.
+
+    Delegação direta — o nfse_service é responsável por toda a lógica.
+    Exceções propagam para o caller (asaas_webhook), que faz rollback + 500.
+    """
+    from app.services.nfse_service import handle_nfse_webhook_event
+    handle_nfse_webhook_event(db, event, invoice_data)

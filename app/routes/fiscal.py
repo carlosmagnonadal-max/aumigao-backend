@@ -71,6 +71,44 @@ def financial_summary(tenant_id: str, date_from: str | None = None, date_to: str
     return prov_svc.financial_summary(db, tenant_id, date_from=df, date_to=dt)
 
 
+@router.get("/{tenant_id}/provisions")
+@api_router.get("/{tenant_id}/provisions")
+def list_provisions(
+    tenant_id: str,
+    limit: int = 25,
+    offset: int = 0,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    admin: User = Depends(require_permission("finance.read")),
+    db: Session = Depends(get_db),
+):
+    _ensure_scope(admin, tenant_id, db)
+    df = datetime.fromisoformat(date_from) if date_from else None
+    dt = datetime.fromisoformat(date_to) if date_to else None
+    rows = prov_svc.list_provisions(db, tenant_id, limit=limit, offset=offset, date_from=df, date_to=dt)
+
+    def _row(p):
+        g = float(p.platform_gross) + float(p.walker_gross)
+        t = float(p.platform_tax) + float(p.walker_tax)
+        n = float(p.platform_net) + float(p.walker_net)
+        return {
+            "payment_id": p.payment_id,
+            "revenue_type": p.revenue_type,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+            "walker_gross": float(p.walker_gross),
+            "walker_tax": float(p.walker_tax),
+            "walker_net": float(p.walker_net),
+            "platform_gross": float(p.platform_gross),
+            "platform_tax": float(p.platform_tax),
+            "platform_net": float(p.platform_net),
+            "gross": round(g, 2),
+            "tax": round(t, 2),
+            "net": round(n, 2),
+        }
+
+    return {"items": [_row(p) for p in rows], "limit": limit, "offset": offset}
+
+
 @payments_router.get("/{payment_id}/provision")
 @api_payments_router.get("/{payment_id}/provision")
 def get_payment_provision(payment_id: str, admin: User = Depends(require_permission("finance.read")), db: Session = Depends(get_db)):

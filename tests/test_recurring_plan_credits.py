@@ -20,7 +20,7 @@ from app.models.recurring_plan import (
 )
 from app.services.recurring_plan_service import (
     subscribe, get_active_subscription, consume_credit_if_available,
-    refund_credit_for_walk,
+    refund_credit_for_walk, reset_credits_if_renewal,
 )
 from app.services.tenant_seed_service import DEFAULT_TENANT_SLUG
 
@@ -132,3 +132,30 @@ def test_refund_skips_walk_without_subscription():
     )
     db.add(walk); db.commit()
     assert refund_credit_for_walk(db, walk) is False
+
+
+def test_reset_refills_on_genuine_renewal():
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)
+    sub.credits_remaining = 1
+    sub.current_period_end = datetime.utcnow() - timedelta(days=1)
+    db.add(sub); db.commit()
+
+    assert reset_credits_if_renewal(db, sub) is True
+    db.commit(); db.refresh(sub)
+    assert sub.credits_remaining == 4
+    assert sub.current_period_end > datetime.utcnow()
+
+
+def test_reset_skips_when_period_current():
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)
+    sub.credits_remaining = 2
+    sub.current_period_end = datetime.utcnow() + timedelta(days=10)
+    db.add(sub); db.commit()
+
+    assert reset_credits_if_renewal(db, sub) is False
+    db.refresh(sub)
+    assert sub.credits_remaining == 2

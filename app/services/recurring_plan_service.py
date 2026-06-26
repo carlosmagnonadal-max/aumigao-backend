@@ -347,6 +347,36 @@ def plan_name_for(db: Session, subscription: TutorSubscription | None) -> str | 
     return plan.name if plan else None
 
 
+def reset_credits_if_renewal(db: Session, subscription: TutorSubscription) -> bool:
+    """Reabastece os créditos na renovação mensal paga, idempotente e thread-safe.
+
+    Só reseta quando o período atual já venceu (current_period_end < now). Isso evita
+    reabastecer na 1ª cobrança (período recém-criado) e em reentrega do mesmo evento.
+    Releitura com with_for_update serializa duas entregas concorrentes (a 2ª vê o
+    período já avançado e desiste). Avança o período. Não commita. Retorna True se resetou.
+    """
+    now = datetime.utcnow()
+    locked = (
+        db.query(TutorSubscription)
+        .filter(TutorSubscription.id == subscription.id)
+        .with_for_update()
+        .first()
+    )
+    if locked is None:
+        return False
+    end = locked.current_period_end
+    if end is None or end > now:
+        return False
+    plan = db.get(RecurringPlan, locked.plan_id)
+    interval = plan.interval if plan else "monthly"
+    locked.credits_remaining = locked.walks_per_cycle
+    locked.current_period_start = now
+    locked.current_period_end = _period_end(now, interval)
+    locked.updated_at = now
+    db.add(locked)
+    return True
+
+
 def refund_credit_for_walk(db: Session, walk) -> bool:
     """Estorna 1 crédito quando um passeio coberto por assinatura é cancelado/deletado.
 

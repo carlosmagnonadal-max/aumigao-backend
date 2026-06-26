@@ -97,3 +97,56 @@ def test_start_subscription_anti_zombie(monkeypatch):
     with pytest.raises(HTTPException):
         asyncio.run(svc.start_subscription(db, t))
     assert db.query(TenantSaasSubscription).count() == 0  # nada persistido
+
+
+# --------------------------------------------------------- webhook (Task 6) ---
+
+def _make_payments_client(db):
+    import app.routes.payments as payments_module
+    app_t = FastAPI()
+    app_t.include_router(payments_module.router)
+    app_t.dependency_overrides[get_db] = lambda: db
+    app_t.dependency_overrides[get_global_db] = lambda: db
+    app_t.dependency_overrides[get_current_user] = lambda: db.get(User, TENANT_ID)
+    return TestClient(app_t)
+
+
+def test_tenant_saas_webhook_confirmed_reactivates(monkeypatch):
+    monkeypatch.setenv("ASAAS_WEBHOOK_TOKEN", "tok")
+    db = _make_db(); t = db.get(Tenant, TENANT_ID); t.status = "suspended"; t.suspended_reason = "billing"
+    sub = TenantSaasSubscription(tenant_id=t.id, plan="pro", price=129.90, status=SAAS_OVERDUE,
+                                 overdue_since=datetime.utcnow() - timedelta(days=10), asaas_subscription_id="as_1")
+    db.add(sub); db.commit()
+    client = _make_payments_client(db)
+    payload = {"event": "PAYMENT_RECEIVED", "payment": {"id": "p1", "status": "RECEIVED",
+               "externalReference": f"tenant_sub:{sub.id}", "subscription": "as_1", "value": 129.90}}
+    r = client.post("/payments/webhooks/asaas", json=payload, headers={"asaas-access-token": "tok"})
+    assert r.status_code == 200
+    db.refresh(sub); db.refresh(t)
+    assert sub.status == SAAS_ACTIVE and sub.overdue_since is None
+    assert t.status == "active" and t.suspended_reason is None
+
+
+def test_tenant_saas_webhook_overdue_marks(monkeypatch):
+    monkeypatch.setenv("ASAAS_WEBHOOK_TOKEN", "tok")
+    db = _make_db()
+    sub = TenantSaasSubscription(tenant_id=TENANT_ID, plan="pro", price=129.90, status=SAAS_ACTIVE, asaas_subscription_id="as_2")
+    db.add(sub); db.commit()
+    client = _make_payments_client(db)
+    payload = {"event": "PAYMENT_OVERDUE", "payment": {"id": "p2", "status": "OVERDUE",
+               "externalReference": f"tenant_sub:{sub.id}", "subscription": "as_2", "value": 129.90}}
+    r = client.post("/payments/webhooks/asaas", json=payload, headers={"asaas-access-token": "tok"})
+    assert r.status_code == 200
+    db.refresh(sub); assert sub.status == SAAS_OVERDUE and sub.overdue_since is not None
+
+
+def test_manual_suspension_not_reactivated(monkeypatch):
+    monkeypatch.setenv("ASAAS_WEBHOOK_TOKEN", "tok")
+    db = _make_db(); t = db.get(Tenant, TENANT_ID); t.status = "suspended"; t.suspended_reason = "manual"
+    sub = TenantSaasSubscription(tenant_id=t.id, plan="pro", price=129.90, status=SAAS_OVERDUE, asaas_subscription_id="as_3")
+    db.add(sub); db.commit()
+    client = _make_payments_client(db)
+    payload = {"event": "PAYMENT_RECEIVED", "payment": {"id": "p3", "status": "RECEIVED",
+               "externalReference": f"tenant_sub:{sub.id}", "subscription": "as_3", "value": 129.90}}
+    client.post("/payments/webhooks/asaas", json=payload, headers={"asaas-access-token": "tok"})
+    db.refresh(t); assert t.status == "suspended"  # NÃO reativa suspensão manual

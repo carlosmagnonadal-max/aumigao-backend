@@ -17,6 +17,8 @@ from app.core.database import get_db, get_global_db
 from app.dependencies.auth import get_current_user
 from app.models.notification import Notification
 from app.models.payment import Payment
+from app.models.tenant import Tenant
+from app.models.tenant_saas_subscription import TenantSaasSubscription, SAAS_ACTIVE, SAAS_OVERDUE
 from app.models.user import User
 from app.models.walk import Walk
 from app.schemas.payment import PaymentCreate, PaymentQuoteResponse, PaymentResponse
@@ -820,6 +822,84 @@ def _handle_tip_webhook(db, event: str, payment_data: dict) -> bool:
     return True
 
 
+def _handle_tenant_saas_subscription_webhook(db, event: str, payment_data: dict) -> bool:
+    """Processa webhooks de mensalidade SaaS do tenant (Projeto B).
+
+    Identifica eventos cujo externalReference começa com 'tenant_sub:'.
+    Atualiza TenantSaasSubscription e, em confirmação, reativa o Tenant se
+    suspenso por billing. Registra Payment idempotente para auditoria.
+    Retorna True se tratou (ou consumiu como noop), False se não é tenant_sub.
+    """
+    ext = payment_data.get("externalReference") or ""
+    if not ext.startswith("tenant_sub:"):
+        return False
+
+    sub_id = ext[len("tenant_sub:"):]
+    sub: TenantSaasSubscription | None = db.get(TenantSaasSubscription, sub_id)
+    if sub is None:
+        # Fallback por asaas_subscription_id
+        sub = (
+            db.query(TenantSaasSubscription)
+            .filter(TenantSaasSubscription.asaas_subscription_id == payment_data.get("subscription"))
+            .first()
+        )
+    if sub is None:
+        logger.warning(
+            "_handle_tenant_saas_subscription_webhook: assinatura não encontrada ext=%s", ext
+        )
+        return True  # consumiu o evento — noop seguro
+
+    now = datetime.utcnow()
+
+    # --- OVERDUE: marca inadimplência ---
+    if event == "PAYMENT_OVERDUE":
+        sub.status = SAAS_OVERDUE
+        if sub.overdue_since is None:
+            sub.overdue_since = now
+        db.add(sub)
+        db.commit()
+        return True
+
+    # --- Confirmado: reativa assinatura + tenant (se suspenso por billing) ---
+    new_status = STATUS_BY_WEBHOOK_EVENT.get(event) or STATUS_BY_ASAAS_STATUS.get(
+        payment_data.get("status")
+    )
+    if new_status == _PAYMENT_CONFIRMED_STATUS:
+        sub.status = SAAS_ACTIVE
+        sub.last_payment_at = now
+        sub.overdue_since = None
+        sub.current_period_start = now
+        sub.current_period_end = now + timedelta(days=31)
+        db.add(sub)
+
+        # Reativa tenant apenas se suspenso por inadimplência (não por suspensão manual)
+        tenant: Tenant | None = db.get(Tenant, sub.tenant_id)
+        if tenant and tenant.status == "suspended" and tenant.suspended_reason == "billing":
+            tenant.status = "active"
+            tenant.suspended_reason = None
+            db.add(tenant)
+
+        # Payment idempotente para auditoria financeira
+        pid = payment_data.get("id")
+        if pid and not db.query(Payment).filter(Payment.provider_payment_id == pid).first():
+            db.add(Payment(
+                id=str(uuid4()),
+                tenant_id=sub.tenant_id,
+                tutor_id=sub.tenant_id,  # sentinela: SaaS não tem tutor físico
+                walk_id=None,
+                amount=float(sub.price),
+                status=new_status,
+                provider="asaas_tenant_saas",
+                provider_payment_id=pid,
+            ))
+
+        db.commit()
+        return True
+
+    # Evento não tratado (ex.: PAYMENT_CREATED, PAYMENT_UPDATED) — noop seguro
+    return True
+
+
 def _handle_subscription_webhook(db, event: str, payment_data: dict) -> bool:
     """Processa webhooks de cobranças geradas por subscriptions Asaas.
 
@@ -828,6 +908,9 @@ def _handle_subscription_webhook(db, event: str, payment_data: dict) -> bool:
     Retorna True se tratou, False caso contrário.
     """
     external_ref = payment_data.get("externalReference") or ""
+    # Guard negativo: tenant_sub: é tratado ANTES deste handler no dispatcher.
+    if (payment_data.get("externalReference") or "").startswith("tenant_sub:"):
+        return False
     if not external_ref.startswith("sub:"):
         return False
 
@@ -986,6 +1069,7 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
     if external_ref.startswith("tip:") or (
         provider_payment_id
         and not external_ref.startswith("sub:")
+        and not external_ref.startswith("tenant_sub:")
         and _is_tip_payment(db, provider_payment_id, external_ref)
     ):
         try:
@@ -998,6 +1082,20 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
             )
             raise HTTPException(status_code=500, detail="Erro interno ao processar webhook de gorjeta.")
         return {"ok": True, "received": event}
+
+    # --- Mensalidade SaaS do tenant (Projeto B) ---
+    if external_ref.startswith("tenant_sub:"):
+        try:
+            handled = _handle_tenant_saas_subscription_webhook(db, event, payment_data)
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "asaas_webhook.tenant_saas_error event=%s provider_payment_id=%s",
+                event, provider_payment_id,
+            )
+            raise HTTPException(status_code=500, detail="Erro ao processar webhook de mensalidade.")
+        if handled:
+            return {"ok": True, "received": event}
 
     # --- Cobrança de assinatura recorrente ---
     if external_ref.startswith("sub:") or payment_data.get("subscription"):

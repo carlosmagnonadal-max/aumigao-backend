@@ -275,7 +275,9 @@ def _ensure_internal_walk_payment(walk: Walk, db: Session):
     # A-02: registra o split de comissão (antes ficava None -> saldo do walker e
     # relatórios financeiros não tinham o repasse das finalizações manuais).
     amount = float(walk.price or 0)
-    split = build_payment_split(db, walk.tenant_id, amount)
+    split = build_payment_split(
+        db, walk.tenant_id, amount, walker_id=(walk.walker_id or walk.assigned_walker_id)
+    )
     payment = Payment(
         id=str(uuid4()),
         tenant_id=walk.tenant_id,

@@ -231,3 +231,32 @@ def test_payment_create_rejected_for_covered_walk():
 
     resp = client.post("/payments/create", json={"walk_id": walk.id, "amount": 50.0, "method": "pix"})
     assert resp.status_code == 409, resp.text
+
+
+import app.routes.admin as admin_mod
+from app.routes.admin import _ensure_internal_walk_payment
+
+
+def test_internal_payment_passes_walker_id(monkeypatch):
+    db = _make_db(); tenant = _tenant(db)
+    captured = {}
+
+    def fake_split(db, tenant_id, amount, *, walker_id=None):
+        captured["walker_id"] = walker_id
+        return {"commission_percent": 10.0, "platform_amount": amount * 0.1, "walker_amount": amount * 0.9}
+
+    monkeypatch.setattr(admin_mod, "build_payment_split", fake_split)
+
+    db.add(User(id="walker-xyz", email="w@x.com", password_hash="x", role="passeador", tenant_id=tenant.id))
+    walk = Walk(
+        id="walk-internal", tutor_id=TUTOR_ID, tenant_id=tenant.id, pet_id="pet-1",
+        scheduled_date="2026-07-01", duration_minutes=30, price=100.0,
+        status="Agendado", walker_id="walker-xyz",
+    )
+    db.add(walk); db.commit()
+
+    _ensure_internal_walk_payment(walk, db)   # ordem real: (walk, db)
+
+    assert captured["walker_id"] == "walker-xyz"
+    pay = db.query(Payment).filter(Payment.walk_id == "walk-internal").first()
+    assert pay is not None and pay.walker_amount == 90.0

@@ -59,3 +59,20 @@ def test_enterprise_zero_price_raises():
 def test_enterprise_negative_raises():
     with pytest.raises(ValueError):
         resolve_saas_price("enterprise", -10.0)
+
+
+# --------------------------------------------------------- customer (Task 4) ---
+
+def test_customer_requires_document_and_email():
+    import asyncio
+    from app.services.tenant_saas_billing_service import ensure_tenant_asaas_customer
+    db = _make_db(); t = db.get(Tenant, TENANT_ID); t.document_number = None; db.commit()
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(ensure_tenant_asaas_customer(db, t))
+    assert e.value.status_code == 400
+
+def test_customer_idempotent_when_already_set():
+    import asyncio
+    from app.services.tenant_saas_billing_service import ensure_tenant_asaas_customer
+    db = _make_db(); t = db.get(Tenant, TENANT_ID); t.asaas_customer_id = "cus_existing"; db.commit()
+    assert asyncio.run(ensure_tenant_asaas_customer(db, t)) == "cus_existing"

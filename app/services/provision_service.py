@@ -42,6 +42,24 @@ def compute_and_store_provision(db: Session, tenant_id: str, payment, revenue_ty
     db.add(prov); db.commit(); db.refresh(prov)
     return prov
 
+def list_provisions(
+    db: Session,
+    tenant_id: str,
+    *,
+    limit: int = 25,
+    offset: int = 0,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+) -> list[PaymentProvision]:
+    q = db.query(PaymentProvision).filter(PaymentProvision.tenant_id == tenant_id)
+    if date_from is not None:
+        q = q.filter(PaymentProvision.created_at >= date_from)
+    if date_to is not None:
+        q = q.filter(PaymentProvision.created_at <= date_to)
+    q = q.order_by(PaymentProvision.created_at.desc())
+    return q.limit(max(1, min(limit, 200))).offset(max(0, offset)).all()
+
+
 def financial_summary(db: Session, tenant_id: str, *, date_from: datetime | None = None, date_to: datetime | None = None) -> dict:
     q = db.query(PaymentProvision).filter(PaymentProvision.tenant_id == tenant_id)
     if date_from is not None:

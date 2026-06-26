@@ -235,3 +235,45 @@ def test_admin_start_get_cancel_saas(monkeypatch):
     assert g.status_code == 200 and g.json().get("status") == "active", g.text
     d = client.delete(f"/admin/tenants/{TENANT_ID}/saas-subscription")
     assert d.status_code == 200, d.text
+
+
+# -------------------------------------------------- platform summary / Task 10 ---
+
+def _make_platform_admin_client(db):
+    import app.routes.admin as admin_mod
+    sa = User(id="sadmin2", email="sa2@x.com", password_hash="x", role="super_admin")
+    try:
+        db.add(sa); db.commit()
+    except Exception:
+        db.rollback()
+    app_t = FastAPI()
+    app_t.include_router(admin_mod.router)
+    app_t.dependency_overrides[get_db] = lambda: db
+    app_t.dependency_overrides[get_current_user] = lambda: db.get(User, "sadmin2")
+    return TestClient(app_t)
+
+
+def test_saas_revenue_separated(monkeypatch):
+    db = _make_db()
+    # 1 pagamento de mensalidade SaaS + 1 de passeio
+    db.add(Payment(id="pay-saas", tenant_id=TENANT_ID, tutor_id=TENANT_ID, walk_id=None,
+                   amount=129.90, status="pagamento_confirmado_sandbox", provider="asaas_tenant_saas",
+                   provider_payment_id="ps1"))
+    db.add(Payment(id="pay-walk", tenant_id=TENANT_ID, tutor_id="tut", walk_id="w1",
+                   amount=50.0, status="pagamento_confirmado_sandbox", provider="internal",
+                   provider_payment_id="pw1"))
+    db.commit()
+    client = _make_platform_admin_client(db)
+    r = client.get("/admin/platform/summary")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    rev = body["platform_revenue"]
+    # saas_revenue deve capturar exatamente os 129.90
+    assert abs(float(rev["saas_revenue"]) - 129.90) < 0.01, f"saas_revenue={rev['saas_revenue']}"
+    # total_paid_all_time e gross_revenue_plans NÃO devem incluir a mensalidade SaaS
+    assert abs(float(rev["total_paid_all_time"]) - 50.0) < 0.01, (
+        f"total_paid_all_time={rev['total_paid_all_time']} deve ser 50.0, não incluir SaaS"
+    )
+    assert abs(float(rev["gross_revenue_plans"]) - 0.0) < 0.01, (
+        f"gross_revenue_plans={rev['gross_revenue_plans']} deve ser 0.0, SaaS excluído"
+    )

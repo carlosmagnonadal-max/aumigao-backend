@@ -1166,6 +1166,23 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
     return {"ok": True, "received": event}
 
 
+# ─────────────────────────── internal sweep endpoint (Task 8) ─────────────────
+# Rota SEM dependency de auth no nível do router — autenticada apenas pelo
+# token interno (X-Internal-Token). Chamada pelo Cloud Scheduler sem JWT.
+
+@router.post("/internal/saas-billing/sweep")
+def saas_billing_sweep(request: Request, db: Session = Depends(get_global_db)):
+    import os, secrets
+    from app.services.tenant_saas_billing_service import sweep_overdue_tenants
+    expected = os.getenv("INTERNAL_SWEEP_TOKEN")
+    got = request.headers.get("x-internal-token")
+    if not expected or not got or not secrets.compare_digest(got, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    n = sweep_overdue_tenants(db)
+    db.commit()
+    return {"suspended": n}
+
+
 def _is_tip_payment(db, provider_payment_id: str, external_ref: str) -> bool:
     """Verifica se um provider_payment_id pertence a uma WalkTip (fallback sem externalReference)."""
     from app.models.walk_tip import WalkTip

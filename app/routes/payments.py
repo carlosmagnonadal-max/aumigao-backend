@@ -479,6 +479,12 @@ async def create_payment(payload: PaymentCreate, request: Request, user: User = 
         if _walk_ref is not None and _walk_ref.tutor_id != user.id:
             raise HTTPException(status_code=404, detail="Passeio nao encontrado.")
 
+    # Projeto A: passeio coberto por assinatura não gera cobrança avulsa.
+    if payload.walk_id:
+        _covered = db.get(Walk, payload.walk_id)
+        if _covered is not None and getattr(_covered, "subscription_id", None):
+            raise HTTPException(status_code=409, detail="Este passeio já está coberto pelo seu plano mensal.")
+
     # Idempotencia: se ja existe um pagamento em aberto para este walk_id,
     # devolve o existente sem criar novo no Asaas.
     if payload.walk_id:

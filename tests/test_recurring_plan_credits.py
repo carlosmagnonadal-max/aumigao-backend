@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 import app.models  # registra todas as tabelas no Base
 from app.core.database import Base, get_db, get_global_db
 from app.dependencies.auth import get_current_user
+from app.routes import payments as payments_module
 from app.models.tenant import Tenant, TenantFeature
 from app.models.user import User
 from app.models.pet import Pet
@@ -210,3 +211,23 @@ def test_create_walk_consumes_credit():
     assert sub is not None
     assert sub.credits_remaining == 3
     assert db.get(Walk, walk.id).subscription_id == sub.id
+
+
+def _make_payments_client(db):
+    app_t = FastAPI()
+    app_t.include_router(payments_module.router)
+    app_t.dependency_overrides[get_db] = lambda: db
+    app_t.dependency_overrides[get_global_db] = lambda: db   # webhook usa get_global_db
+    app_t.dependency_overrides[get_current_user] = lambda: db.get(User, TUTOR_ID)
+    return TestClient(app_t)
+
+
+def test_payment_create_rejected_for_covered_walk():
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)
+    walk = _make_covered_walk(db, tenant, sub)
+    client = _make_payments_client(db)
+
+    resp = client.post("/payments/create", json={"walk_id": walk.id, "amount": 50.0, "method": "pix"})
+    assert resp.status_code == 409, resp.text

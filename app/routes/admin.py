@@ -278,6 +278,7 @@ def _ensure_internal_walk_payment(walk: Walk, db: Session):
     split = build_payment_split(
         db, walk.tenant_id, amount, walker_id=(walk.walker_id or walk.assigned_walker_id)
     )
+    _provider = "subscription_walk" if getattr(walk, "subscription_id", None) else "internal"
     payment = Payment(
         id=str(uuid4()),
         tenant_id=walk.tenant_id,
@@ -285,7 +286,7 @@ def _ensure_internal_walk_payment(walk: Walk, db: Session):
         walk_id=walk.id,
         amount=amount,
         status="paid",
-        provider="internal",
+        provider=_provider,
         commission_percent=split["commission_percent"],
         platform_amount=split["platform_amount"],
         walker_amount=split["walker_amount"],
@@ -895,6 +896,7 @@ def dashboard(admin: User = Depends(require_permission("admin.access")), db: Ses
             .filter(
                 Payment.status.in_(PAID_PAYMENT_STATUSES),
                 Payment.walk_id.in_(real_revenue_walk_ids),
+                or_(Payment.provider.is_(None), Payment.provider != "subscription_walk"),
                 *_not_fake_token_conditions([Payment.id, Payment.tutor_id, Payment.walk_id, Payment.provider, Payment.provider_payment_id]),
             )
         )
@@ -2610,7 +2612,10 @@ def platform_summary(
     # ── Platform Revenue (todos os tenants, sem apply_tenant_filter) ─────────
     total_paid_all_time = (
         db.query(func.sum(Payment.amount))
-        .filter(Payment.status.in_(PAID_PAYMENT_STATUSES))
+        .filter(
+            Payment.status.in_(PAID_PAYMENT_STATUSES),
+            or_(Payment.provider.is_(None), Payment.provider != "subscription_walk"),
+        )
         .scalar() or 0.0
     )
 
@@ -2619,6 +2624,7 @@ def platform_summary(
         .filter(
             Payment.status.in_(PAID_PAYMENT_STATUSES),
             Payment.created_at >= cutoff_30d,
+            or_(Payment.provider.is_(None), Payment.provider != "subscription_walk"),
         )
         .scalar() or 0.0
     )
@@ -2628,6 +2634,7 @@ def platform_summary(
         .filter(
             Payment.status.in_(PAID_PAYMENT_STATUSES),
             Payment.platform_amount.isnot(None),
+            or_(Payment.provider.is_(None), Payment.provider != "subscription_walk"),
         )
         .scalar() or 0.0
     )
@@ -2638,6 +2645,7 @@ def platform_summary(
             Payment.status.in_(PAID_PAYMENT_STATUSES),
             Payment.platform_amount.isnot(None),
             Payment.created_at >= cutoff_30d,
+            or_(Payment.provider.is_(None), Payment.provider != "subscription_walk"),
         )
         .scalar() or 0.0
     )
@@ -2647,6 +2655,7 @@ def platform_summary(
         .filter(
             Payment.status.in_(PAID_PAYMENT_STATUSES),
             Payment.walk_id.isnot(None),
+            or_(Payment.provider.is_(None), Payment.provider != "subscription_walk"),
         )
         .scalar() or 0.0
     )

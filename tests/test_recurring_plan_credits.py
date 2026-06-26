@@ -309,6 +309,33 @@ def test_delete_walk_refunds_credit():
     assert sub.credits_remaining == 4
 
 
+def test_subscription_walk_payment_uses_distinct_provider_and_excluded_from_revenue():
+    import app.routes.admin as admin_mod
+    from app.routes.admin import _ensure_internal_walk_payment
+    from sqlalchemy import or_, func
+
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)
+    db.add(User(id="walker-z", email="wz@x.com", password_hash="x", role="passeador", tenant_id=tenant.id))
+    walk = _make_covered_walk(db, tenant, sub)   # tem subscription_id
+    walk.walker_id = "walker-z"; db.add(walk); db.commit()
+
+    _ensure_internal_walk_payment(walk, db)
+    db.commit()
+
+    pay = db.query(Payment).filter(Payment.walk_id == walk.id).first()
+    assert pay is not None
+    assert pay.provider == "subscription_walk"
+    # walker recebe (walker_amount registrado)
+    assert pay.walker_amount is not None and pay.walker_amount > 0
+    # excluído das somas de receita (replica o filtro usado nos relatórios)
+    revenue = db.query(func.coalesce(func.sum(Payment.amount), 0.0)).filter(
+        or_(Payment.provider.is_(None), Payment.provider != "subscription_walk")
+    ).scalar()
+    assert revenue == 0.0  # o único Payment é o subscription_walk → excluído
+
+
 def test_subscription_renewal_resets_credits(monkeypatch):
     monkeypatch.setenv("ASAAS_WEBHOOK_TOKEN", "tok-credits")
     db = _make_db(); tenant = _tenant(db)

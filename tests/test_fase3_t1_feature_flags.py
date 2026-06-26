@@ -90,7 +90,20 @@ class TestTenantFeatureEnabled:
     def test_default_off_key_absent_returns_false(self):
         db = _tenant_db()
         tenant = _tenant(db)
-        # recurring_plans is default-OFF (not in DEFAULT_ON_FEATURE_KEYS)
+        # recurring_plans migrou para default-ON; "totally_unknown_key" ainda é default-OFF
+        assert tenant_feature_enabled(tenant, db, "totally_unknown_key") is False
+
+    def test_recurring_plans_now_default_on_without_row(self):
+        """recurring_plans é default-ON: ausência de linha → True."""
+        db = _tenant_db()
+        tenant = _tenant(db)
+        assert tenant_feature_enabled(tenant, db, "recurring_plans") is True
+
+    def test_recurring_plans_disabled_by_explicit_flag(self):
+        """recurring_plans com linha enabled=False → False."""
+        db = _tenant_db()
+        tenant = _tenant(db)
+        _feature(db, tenant.id, "recurring_plans", enabled=False)
         assert tenant_feature_enabled(tenant, db, "recurring_plans") is False
 
     def test_default_off_key_explicitly_enabled_returns_true(self):
@@ -110,6 +123,7 @@ class TestTenantFeatureEnabled:
             "live_gps", "client_referrals", "walker_referrals", "reviews",
             "walker_boosts", "home_pickup", "push_notifications",
             "transactional_emails", "support_tickets",
+            "recurring_plans",  # migrou para default-ON
         }
         assert expected == DEFAULT_ON_FEATURE_KEYS
 

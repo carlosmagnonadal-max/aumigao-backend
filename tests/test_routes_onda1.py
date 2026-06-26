@@ -52,10 +52,26 @@ def build(*, features: set[str] | None = None, pets: list[str] | None = None):
 
 # ----- recurring plans -----
 def test_recurring_plans_gated_off():
-    client, _ = build(features=set())
+    """Feature desligada via flag explícita (enabled=False) → available=False.
+    Sob a regra default-ON, ausência de linha não bloqueia mais; é necessário
+    setar enabled=False explicitamente para ocultar a feature de um tenant elegível."""
+    client, db = build(features=set())
+    db.add(TenantFeature(tenant_id=TENANT_ID, feature_key="recurring_plans", enabled=False))
+    db.commit()
     r = client.get("/recurring-plans")
     assert r.status_code == 200
     assert r.json()["available"] is False
+
+
+def test_recurring_plans_available_without_explicit_flag():
+    """Plano elegível (business) e sem linha na TenantFeature → default-ON → available=True."""
+    client, _ = build(features=set())  # sem nenhuma linha de feature
+    r = client.get("/recurring-plans")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+    assert body["plans"] == []
+    assert body["subscription"] is None
 
 
 def test_recurring_plans_available():

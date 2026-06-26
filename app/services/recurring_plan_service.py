@@ -20,7 +20,10 @@ from app.models.recurring_plan import (
 )
 from app.models.tenant import Tenant
 from app.models.walk import Walk
-from app.services.tenant_plan_service import enforce_tenant_product_feature, tenant_has_feature
+from app.services.tenant_plan_service import (
+    plan_allows_product_feature,
+    tenant_feature_enabled,
+)
 
 FEATURE_LABEL = "Planos recorrentes"
 logger = logging.getLogger("aumigao.recurring_plan_service")
@@ -83,11 +86,31 @@ except Exception:  # pragma: no cover — falha em init (circular ou ausente)
 
 
 def recurring_plans_enabled(tenant: Tenant, db: Session) -> bool:
-    return tenant_has_feature(tenant, db, RECURRING_PLANS_FEATURE_KEY)
+    """Retorna True se os planos recorrentes estão habilitados para o tenant.
+
+    Semântica (default-ON):
+    - Gate de plano comercial: o plano deve permitir o módulo (business/enterprise no v1;
+      pro/enterprise no v2). Tenants starter são bloqueados independentemente da flag.
+    - Gate de flag por tenant: ausência de linha → True (default-on); linha enabled=True
+      → True; linha enabled=False → False (desligamento explícito pelo tenant/admin).
+    """
+    return (
+        plan_allows_product_feature(tenant, RECURRING_PLANS_FEATURE_KEY)
+        and tenant_feature_enabled(tenant, db, RECURRING_PLANS_FEATURE_KEY)
+    )
 
 
 def enforce_enabled(tenant: Tenant, db: Session) -> None:
-    enforce_tenant_product_feature(tenant, db, RECURRING_PLANS_FEATURE_KEY, FEATURE_LABEL)
+    """Bloqueia com 403 se recurring_plans não está habilitado para o tenant.
+
+    Usa o mesmo predicado de recurring_plans_enabled para garantir consistência
+    entre visibilidade (catálogo) e execução (assinar/cancelar).
+    """
+    if not recurring_plans_enabled(tenant, db):
+        raise HTTPException(
+            status_code=403,
+            detail=f"{FEATURE_LABEL} não está habilitado para este tenant.",
+        )
 
 
 def list_plans(db: Session, tenant_id: str, *, only_active: bool) -> list[RecurringPlan]:

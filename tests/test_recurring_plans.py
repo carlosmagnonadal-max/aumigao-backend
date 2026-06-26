@@ -46,9 +46,34 @@ def _plan(db, tenant_id: str, *, price=99.0, walks=8, active=True) -> RecurringP
 
 
 def test_subscribe_blocked_when_feature_disabled():
+    """Ausência de linha NÃO bloqueia mais (default-ON).
+    Bloqueio exige linha EXPLÍCITA com enabled=False."""
     db = _db()
     tenant = _tenant(db, with_feature=False)
+    # Adiciona linha explícita de desligamento
+    db.add(TenantFeature(tenant_id=tenant.id, feature_key="recurring_plans", enabled=False))
+    db.commit()
     plan = _plan(db, tenant.id)
+    with pytest.raises(HTTPException) as exc:
+        svc.subscribe(db, tenant, "tutor1", plan.id)
+    assert exc.value.status_code == 403
+
+
+def test_recurring_plans_enabled_default_on_without_row():
+    """Tenant com plano elegível (business) e SEM linha → default-ON = True."""
+    db = _db()
+    tenant = _tenant(db, with_feature=False)
+    assert svc.recurring_plans_enabled(tenant, db) is True
+
+
+def test_recurring_plans_disabled_by_explicit_flag():
+    """Linha enabled=False desliga explicitamente; subscribe deve retornar 403."""
+    db = _db()
+    tenant = _tenant(db, with_feature=False)
+    db.add(TenantFeature(tenant_id=tenant.id, feature_key="recurring_plans", enabled=False))
+    db.commit()
+    plan = _plan(db, tenant.id)
+    assert svc.recurring_plans_enabled(tenant, db) is False
     with pytest.raises(HTTPException) as exc:
         svc.subscribe(db, tenant, "tutor1", plan.id)
     assert exc.value.status_code == 403

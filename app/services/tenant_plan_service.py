@@ -25,6 +25,9 @@ DEFAULT_ON_FEATURE_KEYS: frozenset[str] = frozenset({
     "push_notifications",
     "transactional_emails",
     "support_tickets",
+    # Planos mensais: default-ON para tenants elegíveis por plano (business/enterprise).
+    # Desligamento explícito via linha TenantFeature(enabled=False) ainda é respeitado.
+    "recurring_plans",
 })
 
 

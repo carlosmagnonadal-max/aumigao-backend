@@ -24,6 +24,10 @@ class Tenant(Base):
     document_number: Mapped[str | None] = mapped_column(String, nullable=True)
     contact_email: Mapped[str | None] = mapped_column(String, nullable=True)
     contact_phone: Mapped[str | None] = mapped_column(String, nullable=True)
+    asaas_customer_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # Projeto B: motivo da suspensão — "billing" (inadimplência, reativável por pagamento)
+    # ou "manual" (super_admin, NÃO reativa automático). NULL quando não suspenso.
+    suspended_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

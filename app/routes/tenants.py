@@ -50,6 +50,7 @@ from app.services.tenant_plan_service import (
     get_tenant_capabilities,
     tenant_tem_rede,
 )
+from app.services import tenant_saas_billing_service as saas_billing
 
 
 # ── Schema local (Fase 1 Passo 1) ─────────────────────────────────────────────
@@ -447,3 +448,90 @@ def update_tenant_network_access(
         "network_access_addon": tenant.network_access_addon,
         "tem_rede": tenant_tem_rede(tenant, db),
     }
+
+
+# ── Task 9 — Assinatura SaaS (mensalidade) ────────────────────────────────────
+
+
+class SaasSubscribeIn(BaseModel):
+    price: Optional[float] = None
+
+
+def _serialize_sub(sub) -> dict:
+    return {
+        "id": sub.id,
+        "tenant_id": sub.tenant_id,
+        "plan": sub.plan,
+        "price": float(sub.price),
+        "status": sub.status,
+        "current_period_end": sub.current_period_end.isoformat() if sub.current_period_end else None,
+        "overdue_since": sub.overdue_since.isoformat() if sub.overdue_since else None,
+    }
+
+
+@router.post("/{tenant_id}/saas-subscription")
+@api_router.post("/{tenant_id}/saas-subscription")
+async def start_saas_subscription(
+    tenant_id: str,
+    body: SaasSubscribeIn,
+    admin: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """POST /admin/tenants/{tenant_id}/saas-subscription — SÓ super_admin.
+
+    Cria (ou recria) a assinatura SaaS do tenant. Delega ao saas_billing service
+    que garante idempotência e anti-zumbi (cancela sub anterior antes de criar).
+    """
+    if not is_super_admin(admin):
+        raise HTTPException(status_code=403, detail="Apenas super_admin pode gerenciar assinatura SaaS.")
+    get_admin_tenant_scope(admin, db)
+    tenant = _tenant_or_404(tenant_id, db)
+    sub = await saas_billing.start_subscription(db, tenant, body.price)
+    return _serialize_sub(sub)
+
+
+@router.get("/{tenant_id}/saas-subscription")
+@api_router.get("/{tenant_id}/saas-subscription")
+def get_saas_subscription(
+    tenant_id: str,
+    admin: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """GET /admin/tenants/{tenant_id}/saas-subscription — SÓ super_admin.
+
+    Retorna a assinatura SaaS ativa do tenant, ou {"active": False} se não houver.
+    """
+    if not is_super_admin(admin):
+        raise HTTPException(status_code=403, detail="Apenas super_admin pode visualizar assinatura SaaS.")
+    get_admin_tenant_scope(admin, db)
+    _tenant_or_404(tenant_id, db)
+    sub = saas_billing.get_active_saas_subscription(db, tenant_id)
+    if sub is None:
+        return {"active": False}
+    return {
+        "active": True,
+        "status": sub.status,
+        "plan": sub.plan,
+        "price": float(sub.price),
+        "current_period_end": sub.current_period_end.isoformat() if sub.current_period_end else None,
+        "overdue_since": sub.overdue_since.isoformat() if sub.overdue_since else None,
+    }
+
+
+@router.delete("/{tenant_id}/saas-subscription")
+@api_router.delete("/{tenant_id}/saas-subscription")
+async def cancel_saas_subscription(
+    tenant_id: str,
+    admin: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """DELETE /admin/tenants/{tenant_id}/saas-subscription — SÓ super_admin.
+
+    Cancela a assinatura SaaS ativa do tenant (idempotente: ok mesmo sem sub ativa).
+    """
+    if not is_super_admin(admin):
+        raise HTTPException(status_code=403, detail="Apenas super_admin pode cancelar assinatura SaaS.")
+    get_admin_tenant_scope(admin, db)
+    tenant = _tenant_or_404(tenant_id, db)
+    await saas_billing.cancel_subscription(db, tenant)
+    return {"ok": True}

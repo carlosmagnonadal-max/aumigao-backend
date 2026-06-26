@@ -2610,11 +2610,14 @@ def platform_summary(
     )
 
     # ── Platform Revenue (todos os tenants, sem apply_tenant_filter) ─────────
+    # Providers excluídos das somas de receita de passeio/planos (evita dupla contagem)
+    _EXCLUDED_PROVIDERS = ["subscription_walk", "asaas_tenant_saas"]
+
     total_paid_all_time = (
         db.query(func.sum(Payment.amount))
         .filter(
             Payment.status.in_(PAID_PAYMENT_STATUSES),
-            or_(Payment.provider.is_(None), Payment.provider != "subscription_walk"),
+            or_(Payment.provider.is_(None), ~Payment.provider.in_(_EXCLUDED_PROVIDERS)),
         )
         .scalar() or 0.0
     )
@@ -2624,7 +2627,7 @@ def platform_summary(
         .filter(
             Payment.status.in_(PAID_PAYMENT_STATUSES),
             Payment.created_at >= cutoff_30d,
-            or_(Payment.provider.is_(None), Payment.provider != "subscription_walk"),
+            or_(Payment.provider.is_(None), ~Payment.provider.in_(_EXCLUDED_PROVIDERS)),
         )
         .scalar() or 0.0
     )
@@ -2634,7 +2637,7 @@ def platform_summary(
         .filter(
             Payment.status.in_(PAID_PAYMENT_STATUSES),
             Payment.platform_amount.isnot(None),
-            or_(Payment.provider.is_(None), Payment.provider != "subscription_walk"),
+            or_(Payment.provider.is_(None), ~Payment.provider.in_(_EXCLUDED_PROVIDERS)),
         )
         .scalar() or 0.0
     )
@@ -2645,7 +2648,7 @@ def platform_summary(
             Payment.status.in_(PAID_PAYMENT_STATUSES),
             Payment.platform_amount.isnot(None),
             Payment.created_at >= cutoff_30d,
-            or_(Payment.provider.is_(None), Payment.provider != "subscription_walk"),
+            or_(Payment.provider.is_(None), ~Payment.provider.in_(_EXCLUDED_PROVIDERS)),
         )
         .scalar() or 0.0
     )
@@ -2655,7 +2658,7 @@ def platform_summary(
         .filter(
             Payment.status.in_(PAID_PAYMENT_STATUSES),
             Payment.walk_id.isnot(None),
-            or_(Payment.provider.is_(None), Payment.provider != "subscription_walk"),
+            or_(Payment.provider.is_(None), ~Payment.provider.in_(_EXCLUDED_PROVIDERS)),
         )
         .scalar() or 0.0
     )
@@ -2665,6 +2668,16 @@ def platform_summary(
         .filter(
             Payment.status.in_(PAID_PAYMENT_STATUSES),
             Payment.walk_id.is_(None),
+            or_(Payment.provider.is_(None), ~Payment.provider.in_(_EXCLUDED_PROVIDERS)),
+        )
+        .scalar() or 0.0
+    )
+
+    saas_revenue = (
+        db.query(func.sum(Payment.amount))
+        .filter(
+            Payment.status.in_(PAID_PAYMENT_STATUSES),
+            Payment.provider == "asaas_tenant_saas",
         )
         .scalar() or 0.0
     )
@@ -2791,6 +2804,7 @@ def platform_summary(
             "platform_net_last_30d": round(float(platform_net_last_30d), 2),
             "gross_revenue_walks": round(float(gross_revenue_walks), 2),
             "gross_revenue_plans": round(float(gross_revenue_plans), 2),
+            "saas_revenue": round(float(saas_revenue), 2),
             "payments_with_split": payments_with_split,
             "payments_without_split": payments_without_split,
         },
@@ -2814,3 +2828,4 @@ def platform_summary(
         },
         "generated_at": now.isoformat() + "Z",
     }
+

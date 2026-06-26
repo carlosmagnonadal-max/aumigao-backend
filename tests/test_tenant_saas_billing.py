@@ -205,3 +205,33 @@ def test_sweep_skips_recent_and_paused():
                                   overdue_since=datetime.utcnow()-timedelta(days=8))); db.commit()
     assert sweep_overdue_tenants(db) == 0
     db.refresh(t); assert t.status=="paused"  # não toca paused
+
+
+# -------------------------------------------------- admin endpoints / Task 9 ---
+
+def _make_admin_client(db):
+    import app.routes.tenants as tenants_mod
+    db.add(User(id="sadmin", email="sa@x.com", password_hash="x", role="super_admin")); db.commit()
+    app_t = FastAPI(); app_t.include_router(tenants_mod.router)
+    app_t.dependency_overrides[get_db] = lambda: db
+    app_t.dependency_overrides[get_current_user] = lambda: db.get(User, "sadmin")
+    return TestClient(app_t)
+
+def test_admin_start_get_cancel_saas(monkeypatch):
+    import app.routes.tenants as tenants_mod
+    async def _start(db, tenant, price=None):
+        sub = TenantSaasSubscription(tenant_id=tenant.id, plan=tenant.plan, price=129.90, status=SAAS_ACTIVE)
+        db.add(sub); db.commit(); db.refresh(sub); return sub
+    async def _cancel(db, tenant):
+        s = db.query(TenantSaasSubscription).filter(TenantSaasSubscription.tenant_id==tenant.id, TenantSaasSubscription.status==SAAS_ACTIVE).first()
+        if s: s.status = SAAS_CANCELLED; db.commit()
+        return s
+    monkeypatch.setattr(tenants_mod.saas_billing, "start_subscription", _start)
+    monkeypatch.setattr(tenants_mod.saas_billing, "cancel_subscription", _cancel)
+    db = _make_db(); client = _make_admin_client(db)
+    r = client.post(f"/admin/tenants/{TENANT_ID}/saas-subscription", json={})
+    assert r.status_code == 200, r.text
+    g = client.get(f"/admin/tenants/{TENANT_ID}/saas-subscription")
+    assert g.status_code == 200 and g.json().get("status") == "active", g.text
+    d = client.delete(f"/admin/tenants/{TENANT_ID}/saas-subscription")
+    assert d.status_code == 200, d.text

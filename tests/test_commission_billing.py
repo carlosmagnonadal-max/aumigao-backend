@@ -52,6 +52,17 @@ def test_accrue_skips_zero_price():
     accrue_commission_for_walk(db, walk, split, is_network=False, period="2026-06"); db.commit()
     assert db.query(CommissionEntry).filter_by(walk_id="w3").count() == 0
 
+def test_accrue_skips_walk_without_tenant_id():
+    """Walk com tenant_id=None (is_network=False, price>0) não deve criar CommissionEntry."""
+    from app.services.commission_billing_service import accrue_commission_for_walk
+    db = _db()
+    walk = _Walk("w4", None, "k1", 30.0)
+    split = {"commission_percent": 10.0, "platform_amount": 3.0, "walker_amount": 27.0}
+    result = accrue_commission_for_walk(db, walk, split, is_network=False, period="2026-06")
+    db.commit()
+    assert result is None
+    assert db.query(CommissionEntry).filter_by(walk_id="w4").count() == 0
+
 
 # ---------------------------------------------------------------------------
 # Task 5: faturamento mensal

@@ -19,17 +19,29 @@ from app.main import app
 SNAPSHOT_PATH = Path(__file__).parent / "route_surface_snapshot.json"
 
 
-def current_route_surface() -> set[str]:
-    surface: set[str] = set()
-    for route in app.routes:
+def _collect_routes(route_list: list, surface: set[str]) -> None:
+    """Percorre a lista de rotas recursivamente.
+
+    FastAPI ≥ 0.136 usa ``_IncludedRouter`` (lazy wrapper) ao invés de
+    achatar as rotas diretamente em ``app.routes``. Para compatibilidade,
+    acessamos ``original_router.routes`` quando disponível.
+    """
+    for route in route_list:
         path = getattr(route, "path", None)
         methods = getattr(route, "methods", None)
-        if not path or not methods:
-            continue
-        for method in methods:
-            if method in ("HEAD", "OPTIONS"):  # auto-adicionados pelo framework
-                continue
-            surface.add(f"{method} {path}")
+        if path and methods:
+            for method in methods:
+                if method not in ("HEAD", "OPTIONS"):  # auto-adicionados pelo framework
+                    surface.add(f"{method} {path}")
+        # FastAPI ≥ 0.136: _IncludedRouter tem .original_router com as rotas reais.
+        orig = getattr(route, "original_router", None)
+        if orig is not None:
+            _collect_routes(getattr(orig, "routes", []), surface)
+
+
+def current_route_surface() -> set[str]:
+    surface: set[str] = set()
+    _collect_routes(app.routes, surface)
     return surface
 
 

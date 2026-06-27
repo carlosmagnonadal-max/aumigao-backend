@@ -23,6 +23,7 @@ from app.dependencies.rbac import require_permission
 from app.services.audit_service import record_audit_log
 from app.services.payment_split_service import build_payment_split, get_or_create_payment_config, update_payment_config, is_network_walk
 from app.services.commission_billing_service import accrue_commission_for_walk
+from app.services.walker_earning_service import accrue_walker_earning
 from app.services.tenant_context import resolve_current_tenant_id
 from app.schemas.tenant_payment_config import TenantPaymentConfigResponse, TenantPaymentConfigUpdate
 from app.dependencies.tenant_scope import apply_tenant_filter, ensure_tenant_access, get_admin_tenant_scope
@@ -276,9 +277,12 @@ def _ensure_internal_walk_payment(walk: Walk, db: Session):
     # A-02: registra o split de comissão (antes ficava None -> saldo do walker e
     # relatórios financeiros não tinham o repasse das finalizações manuais).
     amount = float(walk.price or 0)
+    _walker_id = walk.walker_id or walk.assigned_walker_id
     split = build_payment_split(
-        db, walk.tenant_id, amount, walker_id=(walk.walker_id or walk.assigned_walker_id)
+        db, walk.tenant_id, amount, walker_id=_walker_id
     )
+    # Fase 2: calculado ANTES do Payment para decidir walker_amount e acumular ledger.
+    _is_network = is_network_walk(db, walk.tenant_id, _walker_id)
     _provider = "subscription_walk" if getattr(walk, "subscription_id", None) else "internal"
     payment = Payment(
         id=str(uuid4()),
@@ -290,13 +294,15 @@ def _ensure_internal_walk_payment(walk: Walk, db: Session):
         provider=_provider,
         commission_percent=split["commission_percent"],
         platform_amount=split["platform_amount"],
-        walker_amount=split["walker_amount"],
+        # REDE: o ganho do passeador vai pro ledger WalkerEarning (não pro saldo via Payment).
+        walker_amount=(0.0 if _is_network else split["walker_amount"]),
     )
     db.add(payment)
+    # Fase 2: passeio de REDE cria WalkerEarning (idempotente) para cadência semanal.
+    if _is_network:
+        accrue_walker_earning(db, walk, split)
     # Fase 1: acumula a comissão medida do tenant (só passeador PRÓPRIO).
     # Reusa a taxa já resolvida em `split`; period = mês da realização do passeio.
-    _walker_id = walk.walker_id or walk.assigned_walker_id
-    _is_network = is_network_walk(db, walk.tenant_id, _walker_id)
     # scheduled_date é String "YYYY-MM-DD" ou "YYYY-MM-DDTHH:MM"; created_at é DateTime; fallback = agora UTC.
     # [:7] captura "YYYY-MM" em ambos os formatos.
     _scheduled = getattr(walk, "scheduled_date", None)
@@ -2448,7 +2454,9 @@ def review_tip(
 
 @router.post("/withdrawals/{payment_id}/approve")
 def approve_withdrawal(payment_id: str, admin: User = Depends(require_permission("finance.manage")), db: Session = Depends(get_db)):
-    payment = db.get(Payment, payment_id)
+    # with_for_update: bloqueia a linha até o commit, impedindo que duas aprovações
+    # simultâneas do MESMO saque gerem dupla transferência (corrida de threads/workers).
+    payment = db.get(Payment, payment_id, with_for_update=True)
     if payment:
         # B-02b: guard — só Payment rows criadas via /walker/withdrawals são saques.
         # Discriminador canônico: provider == "pix" (walker.py:2791 cria com provider="pix").
@@ -2456,6 +2464,11 @@ def approve_withdrawal(payment_id: str, admin: User = Depends(require_permission
             raise HTTPException(status_code=400, detail="Payment nao e um saque de passeador.")
         # Isolamento multi-tenant: admin de tenant não aprova saque de outro tenant.
         ensure_tenant_access(payment.tenant_id, get_admin_tenant_scope(admin, db))
+        # Guard de idempotência: se já está pago (ex.: retry sequencial após timeout),
+        # retorna cedo sem re-transferir. O with_for_update acima cobre a corrida
+        # concorrente; este guard cobre o retry sequencial legítimo.
+        if payment.status == "paid":
+            return {"ok": True, "already_paid": True}
         payment.status = "paid"
         record_admin_operational_event(
             db,
@@ -2469,6 +2482,11 @@ def approve_withdrawal(payment_id: str, admin: User = Depends(require_permission
             source="admin.withdrawal.approve",
             metadata={"walk_id": payment.walk_id, "provider": payment.provider},
         )
+        # Fase 3: PIX automático (gated/OFF por padrão). Se ligado, transfere de fato.
+        # Se transfer_to_walker levantar HTTPException, o commit abaixo não roda
+        # (falha-fechada: o status "paid" não persiste se o PIX falhar).
+        from app.services.walker_payout_service import transfer_to_walker
+        transfer_to_walker(db, payment)  # no-op se WALKER_AUTO_PIX_ENABLED != true
         db.commit()
     return {"ok": True}
 
@@ -2495,6 +2513,46 @@ def reject_withdrawal(payment_id: str, admin: User = Depends(require_permission(
             metadata={"walk_id": payment.walk_id, "provider": payment.provider},
         )
         db.commit()
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Estorno (void) manual do ganho do passeador — Fase 3
+# ---------------------------------------------------------------------------
+
+class VoidWalkerEarningRequest(BaseModel):
+    walk_id: str
+    reason: str
+
+
+@router.post("/walker-earnings/void")
+def void_walker_earning_endpoint(
+    payload: VoidWalkerEarningRequest,
+    admin: User = Depends(require_permission("finance.manage")),
+    db: Session = Depends(get_db),
+):
+    from app.services.walker_payout_service import void_walker_earning
+    from app.models.walker_earning import WalkerEarning
+    earning = db.query(WalkerEarning).filter(WalkerEarning.walk_id == payload.walk_id).first()
+    if earning is None:
+        raise HTTPException(status_code=404, detail="Ganho do passeador nao encontrado para este passeio.")
+    ensure_tenant_access(earning.tenant_id, get_admin_tenant_scope(admin, db))
+    out = void_walker_earning(db, payload.walk_id, reason=payload.reason, source="admin")
+    if out is None:
+        return {"ok": True, "already_void": True}
+    record_admin_operational_event(
+        db,
+        event_type="walker_earning_voided",
+        entity_type="walker_earning",
+        entity_id=out.id,
+        severity="warning",
+        title="Ganho do passeador anulado",
+        description=f"Ganho anulado (motivo: {payload.reason}).",
+        actor=admin,
+        source="admin.walker_earning.void",
+        metadata={"walk_id": payload.walk_id, "amount": out.amount},
+    )
+    db.commit()
     return {"ok": True}
 
 

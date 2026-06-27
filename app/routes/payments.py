@@ -666,10 +666,24 @@ _PAYMENT_CONFIRMED_EVENTS = {"PAYMENT_CONFIRMED", "PAYMENT_RECEIVED", "PAYMENT_D
 # confundido com uma cobrança que nunca liquidou.
 _PAYMENT_REFUNDED_STATUS = "pagamento_estornado"
 # Eventos que consumam o estorno e tiram o pagamento do estado confirmado.
-_PAYMENT_REFUND_EVENTS = {"PAYMENT_REFUNDED"}
+# PAYMENT_REVERSED: estorno bancário direto (ex.: Pix devolvido), tratado igual
+# a PAYMENT_REFUNDED — leva o Payment a pagamento_estornado, consistente com
+# o void do ganho já presente em _WALKER_EARNING_VOID_EVENTS.
+_PAYMENT_REFUND_EVENTS = {"PAYMENT_REFUNDED", "PAYMENT_REVERSED"}
 # Estados terminais "pegajosos": uma vez aqui, eventos de cobrança comuns NÃO
 # regridem o status (só um estorno consumado pode sair de confirmado).
 _PAYMENT_STICKY_STATUSES = {_PAYMENT_CONFIRMED_STATUS, _PAYMENT_REFUNDED_STATUS}
+
+# Fase 3: eventos que ANULAM (void) o ganho do passeador do walk associado ao Payment.
+# Cobre apenas pagamentos de passeio AVULSO (Payment.walk_id preenchido).
+# Passeio de REDE pago por crédito tem o refund no Payment da COMPRA do crédito
+# (sem walk_id do passeio) — esse caso é coberto pelo void MANUAL via endpoint admin.
+_WALKER_EARNING_VOID_EVENTS = {
+    "PAYMENT_REFUNDED",
+    "PAYMENT_CHARGEBACK_REQUESTED",
+    "PAYMENT_CHARGEBACK_DISPUTE",
+    "PAYMENT_REVERSED",
+}
 
 
 def resolve_payment_webhook_status(current_status: str | None, event: str | None, fallback_status: str | None) -> str | None:
@@ -1115,6 +1129,36 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
         return {"ok": True, "received": event}
 
     # ---------------------------------------------------------------------------
+    # TRANSFER_* — eventos de transferência PIX ao passeador (Fase 3).
+    # Devem ser tratados ANTES da lógica de PAYMENT_* pois o payload usa o campo
+    # "transfer" (não "payment") — cair no ramo regular geraria lookup por id None.
+    # TRANSFER_FAILED reverte o saque (Payment provider='pix') para 'pending' para
+    # que o admin possa tentar novamente. Demais eventos TRANSFER_* são no-op (200).
+    # ---------------------------------------------------------------------------
+    if isinstance(event, str) and event.startswith("TRANSFER_"):
+        if event == "TRANSFER_FAILED":
+            transfer = payload.get("transfer") or {}
+            tr_id = transfer.get("id")
+            if tr_id:
+                wd = db.query(Payment).filter(
+                    Payment.provider_payment_id == tr_id,
+                    Payment.provider == "pix",
+                ).first()
+                if wd:
+                    wd.status = "pending"  # reverte p/ o admin tentar de novo
+                    db.commit()
+                    logger.info(
+                        "asaas_webhook.transfer_failed tr_id=%s payment_id=%s revertido para pending",
+                        tr_id, wd.id,
+                    )
+                else:
+                    logger.warning(
+                        "asaas_webhook.transfer_failed tr_id=%s sem Payment pix local",
+                        tr_id,
+                    )
+        return {"ok": True, "received": event}
+
+    # ---------------------------------------------------------------------------
     # 2. Processamento de DB com escopo global — via get_global_db (rls_tenant="*").
     #
     # Webhooks confiáveis processam pagamentos de QUALQUER tenant → escopo global
@@ -1234,6 +1278,14 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                         walk.status = "Agendado"
                         db.add(walk)
                         logger.info("asaas_webhook.walk_liberado walk_id=%s payment_id=%s", walk.id, payment.id)
+
+                # Fase 3: estorno/chargeback de um pagamento com walk_id anula o ganho do passeador.
+                # Cobre apenas passeio AVULSO (Payment.walk_id preenchido).
+                # Passeio de REDE pago por crédito: o refund recai sobre o Payment da COMPRA do
+                # crédito (sem walk_id), portanto não é capturado aqui — usar void manual (Task 1).
+                if event in _WALKER_EARNING_VOID_EVENTS and payment.walk_id:
+                    from app.services.walker_payout_service import void_walker_earning
+                    void_walker_earning(db, payment.walk_id, reason=f"asaas:{event}", source="webhook")
 
                 db.commit()
 

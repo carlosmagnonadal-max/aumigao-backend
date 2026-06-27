@@ -126,3 +126,45 @@ def test_run_monthly_bills_each_tenant_with_accrued():
     run_monthly_commission_billing(db, "2026-06", charge_fn=fake_charge)
     db.commit()
     assert sorted(billed) == [("t1", 3.0), ("t2", 5.0)]
+
+
+def test_run_monthly_partial_failure_isolates_per_tenant():
+    """Falha no charge_fn de t2 NÃO deve desfazer o billed de t1.
+
+    Garante que run_monthly_commission_billing commita cada tenant
+    individualmente: se t2 falhar, t1 permanece persistido como 'billed'
+    e o retorno contém apenas o charge id de t1.
+    """
+    from app.services.commission_billing_service import run_monthly_commission_billing
+
+    db = _db_with_tenant()
+    db.add(Tenant(id="t2", name="Y", slug="y", status="active", plan="enterprise",
+                  document_number="99888777000166", contact_email="fin@y.com"))
+    db.commit()
+
+    _seed_entry(db, "w1", 3.0, tenant_id="t1")
+    _seed_entry(db, "w2", 5.0, tenant_id="t2")
+
+    def fake_charge(db_, tenant, total, period, description):
+        if tenant.id == "t2":
+            raise RuntimeError("asaas down")
+        return "c-t1"
+
+    result = run_monthly_commission_billing(db, "2026-06", charge_fn=fake_charge)
+
+    # Retorno: só o charge de t1
+    assert result == ["c-t1"]
+
+    # Forçar reload do banco (descarta cache da sessão)
+    db.expire_all()
+
+    t1_entries = db.query(CommissionEntry).filter_by(tenant_id="t1", period="2026-06").all()
+    t2_entries = db.query(CommissionEntry).filter_by(tenant_id="t2", period="2026-06").all()
+
+    # t1 deve estar billed e persistido
+    assert all(e.status == COMM_BILLED for e in t1_entries), \
+        f"t1 deveria estar billed mas está: {[e.status for e in t1_entries]}"
+
+    # t2 deve continuar accrued (não cobrado)
+    assert all(e.status == COMM_ACCRUED for e in t2_entries), \
+        f"t2 deveria continuar accrued mas está: {[e.status for e in t2_entries]}"

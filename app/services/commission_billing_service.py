@@ -3,6 +3,7 @@
 Princípio: MEDIÇÃO ≠ CUSTÓDIA. O valor vem de Walk.price × taxa resolvida; o
 Aumigão nunca toca no pagamento do tutor. Passeio de REDE não acumula aqui.
 """
+import logging
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -11,6 +12,8 @@ from sqlalchemy.orm import Session
 from app.models.commission_entry import (
     CommissionEntry, COMM_ACCRUED, COMM_BILLED, COMM_PAID,
 )
+
+_logger = logging.getLogger("aumigao.commission_billing_service")
 
 
 def accrue_commission_for_walk(
@@ -95,7 +98,14 @@ def bill_tenant_commission(
 def run_monthly_commission_billing(
     db: Session, period: str, *, charge_fn
 ) -> "list[str]":
-    """Fatura todos os tenants com comissão `accrued` no período. Retorna ids das cobranças."""
+    """Fatura todos os tenants com comissão `accrued` no período. Retorna ids das cobranças.
+
+    Cada tenant é processado de forma isolada: após faturamento bem-sucedido,
+    faz db.commit() imediatamente para persistir o `billed` daquele tenant antes
+    de prosseguir. Se charge_fn levantar exceção para um tenant, faz db.rollback()
+    desse tenant, loga o erro e continua para os próximos — evitando cobrança dupla
+    no próximo run (tenants já persistidos não são reprocessados).
+    """
     tenant_ids = [
         row[0]
         for row in db.query(CommissionEntry.tenant_id)
@@ -105,9 +115,17 @@ def run_monthly_commission_billing(
     ]
     out: list[str] = []
     for tid in tenant_ids:
-        cid = bill_tenant_commission(db, tid, period, charge_fn=charge_fn)
-        if cid:
-            out.append(cid)
+        try:
+            cid = bill_tenant_commission(db, tid, period, charge_fn=charge_fn)
+            if cid:
+                db.commit()
+                out.append(cid)
+        except Exception as exc:
+            db.rollback()
+            _logger.error(
+                "commission_billing: falha ao faturar tenant=%s period=%s erro=%s",
+                tid, period, exc,
+            )
     return out
 
 

@@ -666,7 +666,10 @@ _PAYMENT_CONFIRMED_EVENTS = {"PAYMENT_CONFIRMED", "PAYMENT_RECEIVED", "PAYMENT_D
 # confundido com uma cobrança que nunca liquidou.
 _PAYMENT_REFUNDED_STATUS = "pagamento_estornado"
 # Eventos que consumam o estorno e tiram o pagamento do estado confirmado.
-_PAYMENT_REFUND_EVENTS = {"PAYMENT_REFUNDED"}
+# PAYMENT_REVERSED: estorno bancário direto (ex.: Pix devolvido), tratado igual
+# a PAYMENT_REFUNDED — leva o Payment a pagamento_estornado, consistente com
+# o void do ganho já presente em _WALKER_EARNING_VOID_EVENTS.
+_PAYMENT_REFUND_EVENTS = {"PAYMENT_REFUNDED", "PAYMENT_REVERSED"}
 # Estados terminais "pegajosos": uma vez aqui, eventos de cobrança comuns NÃO
 # regridem o status (só um estorno consumado pode sair de confirmado).
 _PAYMENT_STICKY_STATUSES = {_PAYMENT_CONFIRMED_STATUS, _PAYMENT_REFUNDED_STATUS}

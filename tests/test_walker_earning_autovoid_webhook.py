@@ -139,3 +139,32 @@ def test_refund_no_walk_id_does_not_crash(monkeypatch):
         headers=_HEADERS,
     )
     assert r.status_code in (200, 204), r.text
+
+
+# ---------------------------------------------------------------------------
+# Item 2: PAYMENT_REVERSED deve levar Payment a "pagamento_estornado"
+#         E anular o WalkerEarning (já estava em _WALKER_EARNING_VOID_EVENTS)
+# ---------------------------------------------------------------------------
+
+def test_payment_reversed_voids_earning_and_sets_payment_estornado(monkeypatch):
+    """PAYMENT_REVERSED:
+    - WalkerEarning do walk_id deve ser void (já estava em _WALKER_EARNING_VOID_EVENTS)
+    - Payment deve ficar com status 'pagamento_estornado' (novo: PAYMENT_REVERSED
+      adicionado a _PAYMENT_REFUND_EVENTS)
+    """
+    monkeypatch.setenv("ASAAS_WEBHOOK_TOKEN", _TOKEN)
+    client, db = _client_db()
+    _seed(db, walk_id="w3", pid="pay-rev-1")
+    r = client.post(
+        "/payments/webhooks/asaas",
+        json={"event": "PAYMENT_REVERSED", "payment": {"id": "pay-rev-1"}},
+        headers=_HEADERS,
+    )
+    assert r.status_code in (200, 204), r.text
+    db.expire_all()
+    earning = db.query(WalkerEarning).filter_by(walk_id="w3").one()
+    assert earning.status == WE_VOID, f"esperado WE_VOID, obtido {earning.status!r}"
+    payment = db.query(Payment).filter_by(provider_payment_id="pay-rev-1").one()
+    assert payment.status == "pagamento_estornado", (
+        f"esperado pagamento_estornado, obtido {payment.status!r}"
+    )

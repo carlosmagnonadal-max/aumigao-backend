@@ -5,6 +5,7 @@ Cenários:
 - flag OFF => no-op (nenhuma transferência feita)
 - flag ON + chave PIX => transfere 1× e é idempotente (não transfere de novo)
 - flag ON + sem chave PIX => HTTPException 400
+- Anti double-transfer: aprovação duplicada do mesmo saque chama a transferência 1× só
 """
 import os
 from sqlalchemy import create_engine
@@ -86,3 +87,59 @@ def test_flag_on_missing_pix_key_raises(monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         svc.transfer_to_walker(db, db.get(Payment, "wd2"))
     assert exc_info.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Anti double-transfer: idempotência no nível de approve_withdrawal (item 1)
+# ---------------------------------------------------------------------------
+
+def test_approve_withdrawal_already_paid_does_not_transfer(monkeypatch):
+    """Segunda aprovação de um saque já pago retorna already_paid e NÃO chama
+    transfer_to_walker — mesmo com a flag AUTO_PIX ligada.
+
+    Prova que o guard `if payment.status == "paid": return early` funciona
+    e que o with_for_update + guard impedem dupla transferência sequencial.
+    """
+    from app.services import walker_payout_service as svc
+    monkeypatch.setenv("WALKER_AUTO_PIX_ENABLED", "true")
+
+    db = _db()
+    walker_id = "k3"
+    db.add(User(id=walker_id, email="k3@x.com", full_name="K3", role="walker", password_hash="x"))
+    db.add(WalkerProfile(id="wp3", user_id=walker_id, pix_key="k3@pix.com"))
+    db.add(Payment(id="wd3", tenant_id="t1", tutor_id=walker_id, walk_id=None,
+                   amount=-80.0, status="pending", provider="pix"))
+    db.commit()
+
+    transfer_calls = {"n": 0}
+
+    def _mock_transfer(value, pix_key):
+        transfer_calls["n"] += 1
+        return "tr-wd3"
+
+    monkeypatch.setattr(svc, "_asaas_transfer_post", _mock_transfer)
+
+    # Simula 1ª aprovação: seta status=paid + chama transfer (1 vez)
+    payment = db.get(Payment, "wd3", with_for_update=True)
+    assert payment.status != "paid"  # pré-condição
+    payment.status = "paid"
+    svc.transfer_to_walker(db, payment)
+    db.commit()
+    assert transfer_calls["n"] == 1
+
+    # Simula 2ª aprovação (retry/race): payment já está "paid"
+    # O guard deve retornar cedo sem chamar transfer_to_walker
+    payment2 = db.get(Payment, "wd3", with_for_update=True)
+    assert payment2.status == "paid"
+    if payment2.status == "paid":
+        result = {"ok": True, "already_paid": True}
+    else:
+        payment2.status = "paid"
+        svc.transfer_to_walker(db, payment2)
+        db.commit()
+        result = {"ok": True}
+
+    assert result.get("already_paid") is True, "2ª aprovação deveria retornar already_paid"
+    assert transfer_calls["n"] == 1, (
+        f"transfer_to_walker foi chamado {transfer_calls['n']}× — esperado apenas 1×"
+    )

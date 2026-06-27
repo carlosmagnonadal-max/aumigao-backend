@@ -69,7 +69,13 @@ def _asaas_transfer_post(value: float, pix_key: str) -> str:
                 status_code=502,
                 detail="Falha na transferencia PIX ao passeador.",
             )
-        return resp.json()["id"]
+        tid = resp.json().get("id")
+        if not tid:
+            raise HTTPException(
+                status_code=502,
+                detail="Asaas retornou resposta sem id de transferencia.",
+            )
+        return tid
 
 
 def transfer_to_walker(db: Session, payment: Payment) -> str | None:
@@ -91,6 +97,7 @@ def transfer_to_walker(db: Session, payment: Payment) -> str | None:
         # Já foi transferido anteriormente — idempotente.
         return payment.provider_payment_id
 
+    # tutor_id == walker.id no Payment de saque (ver walker.py:687)
     profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == payment.tutor_id).first()
     pix_key = profile.pix_key if profile else None
     if not pix_key:

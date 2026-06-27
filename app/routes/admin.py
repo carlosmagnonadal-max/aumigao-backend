@@ -2454,7 +2454,9 @@ def review_tip(
 
 @router.post("/withdrawals/{payment_id}/approve")
 def approve_withdrawal(payment_id: str, admin: User = Depends(require_permission("finance.manage")), db: Session = Depends(get_db)):
-    payment = db.get(Payment, payment_id)
+    # with_for_update: bloqueia a linha até o commit, impedindo que duas aprovações
+    # simultâneas do MESMO saque gerem dupla transferência (corrida de threads/workers).
+    payment = db.get(Payment, payment_id, with_for_update=True)
     if payment:
         # B-02b: guard — só Payment rows criadas via /walker/withdrawals são saques.
         # Discriminador canônico: provider == "pix" (walker.py:2791 cria com provider="pix").
@@ -2462,6 +2464,11 @@ def approve_withdrawal(payment_id: str, admin: User = Depends(require_permission
             raise HTTPException(status_code=400, detail="Payment nao e um saque de passeador.")
         # Isolamento multi-tenant: admin de tenant não aprova saque de outro tenant.
         ensure_tenant_access(payment.tenant_id, get_admin_tenant_scope(admin, db))
+        # Guard de idempotência: se já está pago (ex.: retry sequencial após timeout),
+        # retorna cedo sem re-transferir. O with_for_update acima cobre a corrida
+        # concorrente; este guard cobre o retry sequencial legítimo.
+        if payment.status == "paid":
+            return {"ok": True, "already_paid": True}
         payment.status = "paid"
         record_admin_operational_event(
             db,

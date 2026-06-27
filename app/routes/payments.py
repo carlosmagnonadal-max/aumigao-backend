@@ -1126,6 +1126,36 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
         return {"ok": True, "received": event}
 
     # ---------------------------------------------------------------------------
+    # TRANSFER_* — eventos de transferência PIX ao passeador (Fase 3).
+    # Devem ser tratados ANTES da lógica de PAYMENT_* pois o payload usa o campo
+    # "transfer" (não "payment") — cair no ramo regular geraria lookup por id None.
+    # TRANSFER_FAILED reverte o saque (Payment provider='pix') para 'pending' para
+    # que o admin possa tentar novamente. Demais eventos TRANSFER_* são no-op (200).
+    # ---------------------------------------------------------------------------
+    if isinstance(event, str) and event.startswith("TRANSFER_"):
+        if event == "TRANSFER_FAILED":
+            transfer = payload.get("transfer") or {}
+            tr_id = transfer.get("id")
+            if tr_id:
+                wd = db.query(Payment).filter(
+                    Payment.provider_payment_id == tr_id,
+                    Payment.provider == "pix",
+                ).first()
+                if wd:
+                    wd.status = "pending"  # reverte p/ o admin tentar de novo
+                    db.commit()
+                    logger.info(
+                        "asaas_webhook.transfer_failed tr_id=%s payment_id=%s revertido para pending",
+                        tr_id, wd.id,
+                    )
+                else:
+                    logger.warning(
+                        "asaas_webhook.transfer_failed tr_id=%s sem Payment pix local",
+                        tr_id,
+                    )
+        return {"ok": True, "received": event}
+
+    # ---------------------------------------------------------------------------
     # 2. Processamento de DB com escopo global — via get_global_db (rls_tenant="*").
     #
     # Webhooks confiáveis processam pagamentos de QUALQUER tenant → escopo global

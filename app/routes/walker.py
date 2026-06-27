@@ -727,6 +727,13 @@ def _balance_by_tenant(user: User, db: Session) -> dict[str | None, dict]:
         # amount já é negativo; abatemos do available (pode ir negativo em edge cases)
         b["available"] += float(p.amount or 0)
 
+    # Fase 2: ganhos da REDE vêm do ledger WalkerEarning (não de Payment.walker_amount).
+    from app.services.walker_earning_service import network_earnings_by_tenant
+    for tid, vals in network_earnings_by_tenant(db, user.id).items():
+        b = _bucket(tid)
+        b["available"] += vals["available"]
+        b["pending"] += vals["areceber"]   # 'a receber' = liberação futura (cadência)
+
     # Arredondamento e cálculo do total
     for b in buckets.values():
         b["available"] = round(b["available"], 2)
@@ -785,6 +792,11 @@ def _available_balance(user: User, db: Session) -> float:
     )
     # amount já é negativo; somar reduz o saldo disponível
     gross += sum(float(p.amount or 0) for p in pending_withdrawals)
+
+    # Fase 2: somar ganhos da REDE já liberados (payable_at <= now) do ledger.
+    from app.services.walker_earning_service import network_earnings_by_tenant
+    _net = network_earnings_by_tenant(db, user.id)
+    gross += sum(v["available"] for v in _net.values())
 
     return round(gross, 2)
 

@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.models.walker_earning import WalkerEarning, WE_ACCRUED
+from app.models.walker_earning import WalkerEarning, WE_ACCRUED, WE_VOID
 
 
 def compute_payable_at(completion_dt: datetime) -> datetime:
@@ -65,3 +65,30 @@ def accrue_walker_earning(db: Session, walk, split: dict) -> "WalkerEarning | No
     )
     db.add(earning)
     return earning
+
+
+def network_earnings_by_tenant(db: Session, walker_id: str, now: datetime | None = None) -> dict:
+    """Agrega o ledger do passeador por tenant_id.
+
+    Retorna { tenant_id: {"available": x, "areceber": y} }.
+    available = earnings com payable_at <= now; areceber = payable_at > now.
+    Exclui status void.
+    Cuida de tz: se payable_at vier naive, trata como UTC.
+    """
+    now = now or datetime.now(timezone.utc)
+    rows = (
+        db.query(WalkerEarning)
+        .filter(WalkerEarning.walker_id == walker_id, WalkerEarning.status != WE_VOID)
+        .all()
+    )
+    out: dict = {}
+    for r in rows:
+        b = out.setdefault(r.tenant_id, {"available": 0.0, "areceber": 0.0})
+        pa = r.payable_at
+        if pa is not None and pa.tzinfo is None:
+            pa = pa.replace(tzinfo=timezone.utc)
+        if pa is not None and pa <= now:
+            b["available"] += float(r.amount or 0)
+        else:
+            b["areceber"] += float(r.amount or 0)
+    return out

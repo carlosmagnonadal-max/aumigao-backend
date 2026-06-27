@@ -1,10 +1,13 @@
-"""Task 4: Bug fix — dedução de saque nas duas funções de saldo.
+"""Task 4 + Correção 2: Bug fix — dedução de saque nas duas funções de saldo.
 
-Regra correta: saques em {pending, approved, paid} REDUZEM o saldo;
+Regra correta: saques em {pending, paid} REDUZEM o saldo;
                saques em {rejected} NÃO reduzem.
 
+'approved' removido do conjunto: admin.py/approve_withdrawal grava status='paid'
+diretamente — 'approved' nunca foi gravado em Payment de saque (status morto).
+
 Bugs corrigidos:
-- _available_balance: só descontava {pending, approved} — 'paid' ficava de fora
+- _available_balance: só descontava {pending} — 'paid' ficava de fora
   (double-spend: passeador poderia sacar, admin aprovava→paid, saldo voltava inteiro).
 - _balance_by_tenant: descontava TODOS os status (incluindo 'rejected')
   (saldo menor que o correto quando saque era recusado).
@@ -111,13 +114,19 @@ def test_rejected_withdrawal_does_not_deduct_available_balance():
     assert result == 100.0, f"Esperado 100.0, got {result} (saque rejeitado não devia descontar)"
 
 
-def test_pending_and_approved_deduct_available_balance():
-    """Saques com status='pending' e 'approved' DEVEM reduzir _available_balance."""
+def test_pending_and_paid_deduct_available_balance():
+    """Saques com status='pending' e 'paid' DEVEM reduzir _available_balance.
+
+    Nota: 'approved' foi removido de _WITHDRAWAL_DEDUCT_STATUSES porque
+    admin.py/approve_withdrawal grava status='paid' diretamente — 'approved'
+    nunca é gravado em Payment de saque e era um status morto. O teste anterior
+    usava 'approved' explicitamente; corrigido para 'paid' (status real pós-aprovação).
+    """
     db = _db()
     u = _user(db)
     _credit(db, "w1", 100.0)
     _withdrawal(db, "wd1", 10.0, "pending")
-    _withdrawal(db, "wd2", 15.0, "approved")
+    _withdrawal(db, "wd2", 15.0, "paid")
     result = round(_available_balance(u, db), 2)
     assert result == 75.0, f"Esperado 75.0, got {result}"
 
@@ -146,13 +155,19 @@ def test_rejected_withdrawal_does_not_deduct_balance_by_tenant():
     assert result == 100.0, f"Esperado 100.0, got {result} (bug: 'rejected' descontava indevidamente)"
 
 
-def test_pending_and_approved_deduct_balance_by_tenant():
-    """Saques com status='pending' e 'approved' DEVEM reduzir _balance_by_tenant."""
+def test_pending_and_paid_deduct_balance_by_tenant():
+    """Saques com status='pending' e 'paid' DEVEM reduzir _balance_by_tenant.
+
+    Nota: 'approved' foi removido de _WITHDRAWAL_DEDUCT_STATUSES porque
+    admin.py/approve_withdrawal grava status='paid' diretamente — 'approved'
+    nunca é gravado em Payment de saque e era um status morto. O teste anterior
+    usava 'approved' explicitamente; corrigido para 'paid' (status real pós-aprovação).
+    """
     db = _db()
     u = _user(db)
     _credit(db, "w1", 100.0)
     _withdrawal(db, "wd1", 10.0, "pending")
-    _withdrawal(db, "wd2", 15.0, "approved")
+    _withdrawal(db, "wd2", 15.0, "paid")
     by = _balance_by_tenant(u, db)
     result = round(by[TENANT_ID]["available"], 2)
     assert result == 75.0, f"Esperado 75.0, got {result}"

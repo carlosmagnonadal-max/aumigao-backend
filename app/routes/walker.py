@@ -653,10 +653,12 @@ _PROCESSING_PAYMENT_STATUSES: frozenset[str] = frozenset({
     "AWAITING_CHARGEBACK_REVERSAL",
 })
 # Status de saque que REDUZEM o saldo do walker (Task 4 — fix double-spend).
-# Regra correta: {pending, approved, paid} descontam; rejected NÃO desconta.
+# Regra correta: {pending, paid} descontam; rejected NÃO desconta.
+# "approved" removido: admin.py/approve_withdrawal grava status="paid" diretamente
+# (nunca grava "approved" em Payment de saque), portanto "approved" era status morto.
 # Antes: _balance_by_tenant descontava todos (incluindo rejected) e
 #        _available_balance só descontava {pending, approved} (omitia paid).
-_WITHDRAWAL_DEDUCT_STATUSES: frozenset[str] = _PENDING_PAYMENT_STATUSES | frozenset({"approved", "paid"})
+_WITHDRAWAL_DEDUCT_STATUSES: frozenset[str] = _PENDING_PAYMENT_STATUSES | frozenset({"paid"})
 
 
 def _balance_by_tenant(user: User, db: Session) -> dict[str | None, dict]:
@@ -717,8 +719,9 @@ def _balance_by_tenant(user: User, db: Session) -> dict[str | None, dict]:
 
     # Débitos: saques do walker (provider="pix", walk_id IS NULL, tutor_id=walker).
     # Reduzem o `available` do tenant correspondente (ou None se sem tenant_id).
-    # Filtro de status: só {pending, approved, paid} descontam; rejected NÃO desconta
+    # Filtro de status: só {pending, paid} descontam; rejected NÃO desconta
     # (Task 4 — fix: antes todos os status eram descontados, incluindo rejected).
+    # "approved" removido: admin.py grava "paid" diretamente ao aprovar (nunca "approved").
     debit_payments = (
         db.query(Payment)
         .filter(
@@ -760,14 +763,19 @@ def _available_balance(user: User, db: Session) -> float:
     como soma dos preços dos walks concluídos.
     Desconta saques (payments com provider='pix' onde o walker_id está no walk_id).
     Fonte real: Walk concluídos + Payment.walker_amount quando disponível.
+
+    Correção fallback per-walk (Fase 2):
+    A Fase 2 grava Payment.walker_amount = 0.0 (NOT NULL) para passeios de REDE.
+    O antigo fallback all-or-nothing ignorava passeios LEGADOS (walker_amount IS NULL)
+    sempre que havia qualquer Payment com walker_amount gravado (mesmo 0.0).
+    Novo comportamento: fallback POR PASSEIO — walks sem Payment pago com split
+    entram pelo preço cheio; walks com split entram pelo walker_amount. Sem dupla contagem.
     """
-    # Tenta usar walker_amount da tabela payments (campo de split de receita).
+    # Pagamentos pagos com split calculado (walker_amount IS NOT NULL).
+    # Status de pagamento CONFIRMADO — inclui variantes do Asaas (PAID_PAYMENT_STATUSES).
     payments_with_split = (
         db.query(Payment)
         .join(Walk, Payment.walk_id == Walk.id)
-        # Status de pagamento CONFIRMADO. Antes filtrava só "paid", mas o Asaas grava
-        # "pagamento_confirmado_sandbox"/"payment_confirmed" => o saldo caía sempre no
-        # fallback de preço cheio (ignorando o split). Fonte: app.constants.PAID_PAYMENT_STATUSES.
         .filter(
             Walk.walker_id == user.id,
             Payment.status.in_(_PAID_PAYMENT_STATUSES_CONST),
@@ -775,18 +783,29 @@ def _available_balance(user: User, db: Session) -> float:
         )
         .all()
     )
-    if payments_with_split:
-        gross = sum(float(p.walker_amount or 0) for p in payments_with_split)
-    else:
-        # Fallback: preço cheio dos walks concluídos (sem split calculado ainda).
-        gross = sum(float(walk.price or 0) for walk in _completed_walks(user, db))
+
+    # Conjunto de walk_id que já têm Payment pago com split — usados para excluir
+    # esses walks do fallback de walk.price (evita dupla contagem).
+    walk_ids_with_split: set[str] = {p.walk_id for p in payments_with_split if p.walk_id}
+
+    # Crédito dos passeios com split calculado: usa walker_amount (pode ser 0.0 na REDE).
+    gross = sum(float(p.walker_amount or 0) for p in payments_with_split)
+
+    # Fallback per-walk: walks concluídos SEM Payment pago com split → preço cheio.
+    # Captura passeios legados (pré-split) mesmo quando existem passeios de REDE.
+    legacy_walks = [
+        walk for walk in _completed_walks(user, db)
+        if walk.id not in walk_ids_with_split
+    ]
+    gross += sum(float(walk.price or 0) for walk in legacy_walks)
 
     # Gorjetas pagas
     gross += _walker_tips_total(user.id, db)
 
-    # FIX 7 + Task 4: descontar saques em {pending, approved, paid} para evitar double-spend.
-    # 'paid' foi adicionado (Task 4): antes só {pending, approved} eram descontados,
+    # FIX 7 + Task 4: descontar saques em {pending, paid} para evitar double-spend.
+    # 'paid' foi adicionado (Task 4): antes só {pending} eram descontados,
     # permitindo que o passeador sacasse e, após aprovação (→paid), o saldo voltasse inteiro.
+    # 'approved' removido: admin.py grava "paid" diretamente (nunca grava "approved" em saque).
     # Espelha a lógica de débito de _balance_by_tenant (provider='pix', walk_id IS NULL, amount<0).
     pending_withdrawals = (
         db.query(Payment)

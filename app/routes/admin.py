@@ -2505,6 +2505,46 @@ def reject_withdrawal(payment_id: str, admin: User = Depends(require_permission(
 
 
 # ---------------------------------------------------------------------------
+# Estorno (void) manual do ganho do passeador — Fase 3
+# ---------------------------------------------------------------------------
+
+class VoidWalkerEarningRequest(BaseModel):
+    walk_id: str
+    reason: str
+
+
+@router.post("/walker-earnings/void")
+def void_walker_earning_endpoint(
+    payload: VoidWalkerEarningRequest,
+    admin: User = Depends(require_permission("finance.manage")),
+    db: Session = Depends(get_db),
+):
+    from app.services.walker_payout_service import void_walker_earning
+    from app.models.walker_earning import WalkerEarning
+    earning = db.query(WalkerEarning).filter(WalkerEarning.walk_id == payload.walk_id).first()
+    if earning is None:
+        raise HTTPException(status_code=404, detail="Ganho do passeador nao encontrado para este passeio.")
+    ensure_tenant_access(earning.tenant_id, get_admin_tenant_scope(admin, db))
+    out = void_walker_earning(db, payload.walk_id, reason=payload.reason, source="admin")
+    if out is None:
+        return {"ok": True, "already_void": True}
+    record_admin_operational_event(
+        db,
+        event_type="walker_earning_voided",
+        entity_type="walker_earning",
+        entity_id=out.id,
+        severity="warning",
+        title="Ganho do passeador anulado",
+        description=f"Ganho anulado (motivo: {payload.reason}).",
+        actor=admin,
+        source="admin.walker_earning.void",
+        metadata={"walk_id": payload.walk_id, "amount": out.amount},
+    )
+    db.commit()
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # Configuração de carteira Asaas por walker (split real — dormente no sandbox)
 # ---------------------------------------------------------------------------
 

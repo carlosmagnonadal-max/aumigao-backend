@@ -29,3 +29,7 @@ class WalkerEarning(Base):
     status = Column(String, nullable=False, default=WE_ACCRUED, index=True)
     accrued_at = Column(DateTime(timezone=True), server_default=func.now())
     payable_at = Column(DateTime(timezone=True), nullable=False)  # quando vira "disponível"
+
+    # Fase 3: estorno (void) — preenchidos quando status=WE_VOID.
+    void_reason = Column(String, nullable=True)
+    voided_at = Column(DateTime(timezone=True), nullable=True)

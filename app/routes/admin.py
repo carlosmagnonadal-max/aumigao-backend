@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from app.constants import PAID_PAYMENT_STATUSES, WALK_COMPLETED_STATUSES as _WALK_COMPLETED_STATUSES
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 _logger = logging.getLogger("aumigao.admin")
@@ -21,7 +21,8 @@ from app.services.app_settings_service import (
 )
 from app.dependencies.rbac import require_permission
 from app.services.audit_service import record_audit_log
-from app.services.payment_split_service import build_payment_split, get_or_create_payment_config, update_payment_config
+from app.services.payment_split_service import build_payment_split, get_or_create_payment_config, update_payment_config, is_network_walk
+from app.services.commission_billing_service import accrue_commission_for_walk
 from app.services.tenant_context import resolve_current_tenant_id
 from app.schemas.tenant_payment_config import TenantPaymentConfigResponse, TenantPaymentConfigUpdate
 from app.dependencies.tenant_scope import apply_tenant_filter, ensure_tenant_access, get_admin_tenant_scope
@@ -292,6 +293,20 @@ def _ensure_internal_walk_payment(walk: Walk, db: Session):
         walker_amount=split["walker_amount"],
     )
     db.add(payment)
+    # Fase 1: acumula a comissão medida do tenant (só passeador PRÓPRIO).
+    # Reusa a taxa já resolvida em `split`; period = mês da realização do passeio.
+    _walker_id = walk.walker_id or walk.assigned_walker_id
+    _is_network = is_network_walk(db, walk.tenant_id, _walker_id)
+    # scheduled_date é String "YYYY-MM-DD"; created_at é DateTime; fallback = agora UTC.
+    _scheduled = getattr(walk, "scheduled_date", None)
+    _created = getattr(walk, "created_at", None)
+    if _scheduled and isinstance(_scheduled, str) and len(_scheduled) >= 7:
+        _period = _scheduled[:7]
+    elif _created and isinstance(_created, datetime):
+        _period = _created.strftime("%Y-%m")
+    else:
+        _period = datetime.now(timezone.utc).strftime("%Y-%m")
+    accrue_commission_for_walk(db, walk, split, is_network=_is_network, period=_period)
     return payment
 
 

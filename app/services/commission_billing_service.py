@@ -67,8 +67,24 @@ def bill_tenant_commission(
     `charge_fn(db, tenant, total, period, description) -> asaas_payment_id` é injetável
     (testes passam fake; produção passa o adaptador Asaas — ver Task 6).
     Não faz commit.
+
+    # Risco residual: se o commit falhar APÓS o charge no Asaas, as entradas seguem
+    # accrued e podem ser recobradas no próximo run. Mitigação completa
+    # (idempotency key/intent record) fica pra Fase 2.
     """
     from app.models.tenant import Tenant
+
+    # Pré-check anti-cobrança-dupla: se já existe ao menos uma entrada COMM_BILLED
+    # com asaas_payment_id para este tenant+period, retorna o id existente sem cobrar
+    # de novo. Torna re-execuções após falha parcial multi-tenant seguras.
+    already = db.query(CommissionEntry).filter(
+        CommissionEntry.tenant_id == tenant_id,
+        CommissionEntry.period == period,
+        CommissionEntry.status == COMM_BILLED,
+        CommissionEntry.asaas_payment_id.isnot(None),
+    ).first()
+    if already:
+        return already.asaas_payment_id
 
     rows = (
         db.query(CommissionEntry)
@@ -181,10 +197,14 @@ def make_asaas_charge_fn():
         try:
             customer_id = asyncio.run(ensure_tenant_asaas_customer(db, tenant))
         except RuntimeError:
-            # event loop já rodando (pytest-asyncio strict mode) — usa get_event_loop
+            # Python ≥3.12: get_event_loop() levanta RuntimeError quando não há loop;
+            # cria um loop novo explicitamente para garantir compatibilidade.
             import asyncio as _asyncio
-            loop = _asyncio.get_event_loop()
-            customer_id = loop.run_until_complete(ensure_tenant_asaas_customer(db, tenant))
+            _loop = _asyncio.new_event_loop()
+            try:
+                customer_id = _loop.run_until_complete(ensure_tenant_asaas_customer(db, tenant))
+            finally:
+                _loop.close()
 
         # 2. Obtém configuração do gateway (reutiliza _get_asaas_config de payments.py)
         from app.routes.payments import _get_asaas_config
@@ -254,8 +274,13 @@ def make_asaas_charge_fn():
             try:
                 return _asyncio.run(_post())
             except RuntimeError:
-                loop = _asyncio.get_event_loop()
-                return loop.run_until_complete(_post())
+                # Python ≥3.12: get_event_loop() levanta RuntimeError quando não há loop;
+                # cria um loop novo explicitamente para garantir compatibilidade.
+                _loop = _asyncio.new_event_loop()
+                try:
+                    return _loop.run_until_complete(_post())
+                finally:
+                    _loop.close()
 
         except HTTPException:
             raise

@@ -208,3 +208,41 @@ def test_make_asaas_charge_fn_exists_and_is_callable():
     from app.services.commission_billing_service import make_asaas_charge_fn
     fn = make_asaas_charge_fn()
     assert callable(fn), "make_asaas_charge_fn() deve retornar um callable"
+
+
+# ---------------------------------------------------------------------------
+# Item 2 — Validação de formato de `period` no endpoint
+# ---------------------------------------------------------------------------
+
+def test_internal_endpoint_rejects_invalid_period_format():
+    """POST com period inválido (não YYYY-MM) deve retornar 422."""
+    os.environ["INTERNAL_SWEEP_TOKEN"] = "sweep-secret"
+
+    client, db = _client_and_db()
+
+    for bad_period in ("2026-6", "202606", "26-06", "2026/06", ""):
+        r = client.post(
+            "/payments/internal/commission-billing/run",
+            params={"period": bad_period},
+            headers={"x-internal-token": "sweep-secret"},
+        )
+        assert r.status_code == 422, (
+            f"period={bad_period!r}: esperado 422, got {r.status_code}: {r.text}"
+        )
+
+
+def test_internal_endpoint_rejects_missing_period():
+    """POST sem parâmetro `period` deve retornar 422."""
+    os.environ["INTERNAL_SWEEP_TOKEN"] = "sweep-secret"
+
+    client, db = _client_and_db()
+
+    r = client.post(
+        "/payments/internal/commission-billing/run",
+        headers={"x-internal-token": "sweep-secret"},
+    )
+    # FastAPI já devolve 422 para query param obrigatório ausente,
+    # ou nossa validação cobre — qualquer 422 é aceitável.
+    assert r.status_code == 422, (
+        f"period ausente: esperado 422, got {r.status_code}: {r.text}"
+    )

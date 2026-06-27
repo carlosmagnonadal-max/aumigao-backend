@@ -168,3 +168,33 @@ def test_run_monthly_partial_failure_isolates_per_tenant():
     # t2 deve continuar accrued (não cobrado)
     assert all(e.status == COMM_ACCRUED for e in t2_entries), \
         f"t2 deveria continuar accrued mas está: {[e.status for e in t2_entries]}"
+
+
+# ---------------------------------------------------------------------------
+# Item 1: Pré-check anti-cobrança-dupla em bill_tenant_commission
+# ---------------------------------------------------------------------------
+
+def test_bill_returns_existing_id_and_skips_charge_when_already_billed():
+    """Re-execução sobre entrada já billed deve retornar o asaas_payment_id
+    existente SEM chamar charge_fn (proteção contra cobrança dupla em
+    reprocessamentos parciais multi-tenant).
+    """
+    from app.services.commission_billing_service import bill_tenant_commission
+
+    db = _db_with_tenant()
+    # Uma entrada já billed (com asaas_payment_id setado) para t1/2026-06
+    _seed_entry(db, "w1", 3.0, status="billed", tenant_id="t1")
+    existing_entry = db.query(CommissionEntry).filter_by(walk_id="w1").one()
+    existing_entry.asaas_payment_id = "existing-charge-999"
+    db.commit()
+
+    # Uma entrada accrued adicional no mesmo t1/period
+    _seed_entry(db, "w2", 4.0, status="accrued", tenant_id="t1")
+
+    def bomb_charge(*a, **k):
+        raise AssertionError("charge_fn NÃO deveria ser chamado — já existe cobrança billed")
+
+    result = bill_tenant_commission(db, "t1", "2026-06", charge_fn=bomb_charge)
+    assert result == "existing-charge-999", (
+        f"Esperado 'existing-charge-999' (id existente), got {result!r}"
+    )

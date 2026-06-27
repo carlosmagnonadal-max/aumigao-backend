@@ -13,7 +13,7 @@ from app.core.database import Base
 COMM_ACCRUED = "accrued"   # passeio medido, ainda não faturado
 COMM_BILLED = "billed"     # incluído numa cobrança Asaas emitida
 COMM_PAID = "paid"         # cobrança paga pelo tenant
-COMM_VOID = "void"         # estornado/cancelado (ajuste manual)
+COMM_VOID = "void"         # reservado p/ estorno/cancelamento (Fase 2 — ainda não setado)
 
 
 class CommissionEntry(Base):

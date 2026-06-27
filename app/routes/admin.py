@@ -297,7 +297,8 @@ def _ensure_internal_walk_payment(walk: Walk, db: Session):
     # Reusa a taxa já resolvida em `split`; period = mês da realização do passeio.
     _walker_id = walk.walker_id or walk.assigned_walker_id
     _is_network = is_network_walk(db, walk.tenant_id, _walker_id)
-    # scheduled_date é String "YYYY-MM-DD"; created_at é DateTime; fallback = agora UTC.
+    # scheduled_date é String "YYYY-MM-DD" ou "YYYY-MM-DDTHH:MM"; created_at é DateTime; fallback = agora UTC.
+    # [:7] captura "YYYY-MM" em ambos os formatos.
     _scheduled = getattr(walk, "scheduled_date", None)
     _created = getattr(walk, "created_at", None)
     if _scheduled and isinstance(_scheduled, str) and len(_scheduled) >= 7:

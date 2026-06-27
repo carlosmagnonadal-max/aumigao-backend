@@ -1285,7 +1285,7 @@ def commission_billing_run(request: Request, period: str, db: Session = Depends(
     `period` = 'YYYY-MM' (geralmente o mês anterior). Idempotente: só fatura entradas
     com status `accrued`.
     """
-    import os, secrets
+    import os, re, secrets
     from app.services.commission_billing_service import (
         run_monthly_commission_billing,
         make_asaas_charge_fn,
@@ -1294,8 +1294,11 @@ def commission_billing_run(request: Request, period: str, db: Session = Depends(
     got = request.headers.get("x-internal-token")
     if not expected or not got or not secrets.compare_digest(got, expected):
         raise HTTPException(status_code=401, detail="unauthorized")
+    if not re.fullmatch(r"\d{4}-\d{2}", period or ""):
+        raise HTTPException(status_code=422, detail="period must be YYYY-MM")
     ids = run_monthly_commission_billing(db, period, charge_fn=make_asaas_charge_fn())
-    db.commit()
+    # run_monthly_commission_billing já comita por tenant individualmente;
+    # db.commit() adicional aqui seria redundante.
     return {"period": period, "charges_created": len(ids)}
 
 

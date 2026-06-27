@@ -189,7 +189,9 @@ def checkout(db: Session, tenant: Tenant, walk_id: str, tutor_id: str) -> Shared
     # criava Payment provider="internal" sem comissão/repasse, vazando receita.
     # A cobrança real no gateway (Asaas) segue a maturidade do beta (Fase B, pendente
     # também no passeio individual).
-    split = build_payment_split(db, tenant.id, amount)
+    split = build_payment_split(
+        db, tenant.id, amount, walker_id=(session.walker_id)
+    )
     payment = Payment(
         id=str(uuid4()),
         tenant_id=tenant.id,

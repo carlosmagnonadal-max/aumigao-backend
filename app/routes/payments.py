@@ -1172,6 +1172,21 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
         if handled:
             return {"ok": True, "received": event}
 
+    # --- Comissão medida do tenant (Fase 1) ---
+    if external_ref.startswith("tenant_comm:") and event in _PAYMENT_CONFIRMED_EVENTS:
+        try:
+            from app.services.commission_billing_service import mark_commission_paid
+            mark_commission_paid(db, provider_payment_id)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "asaas_webhook.tenant_comm_error event=%s provider_payment_id=%s",
+                event, provider_payment_id,
+            )
+            raise HTTPException(status_code=500, detail="Erro ao processar webhook de comissão.")
+        return {"ok": True, "received": event}
+
     # --- Cobrança de assinatura recorrente ---
     if external_ref.startswith("sub:") or payment_data.get("subscription"):
         try:
@@ -1260,6 +1275,31 @@ def saas_billing_sweep(request: Request, db: Session = Depends(get_global_db)):
     n = sweep_overdue_tenants(db)
     db.commit()
     return {"suspended": n}
+
+
+@router.post("/internal/commission-billing/run")
+def commission_billing_run(request: Request, period: str, db: Session = Depends(get_global_db)):
+    """Dispara o faturamento mensal da comissão medida do tenant (Fase 1).
+
+    Protegido por INTERNAL_SWEEP_TOKEN (mesmo header/padrão do sweep do Projeto B).
+    `period` = 'YYYY-MM' (geralmente o mês anterior). Idempotente: só fatura entradas
+    com status `accrued`.
+    """
+    import os, re, secrets
+    from app.services.commission_billing_service import (
+        run_monthly_commission_billing,
+        make_asaas_charge_fn,
+    )
+    expected = os.getenv("INTERNAL_SWEEP_TOKEN")
+    got = request.headers.get("x-internal-token")
+    if not expected or not got or not secrets.compare_digest(got, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if not re.fullmatch(r"\d{4}-\d{2}", period or ""):
+        raise HTTPException(status_code=422, detail="period must be YYYY-MM")
+    ids = run_monthly_commission_billing(db, period, charge_fn=make_asaas_charge_fn())
+    # run_monthly_commission_billing já comita por tenant individualmente;
+    # db.commit() adicional aqui seria redundante.
+    return {"period": period, "charges_created": len(ids)}
 
 
 def _is_tip_payment(db, provider_payment_id: str, external_ref: str) -> bool:

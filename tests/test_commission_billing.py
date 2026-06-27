@@ -51,3 +51,78 @@ def test_accrue_skips_zero_price():
     split = {"commission_percent": 10.0, "platform_amount": 0.0, "walker_amount": 0.0}
     accrue_commission_for_walk(db, walk, split, is_network=False, period="2026-06"); db.commit()
     assert db.query(CommissionEntry).filter_by(walk_id="w3").count() == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 5: faturamento mensal
+# ---------------------------------------------------------------------------
+from datetime import datetime, timezone
+from app.models.tenant import Tenant
+from app.models.commission_entry import COMM_BILLED, COMM_PAID
+
+
+def _db_with_tenant():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    db.add(Tenant(id="t1", name="X", slug="x", status="active", plan="pro",
+                  document_number="11222333000181", contact_email="fin@x.com"))
+    db.commit()
+    return db
+
+def _seed_entry(db, walk_id, amount, period="2026-06", status="accrued", tenant_id="t1"):
+    from app.models.commission_entry import CommissionEntry
+    db.add(CommissionEntry(id="ce-" + walk_id, tenant_id=tenant_id, walk_id=walk_id,
+                           period=period, walk_price=amount * 10, commission_percent=10.0,
+                           amount=amount, is_network=False, status=status))
+    db.commit()
+
+def test_bill_aggregates_accrued_and_marks_billed():
+    from app.services.commission_billing_service import bill_tenant_commission
+    db = _db_with_tenant()
+    _seed_entry(db, "w1", 3.0); _seed_entry(db, "w2", 4.5)
+    captured = {}
+    def fake_charge(db_, tenant, total, period, description):
+        captured.update(total=total, period=period, tenant=tenant.id)
+        return "asaas-charge-1"
+    charge = bill_tenant_commission(db, "t1", "2026-06", charge_fn=fake_charge)
+    db.commit()
+    assert captured["total"] == 7.5
+    assert charge == "asaas-charge-1"
+    from app.models.commission_entry import CommissionEntry
+    rows = db.query(CommissionEntry).filter_by(tenant_id="t1", period="2026-06").all()
+    assert all(r.status == COMM_BILLED and r.asaas_payment_id == "asaas-charge-1" for r in rows)
+
+def test_bill_noop_when_nothing_accrued():
+    from app.services.commission_billing_service import bill_tenant_commission
+    db = _db_with_tenant()
+    called = {"n": 0}
+    def fake_charge(*a, **k):
+        called["n"] += 1; return "x"
+    assert bill_tenant_commission(db, "t1", "2026-06", charge_fn=fake_charge) is None
+    assert called["n"] == 0
+
+def test_bill_ignores_already_billed():
+    from app.services.commission_billing_service import bill_tenant_commission
+    db = _db_with_tenant()
+    _seed_entry(db, "w1", 3.0, status="billed")
+    def fake_charge(*a, **k):
+        raise AssertionError("não deveria cobrar — já faturado")
+    assert bill_tenant_commission(db, "t1", "2026-06", charge_fn=fake_charge) is None
+
+def test_run_monthly_bills_each_tenant_with_accrued():
+    from app.services.commission_billing_service import run_monthly_commission_billing
+    db = _db_with_tenant()
+    db.add(Tenant(id="t2", name="Y", slug="y", status="active", plan="enterprise",
+                  document_number="99888777000166", contact_email="fin@y.com")); db.commit()
+    _seed_entry(db, "w1", 3.0, tenant_id="t1")
+    _seed_entry(db, "w2", 5.0, tenant_id="t2")
+    billed = []
+    def fake_charge(db_, tenant, total, period, description):
+        billed.append((tenant.id, total)); return "c-" + tenant.id
+    run_monthly_commission_billing(db, "2026-06", charge_fn=fake_charge)
+    db.commit()
+    assert sorted(billed) == [("t1", 3.0), ("t2", 5.0)]

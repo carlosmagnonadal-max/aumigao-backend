@@ -3,6 +3,7 @@
 Princípio: MEDIÇÃO ≠ CUSTÓDIA. O valor vem de Walk.price × taxa resolvida; o
 Aumigão nunca toca no pagamento do tutor. Passeio de REDE não acumula aqui.
 """
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -44,3 +45,85 @@ def accrue_commission_for_walk(
     )
     db.add(entry)
     return entry
+
+
+# ---------------------------------------------------------------------------
+# Task 5: faturamento mensal
+# ---------------------------------------------------------------------------
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def bill_tenant_commission(
+    db: Session, tenant_id: str, period: str, *, charge_fn
+) -> "str | None":
+    """Soma as entradas `accrued` do tenant no período, emite UMA cobrança via
+    `charge_fn` e marca as entradas como `billed`. Retorna o id da cobrança ou None.
+
+    `charge_fn(db, tenant, total, period, description) -> asaas_payment_id` é injetável
+    (testes passam fake; produção passa o adaptador Asaas — ver Task 6).
+    Não faz commit.
+    """
+    from app.models.tenant import Tenant
+
+    rows = (
+        db.query(CommissionEntry)
+        .filter(
+            CommissionEntry.tenant_id == tenant_id,
+            CommissionEntry.period == period,
+            CommissionEntry.status == COMM_ACCRUED,
+        )
+        .all()
+    )
+    if not rows:
+        return None
+    total = round(sum(float(r.amount) for r in rows), 2)
+    if total <= 0:
+        return None
+    tenant = db.get(Tenant, tenant_id)
+    description = f"Comissão de uso Aumigão — {period} ({len(rows)} passeios)"
+    asaas_payment_id = charge_fn(db, tenant, total, period, description)
+    now = _now_utc()
+    for r in rows:
+        r.status = COMM_BILLED
+        r.asaas_payment_id = asaas_payment_id
+        r.billed_at = now
+    return asaas_payment_id
+
+
+def run_monthly_commission_billing(
+    db: Session, period: str, *, charge_fn
+) -> "list[str]":
+    """Fatura todos os tenants com comissão `accrued` no período. Retorna ids das cobranças."""
+    tenant_ids = [
+        row[0]
+        for row in db.query(CommissionEntry.tenant_id)
+        .filter(CommissionEntry.period == period, CommissionEntry.status == COMM_ACCRUED)
+        .group_by(CommissionEntry.tenant_id)
+        .all()
+    ]
+    out: list[str] = []
+    for tid in tenant_ids:
+        cid = bill_tenant_commission(db, tid, period, charge_fn=charge_fn)
+        if cid:
+            out.append(cid)
+    return out
+
+
+def mark_commission_paid(db: Session, asaas_payment_id: str) -> int:
+    """Webhook: marca como `paid` todas as entradas faturadas por esta cobrança.
+    Retorna quantas linhas mudaram. Idempotente. Não faz commit."""
+    rows = (
+        db.query(CommissionEntry)
+        .filter(
+            CommissionEntry.asaas_payment_id == asaas_payment_id,
+            CommissionEntry.status == COMM_BILLED,
+        )
+        .all()
+    )
+    now = _now_utc()
+    for r in rows:
+        r.status = COMM_PAID
+        r.paid_at = now
+    return len(rows)

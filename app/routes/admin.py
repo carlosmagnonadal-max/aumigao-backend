@@ -2475,6 +2475,11 @@ def approve_withdrawal(payment_id: str, admin: User = Depends(require_permission
             source="admin.withdrawal.approve",
             metadata={"walk_id": payment.walk_id, "provider": payment.provider},
         )
+        # Fase 3: PIX automático (gated/OFF por padrão). Se ligado, transfere de fato.
+        # Se transfer_to_walker levantar HTTPException, o commit abaixo não roda
+        # (falha-fechada: o status "paid" não persiste se o PIX falhar).
+        from app.services.walker_payout_service import transfer_to_walker
+        transfer_to_walker(db, payment)  # no-op se WALKER_AUTO_PIX_ENABLED != true
         db.commit()
     return {"ok": True}
 

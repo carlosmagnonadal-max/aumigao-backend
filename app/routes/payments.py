@@ -671,6 +671,17 @@ _PAYMENT_REFUND_EVENTS = {"PAYMENT_REFUNDED"}
 # regridem o status (só um estorno consumado pode sair de confirmado).
 _PAYMENT_STICKY_STATUSES = {_PAYMENT_CONFIRMED_STATUS, _PAYMENT_REFUNDED_STATUS}
 
+# Fase 3: eventos que ANULAM (void) o ganho do passeador do walk associado ao Payment.
+# Cobre apenas pagamentos de passeio AVULSO (Payment.walk_id preenchido).
+# Passeio de REDE pago por crédito tem o refund no Payment da COMPRA do crédito
+# (sem walk_id do passeio) — esse caso é coberto pelo void MANUAL via endpoint admin.
+_WALKER_EARNING_VOID_EVENTS = {
+    "PAYMENT_REFUNDED",
+    "PAYMENT_CHARGEBACK_REQUESTED",
+    "PAYMENT_CHARGEBACK_DISPUTE",
+    "PAYMENT_REVERSED",
+}
+
 
 def resolve_payment_webhook_status(current_status: str | None, event: str | None, fallback_status: str | None) -> str | None:
     """Decide o novo status de um Payment a partir de um evento de webhook do
@@ -1234,6 +1245,14 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                         walk.status = "Agendado"
                         db.add(walk)
                         logger.info("asaas_webhook.walk_liberado walk_id=%s payment_id=%s", walk.id, payment.id)
+
+                # Fase 3: estorno/chargeback de um pagamento com walk_id anula o ganho do passeador.
+                # Cobre apenas passeio AVULSO (Payment.walk_id preenchido).
+                # Passeio de REDE pago por crédito: o refund recai sobre o Payment da COMPRA do
+                # crédito (sem walk_id), portanto não é capturado aqui — usar void manual (Task 1).
+                if event in _WALKER_EARNING_VOID_EVENTS and payment.walk_id:
+                    from app.services.walker_payout_service import void_walker_earning
+                    void_walker_earning(db, payment.walk_id, reason=f"asaas:{event}", source="webhook")
 
                 db.commit()
 

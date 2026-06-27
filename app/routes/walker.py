@@ -652,6 +652,11 @@ _PROCESSING_PAYMENT_STATUSES: frozenset[str] = frozenset({
     "awaiting_chargeback_reversal",
     "AWAITING_CHARGEBACK_REVERSAL",
 })
+# Status de saque que REDUZEM o saldo do walker (Task 4 — fix double-spend).
+# Regra correta: {pending, approved, paid} descontam; rejected NÃO desconta.
+# Antes: _balance_by_tenant descontava todos (incluindo rejected) e
+#        _available_balance só descontava {pending, approved} (omitia paid).
+_WITHDRAWAL_DEDUCT_STATUSES: frozenset[str] = _PENDING_PAYMENT_STATUSES | frozenset({"approved", "paid"})
 
 
 def _balance_by_tenant(user: User, db: Session) -> dict[str | None, dict]:
@@ -712,6 +717,8 @@ def _balance_by_tenant(user: User, db: Session) -> dict[str | None, dict]:
 
     # Débitos: saques do walker (provider="pix", walk_id IS NULL, tutor_id=walker).
     # Reduzem o `available` do tenant correspondente (ou None se sem tenant_id).
+    # Filtro de status: só {pending, approved, paid} descontam; rejected NÃO desconta
+    # (Task 4 — fix: antes todos os status eram descontados, incluindo rejected).
     debit_payments = (
         db.query(Payment)
         .filter(
@@ -719,6 +726,7 @@ def _balance_by_tenant(user: User, db: Session) -> dict[str | None, dict]:
             Payment.provider == "pix",
             Payment.walk_id.is_(None),
             Payment.amount < 0,
+            Payment.status.in_(_WITHDRAWAL_DEDUCT_STATUSES),
         )
         .all()
     )
@@ -776,9 +784,10 @@ def _available_balance(user: User, db: Session) -> float:
     # Gorjetas pagas
     gross += _walker_tips_total(user.id, db)
 
-    # FIX 7: descontar saques pendentes/aprovados para evitar double-spend.
+    # FIX 7 + Task 4: descontar saques em {pending, approved, paid} para evitar double-spend.
+    # 'paid' foi adicionado (Task 4): antes só {pending, approved} eram descontados,
+    # permitindo que o passeador sacasse e, após aprovação (→paid), o saldo voltasse inteiro.
     # Espelha a lógica de débito de _balance_by_tenant (provider='pix', walk_id IS NULL, amount<0).
-    _pending_withdrawal_statuses = _PENDING_PAYMENT_STATUSES | frozenset({"approved"})
     pending_withdrawals = (
         db.query(Payment)
         .filter(
@@ -786,7 +795,7 @@ def _available_balance(user: User, db: Session) -> float:
             Payment.provider == "pix",
             Payment.walk_id.is_(None),
             Payment.amount < 0,
-            Payment.status.in_(_pending_withdrawal_statuses),
+            Payment.status.in_(_WITHDRAWAL_DEDUCT_STATUSES),
         )
         .all()
     )

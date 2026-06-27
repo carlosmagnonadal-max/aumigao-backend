@@ -1,5 +1,10 @@
 """Serviço do ledger-fornecedor do passeador da rede (Fase 2)."""
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
+
+from sqlalchemy.orm import Session
+
+from app.models.walker_earning import WalkerEarning, WE_ACCRUED
 
 
 def compute_payable_at(completion_dt: datetime) -> datetime:
@@ -16,3 +21,47 @@ def compute_payable_at(completion_dt: datetime) -> datetime:
         wednesday_next_week.year, wednesday_next_week.month, wednesday_next_week.day,
         tzinfo=timezone.utc,
     )
+
+
+def _completion_dt_from_walk(walk) -> datetime:
+    """Deriva a data de conclusão do passeio (scheduled_date 'YYYY-MM-DD[THH:MM]' ou created_at, fallback now)."""
+    sd = getattr(walk, "scheduled_date", None)
+    if sd and isinstance(sd, str) and len(sd) >= 10:
+        try:
+            return datetime.fromisoformat(sd[:16]) if "T" in sd else datetime.fromisoformat(sd[:10])
+        except ValueError:
+            pass
+    created = getattr(walk, "created_at", None)
+    if isinstance(created, datetime):
+        return created
+    return datetime.now(timezone.utc)
+
+
+def accrue_walker_earning(db: Session, walk, split: dict) -> "WalkerEarning | None":
+    """Cria (idempotente) a entrada de ganho do passeador da REDE.
+
+    amount = fatia do passeador (split['walker_amount']); platform_amount = margem.
+    payable_at = cadência semanal. Não faz commit (caller comita).
+    Só deve ser chamado para passeio de REDE (o caller decide via is_network_walk).
+    """
+    price = float(getattr(walk, "price", 0) or 0)
+    if price <= 0:
+        return None
+    existing = db.query(WalkerEarning).filter(WalkerEarning.walk_id == walk.id).first()
+    if existing:
+        return existing
+    completion = _completion_dt_from_walk(walk)
+    comp = completion if completion.tzinfo else completion.replace(tzinfo=timezone.utc)
+    earning = WalkerEarning(
+        id=str(uuid4()),
+        walker_id=walk.walker_id or getattr(walk, "assigned_walker_id", None),
+        tenant_id=walk.tenant_id,
+        walk_id=walk.id,
+        gross=price,
+        platform_amount=round(float(split.get("platform_amount", 0.0)), 2),
+        amount=round(float(split.get("walker_amount", 0.0)), 2),
+        status=WE_ACCRUED,
+        payable_at=compute_payable_at(comp),
+    )
+    db.add(earning)
+    return earning

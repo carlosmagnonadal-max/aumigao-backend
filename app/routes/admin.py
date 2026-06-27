@@ -23,6 +23,7 @@ from app.dependencies.rbac import require_permission
 from app.services.audit_service import record_audit_log
 from app.services.payment_split_service import build_payment_split, get_or_create_payment_config, update_payment_config, is_network_walk
 from app.services.commission_billing_service import accrue_commission_for_walk
+from app.services.walker_earning_service import accrue_walker_earning
 from app.services.tenant_context import resolve_current_tenant_id
 from app.schemas.tenant_payment_config import TenantPaymentConfigResponse, TenantPaymentConfigUpdate
 from app.dependencies.tenant_scope import apply_tenant_filter, ensure_tenant_access, get_admin_tenant_scope
@@ -276,9 +277,12 @@ def _ensure_internal_walk_payment(walk: Walk, db: Session):
     # A-02: registra o split de comissão (antes ficava None -> saldo do walker e
     # relatórios financeiros não tinham o repasse das finalizações manuais).
     amount = float(walk.price or 0)
+    _walker_id = walk.walker_id or walk.assigned_walker_id
     split = build_payment_split(
-        db, walk.tenant_id, amount, walker_id=(walk.walker_id or walk.assigned_walker_id)
+        db, walk.tenant_id, amount, walker_id=_walker_id
     )
+    # Fase 2: calculado ANTES do Payment para decidir walker_amount e acumular ledger.
+    _is_network = is_network_walk(db, walk.tenant_id, _walker_id)
     _provider = "subscription_walk" if getattr(walk, "subscription_id", None) else "internal"
     payment = Payment(
         id=str(uuid4()),
@@ -290,13 +294,15 @@ def _ensure_internal_walk_payment(walk: Walk, db: Session):
         provider=_provider,
         commission_percent=split["commission_percent"],
         platform_amount=split["platform_amount"],
-        walker_amount=split["walker_amount"],
+        # REDE: o ganho do passeador vai pro ledger WalkerEarning (não pro saldo via Payment).
+        walker_amount=(0.0 if _is_network else split["walker_amount"]),
     )
     db.add(payment)
+    # Fase 2: passeio de REDE cria WalkerEarning (idempotente) para cadência semanal.
+    if _is_network:
+        accrue_walker_earning(db, walk, split)
     # Fase 1: acumula a comissão medida do tenant (só passeador PRÓPRIO).
     # Reusa a taxa já resolvida em `split`; period = mês da realização do passeio.
-    _walker_id = walk.walker_id or walk.assigned_walker_id
-    _is_network = is_network_walk(db, walk.tenant_id, _walker_id)
     # scheduled_date é String "YYYY-MM-DD" ou "YYYY-MM-DDTHH:MM"; created_at é DateTime; fallback = agora UTC.
     # [:7] captura "YYYY-MM" em ambos os formatos.
     _scheduled = getattr(walk, "scheduled_date", None)

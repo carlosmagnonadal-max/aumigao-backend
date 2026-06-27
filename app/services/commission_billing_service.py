@@ -127,3 +127,127 @@ def mark_commission_paid(db: Session, asaas_payment_id: str) -> int:
         r.status = COMM_PAID
         r.paid_at = now
     return len(rows)
+
+
+# ---------------------------------------------------------------------------
+# Task 6: adaptador de cobrança avulsa Asaas (produção)
+# ---------------------------------------------------------------------------
+
+def make_asaas_charge_fn():
+    """Retorna um charge_fn que cria uma cobrança avulsa PIX no Asaas.
+
+    Reusa ensure_tenant_asaas_customer (Projeto B) para obter/criar o customer_id
+    e a configuração de gateway (_get_asaas_config) já usada em toda a rota de
+    pagamentos. A cobrança usa externalReference='tenant_comm:<tenant_id>:<period>'
+    para que o webhook a reconheça e roteie corretamente.
+
+    Contrato de charge_fn:
+        charge_fn(db, tenant, total, period, description) -> asaas_payment_id (str)
+
+    ensure_tenant_asaas_customer é async — chamado via asyncio.run() pois o
+    endpoint interno (/internal/commission-billing/run) é síncrono, igual ao
+    sweep do Projeto B (saas_billing_sweep).
+    """
+    import asyncio
+    import logging
+    import httpx
+    from datetime import date, timedelta
+    from fastapi import HTTPException
+
+    _logger = logging.getLogger("aumigao.commission_billing_service.asaas_adapter")
+
+    def charge_fn(db, tenant, total: float, period: str, description: str) -> str:
+        """Cria cobrança PIX avulsa no Asaas para a comissão medida do tenant."""
+        # 1. Obtém/cria customer Asaas do tenant (idempotente, commita o customer_id)
+        from app.services.tenant_saas_billing_service import ensure_tenant_asaas_customer
+        try:
+            customer_id = asyncio.run(ensure_tenant_asaas_customer(db, tenant))
+        except RuntimeError:
+            # event loop já rodando (pytest-asyncio strict mode) — usa get_event_loop
+            import asyncio as _asyncio
+            loop = _asyncio.get_event_loop()
+            customer_id = loop.run_until_complete(ensure_tenant_asaas_customer(db, tenant))
+
+        # 2. Obtém configuração do gateway (reutiliza _get_asaas_config de payments.py)
+        from app.routes.payments import _get_asaas_config
+        cfg = _get_asaas_config()
+        base_url: str = cfg["base_url"]
+        api_key: str = cfg["api_key"]
+        is_live: bool = cfg["is_live"]
+        mode_label = "live" if is_live else "sandbox"
+
+        external_reference = f"tenant_comm:{tenant.id}:{period}"
+        due_date = str(date.today() + timedelta(days=1))
+
+        payment_payload = {
+            "customer": customer_id,
+            "billingType": "PIX",
+            "value": total,
+            "dueDate": due_date,
+            "description": description,
+            "externalReference": external_reference,
+        }
+
+        _logger.info(
+            "commission_charge: criando cobrança avulsa tenant=%s period=%s total=%s mode=%s",
+            tenant.id, period, total, mode_label,
+        )
+
+        try:
+            import asyncio as _asyncio
+
+            async def _post():
+                async with httpx.AsyncClient(
+                    base_url=base_url,
+                    headers={
+                        "access_token": api_key,
+                        "Content-Type": "application/json",
+                        "User-Agent": f"Aumigao Commission {mode_label.capitalize()}",
+                    },
+                    timeout=20,
+                ) as client:
+                    response = await client.post("/payments", json=payment_payload)
+                    if response.status_code >= 400:
+                        try:
+                            err = response.json()
+                        except Exception:
+                            err = {"raw": response.text}
+                        msg = (
+                            (err.get("errors") or [{}])[0].get("description")
+                            or err.get("description")
+                            or "Erro desconhecido"
+                        )
+                        _logger.error(
+                            "commission_charge: Asaas error tenant=%s status=%s body=%s",
+                            tenant.id, response.status_code, err,
+                        )
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"Falha ao criar cobrança de comissão no gateway: {msg}",
+                        )
+                    data = response.json()
+                    payment_id = data["id"]
+                    _logger.info(
+                        "commission_charge: cobrança criada payment_id=%s tenant=%s period=%s",
+                        payment_id, tenant.id, period,
+                    )
+                    return payment_id
+
+            try:
+                return _asyncio.run(_post())
+            except RuntimeError:
+                loop = _asyncio.get_event_loop()
+                return loop.run_until_complete(_post())
+
+        except HTTPException:
+            raise
+        except Exception as exc:
+            _logger.exception(
+                "commission_charge: erro de rede tenant=%s: %s", tenant.id, exc
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="Gateway de pagamento indisponível ao cobrar comissão. Tente novamente.",
+            )
+
+    return charge_fn

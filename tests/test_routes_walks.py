@@ -12,7 +12,10 @@ Cobre:
 - POST /walks/{id}/review (gating: exige ride_completed + revisao operacional aprovada)
 - POST /walks/{id}/tip-checkout (mesmo gating de completion aprovado)
 """
+import os
 from uuid import uuid4
+
+import pytest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -220,6 +223,10 @@ def test_review_rejects_non_owner_tutor_403():
 
 
 # ----------------------------------------------------------- tip-checkout ----
+@pytest.mark.skipif(
+    not os.getenv("ASAAS_SANDBOX_API_KEY"),
+    reason="requer ASAAS_SANDBOX_API_KEY (chamada real ao sandbox Asaas no caminho feliz); roda local/com credencial, pula no CI",
+)
 def test_tip_checkout_happy_path_after_approved_completion():
     client, db = build()
     walk = _seed_completed_walk(db, approved_review=True)

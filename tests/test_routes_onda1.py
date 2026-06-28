@@ -5,6 +5,9 @@ serialização (ex.: pet_name/tutor_count), gating de feature via endpoint e sta
 HTTP. Monta um FastAPI mínimo só com os routers de cliente + overrides de get_db /
 get_current_user (SQLite em memória) — NÃO importa app.main (que conecta no Neon).
 """
+import os
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -139,6 +142,10 @@ def test_shared_walks_create_then_get_and_checkout():
 
 
 # ----- fluxo POPULADO ponta a ponta (flag ligada) -----
+@pytest.mark.skipif(
+    not os.getenv("ASAAS_SANDBOX_API_KEY"),
+    reason="requer ASAAS_SANDBOX_API_KEY (chamada real ao sandbox Asaas no caminho feliz); roda local/com credencial, pula no CI",
+)
 def test_recurring_plans_subscribe_happy_path():
     from app.models.recurring_plan import RecurringPlan, TutorSubscription
     from app.services.recurring_plan_service import grant_credits_on_payment

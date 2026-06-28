@@ -231,8 +231,10 @@ def test_internal_endpoint_rejects_invalid_period_format():
         )
 
 
-def test_internal_endpoint_rejects_missing_period():
-    """POST sem parâmetro `period` deve retornar 422."""
+def test_internal_endpoint_defaults_missing_period_to_previous_month():
+    """POST sem `period` usa o MÊS ANTERIOR (fuso BRT/UTC-3) — uso do cron mensal."""
+    from datetime import datetime, timezone, timedelta
+
     os.environ["INTERNAL_SWEEP_TOKEN"] = "sweep-secret"
 
     client, db = _client_and_db()
@@ -241,8 +243,11 @@ def test_internal_endpoint_rejects_missing_period():
         "/payments/internal/commission-billing/run",
         headers={"x-internal-token": "sweep-secret"},
     )
-    # FastAPI já devolve 422 para query param obrigatório ausente,
-    # ou nossa validação cobre — qualquer 422 é aceitável.
-    assert r.status_code == 422, (
-        f"period ausente: esperado 422, got {r.status_code}: {r.text}"
+    assert r.status_code == 200, (
+        f"period ausente: esperado 200, got {r.status_code}: {r.text}"
     )
+    today_sp = (datetime.now(timezone.utc) - timedelta(hours=3)).date()
+    expected = (today_sp.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    body = r.json()
+    assert body["period"] == expected, f"esperado period={expected}, got {body!r}"
+    assert body["charges_created"] == 0  # DB vazio, nada accrued

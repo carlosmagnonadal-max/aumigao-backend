@@ -384,6 +384,31 @@ def _ensure_internal_walk_payment(walk: Walk, db: Session):
     else:
         _period = datetime.now(timezone.utc).strftime("%Y-%m")
     accrue_commission_for_walk(db, walk, split, is_network=_is_network, period=_period)
+    # Item 2 (fiscal): provisão de comissão best-effort para passeios de assinatura.
+    # Passeio avulso já recebe provisão via webhook Asaas (_provision_safe em payments.py).
+    # Passeio de assinatura (provider=subscription_walk) nunca passa pelo webhook,
+    # portanto a provisão seria invisível no DRE estimado sem este bloco.
+    # Passeio sem tenant_id (admin global bypass) é pulado — provisão exige tenant_id NOT NULL.
+    # Idempotência: compute_and_store_provision verifica existência por payment_id antes
+    # de inserir — 1 provisão por walk_id (o `return existing_paid` no topo garante
+    # que o bloco abaixo só executa 1 vez por walk_id).
+    # Savepoint isola a provisão da transação principal: falha no ledger fiscal NÃO
+    # desfaz o Payment já criado nesta função.
+    # NUNCA propaga exceção — provisão jamais pode quebrar o fluxo de finalização.
+    if walk.tenant_id:
+        try:
+            from app.models.fiscal import REVENUE_WALK_COMMISSION
+            from app.services.provision_service import get_provision, compute_and_store_provision
+            # Verificação prévia de idempotência (sem commit) para evitar entrar no savepoint
+            # quando a provisão já existe (caso mais comum em re-tentativas).
+            if not get_provision(db, payment.id):
+                with db.begin_nested():  # savepoint — rollback só desfaz a provisão
+                    compute_and_store_provision(db, walk.tenant_id, payment, REVENUE_WALK_COMMISSION)
+        except Exception:
+            _logger.exception(
+                "provision: falha best-effort subscription_walk walk_id=%s tenant_id=%s",
+                walk.id, walk.tenant_id,
+            )
     return payment
 
 

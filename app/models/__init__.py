@@ -58,3 +58,4 @@ from app.models.nfse import Nfse  # noqa: F401 — NFS-e (dormente, gated por NF
 from app.models.fiscal import TenantFiscalConfig, PaymentProvision  # noqa: F401
 from app.models.commission_entry import CommissionEntry  # noqa: F401
 from app.models.walker_earning import WalkerEarning  # noqa: F401
+from app.models.credit_ledger import CreditLedgerEntry  # noqa: F401

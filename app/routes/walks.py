@@ -427,6 +427,16 @@ def create_walk(payload: WalkCreate, request: Request, user: User = Depends(get_
                 if _sub is not None:
                     walk.subscription_id = _sub.id
                     _covered_by_subscription = True
+                    # Item 4: reconhece receita contábil do crédito consumido — best-effort.
+                    # NUNCA propaga exceção — ledger jamais pode quebrar criação do passeio.
+                    try:
+                        from app.services.credit_ledger_service import record_revenue_recognized_safe
+                        record_revenue_recognized_safe(db, _sub, walk.id)
+                    except Exception:
+                        logger.exception(
+                            "create_walk: falha best-effort ledger revenue subscription_id=%s walk_id=%s",
+                            _sub.id, walk.id,
+                        )
 
         logger.warning(
             "create_walk.matching_deferred walk_id=%s",

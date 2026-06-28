@@ -1362,6 +1362,24 @@ def commission_billing_run(request: Request, period: str | None = None, db: Sess
     return {"period": period, "charges_created": len(ids)}
 
 
+@router.post("/internal/credit-expiry/sweep")
+def credit_expiry_sweep(request: Request, db: Session = Depends(get_global_db)):
+    """Varre créditos expirados/cancelados e reconhece breakage contábil (Item 3 + 4).
+
+    Protegido por INTERNAL_SWEEP_TOKEN. Chamado pelo Cloud Scheduler (recomendado: diário).
+    Idempotente — re-execução não duplica entradas.
+    CAMADA CONTÁBIL: não move dinheiro, não altera saldos de pagamento.
+    """
+    import os, secrets
+    from app.services.credit_expiry_service import sweep_expired_credits
+    expected = os.getenv("INTERNAL_SWEEP_TOKEN")
+    got = request.headers.get("x-internal-token")
+    if not expected or not got or not secrets.compare_digest(got, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    result = sweep_expired_credits(db)
+    return result
+
+
 def _is_tip_payment(db, provider_payment_id: str, external_ref: str) -> bool:
     """Verifica se um provider_payment_id pertence a uma WalkTip (fallback sem externalReference)."""
     from app.models.walk_tip import WalkTip

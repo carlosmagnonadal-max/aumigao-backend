@@ -163,6 +163,76 @@ OPERATIONAL_EVENT_ENTITY_TYPES = {
     "system",
 }
 
+# Status restritivos do passeador — exigem motivo obrigatorio (devido processo).
+# "blocked" cobre todas as variantes: blocked/suspended/restricted.
+# "rejected" cobre reprova de candidatura de passeador ativo.
+_RESTRICTIVE_WALKER_STATUSES = {"blocked", "rejected"}
+
+
+def _require_reason_for_restrictive_admin(raw_status: str, reason: str | None) -> None:
+    """Lanca 422 se status restritivo for aplicado pelo admin sem motivo."""
+    if raw_status in _RESTRICTIVE_WALKER_STATUSES and not (reason or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Um motivo (reason) nao vazio e obrigatorio para aplicar o status "
+                f"'{raw_status}'. Isso e necessario para garantir o devido processo "
+                "ao passeador e proteger a plataforma contra caracterizacao de vinculo "
+                "empregaticio (art. 3 CLT)."
+            ),
+        )
+
+
+def _emit_walker_restrictive_audit_and_notification(
+    db: Session,
+    profile: "WalkerProfile",
+    raw_status: str,
+    reason: str,
+    actor: "User | None",
+    before_status: str,
+    request: "Any | None" = None,
+) -> None:
+    """Registra audit_log e Notification ao passeador para status restritivos (admin)."""
+    if raw_status not in _RESTRICTIVE_WALKER_STATUSES:
+        return
+
+    record_audit_log(
+        db,
+        action=f"walker_profile.status_changed_to_{raw_status}",
+        entity_type="walker_profile",
+        entity_id=profile.id,
+        actor=actor,
+        before={"status": before_status},
+        after={"status": raw_status, "reason": reason},
+        request=request,
+    )
+
+    status_label = "bloqueado" if raw_status == "blocked" else "reprovado"
+    _create_notification(
+        db,
+        NotificationCreate(
+            user_id=profile.user_id,
+            user_role="walker",
+            title=f"Seu perfil foi {status_label}",
+            message=(
+                f"Seu perfil de passeador foi {status_label} pela administracao. "
+                f"Motivo: {reason}. "
+                "Se voce acredita que houve um engano ou deseja contestar esta decisao, "
+                "abra um chamado de suporte pelo app (menu Suporte) ou envie um e-mail "
+                "para suporte@aumigaowalk.com.br informando seu nome completo e o motivo "
+                "da contestacao."
+            ),
+            type="walker_profile_restricted",
+            related_entity_type="walker_profile",
+            related_entity_id=profile.id,
+            metadata={
+                "status": raw_status,
+                "reason": reason,
+                "changed_by": getattr(actor, "id", None),
+            },
+        ),
+    )
+
 
 def _validate_operational_event_payload(payload: dict) -> dict:
     entity_type = str(payload.get("entity_type") or "").strip().lower()
@@ -413,24 +483,30 @@ DEFAULT_WALKER_PROGRAM_SETTINGS = {
     "updated_by": "sistema",
 }
 
-def _apply_application_status(profile: WalkerProfile, status: str, reason: str | None = None):
+def _apply_application_status(
+    profile: WalkerProfile,
+    status: str,
+    reason: str | None = None,
+    actor: "User | None" = None,
+):
     raw_status = _canonical_application_status(status)
+    now = datetime.utcnow()
     profile.status = raw_status
-    profile.updated_at = datetime.utcnow()
+    profile.updated_at = now
     if raw_status == "active":
         profile.active_as_walker = True
-        profile.approved_at = profile.approved_at or datetime.utcnow()
+        profile.approved_at = profile.approved_at or now
         profile.rejected_at = None
         profile.rejection_reason = None
     elif raw_status == "approved":
         profile.active_as_walker = False
-        profile.approved_at = datetime.utcnow()
+        profile.approved_at = now
         profile.rejected_at = None
         profile.rejection_reason = None
     elif raw_status == "rejected":
         profile.active_as_walker = False
         profile.approved_at = None
-        profile.rejected_at = datetime.utcnow()
+        profile.rejected_at = now
         profile.rejection_reason = reason
     elif raw_status == "resubmission_requested":
         profile.active_as_walker = False
@@ -443,6 +519,12 @@ def _apply_application_status(profile: WalkerProfile, status: str, reason: str |
         profile.rejected_at = None
         if raw_status in {"submitted", "under_review"}:
             profile.rejection_reason = None
+    # Trilha de devido processo: popula colunas de auditoria para status restritivos.
+    if raw_status in _RESTRICTIVE_WALKER_STATUSES:
+        profile.suspension_reason = reason or ""
+        profile.status_changed_at = now
+        if actor is not None:
+            profile.status_changed_by = actor.id
 
 
 def _unique_walker_profiles(db: Session, include_internal: bool = True) -> list[dict]:
@@ -1266,7 +1348,12 @@ def update_partner_application_admin_fields(candidate_id: str, payload: UpdatePa
     if "internal_notes" in data:
         profile.internal_notes = data.get("internal_notes") or ""
     if "status" in data:
-        _apply_application_status(profile, data.get("status") or "submitted", data.get("reason"))
+        raw_status = _canonical_application_status(data.get("status") or "submitted")
+        reason = (data.get("reason") or "").strip()
+        _require_reason_for_restrictive_admin(raw_status, reason)
+        before_status = profile.status
+        _apply_application_status(profile, data.get("status") or "submitted", reason or None, actor=admin)
+        _emit_walker_restrictive_audit_and_notification(db, profile, raw_status, reason, admin, before_status)
     if "reviewed_by_admin_id" in data:
         profile.reviewed_by_admin_id = data.get("reviewed_by_admin_id") or None
     if "resubmission_requested_documents" in data:
@@ -1275,7 +1362,7 @@ def update_partner_application_admin_fields(candidate_id: str, payload: UpdatePa
         active_as_walker = bool(data.get("active_as_walker"))
         if active_as_walker and profile.status not in {"approved", "active"}:
             raise HTTPException(status_code=400, detail="Apenas candidatos aprovados podem ser ativados como passeador.")
-        _apply_application_status(profile, "active" if active_as_walker else "approved")
+        _apply_application_status(profile, "active" if active_as_walker else "approved", actor=admin)
         user = db.get(User, profile.user_id)
         if active_as_walker and user:
             user.role = "walker"
@@ -1379,7 +1466,9 @@ def approve_walker(walker_id: str, request: Request, payload: dict | None = None
     db.refresh(profile)
     return _serialize_walker_profile(profile, db)
 
-# api-T2: schema permissivo da reprovacao de candidatura (campo unico `reason`).
+# api-T2: schema da reprovacao de candidatura — reason agora OBRIGATORIO para
+# status restritivos (devido processo, art. 3 CLT). Campo reason com min_length=1
+# sera validado em tempo de execucao pelo _require_reason_for_restrictive_admin.
 class RejectWalkerRequest(BaseModel):
     reason: str | None = None
 
@@ -1398,8 +1487,12 @@ def reject_walker(walker_id: str, request: Request, payload: RejectWalkerRequest
         _walker_scope_user = db.get(User, profile.user_id)
         if not _walker_scope_user or _walker_scope_user.tenant_id != scope.tenant_id:
             raise HTTPException(status_code=404, detail="Passeador nao encontrado")
-    reason = payload.reason if payload else None
-    _apply_application_status(profile, "rejected", reason)
+    reason = (payload.reason if payload else None) or ""
+    # Devido processo: reason obrigatorio para status restritivos.
+    _require_reason_for_restrictive_admin("rejected", reason)
+    before_status = profile.status
+    _apply_application_status(profile, "rejected", reason or None, actor=admin)
+    _emit_walker_restrictive_audit_and_notification(db, profile, "rejected", reason, admin, before_status, request=request)
     record_admin_operational_event(
         db,
         event_type="rejected",

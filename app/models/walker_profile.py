@@ -59,6 +59,15 @@ class WalkerProfile(Base):
     background_consent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     background_consent_version: Mapped[str | None] = mapped_column(String, nullable=True)
 
+    # Trilha de devido processo para status restritivos (blocked/rejected durante atividade).
+    # Populadas sempre que a API transiciona para um estado restritivo.
+    # suspension_reason = motivo registrado pelo admin (obrigatorio via API).
+    # status_changed_by = user_id do admin que fez a alteracao.
+    # status_changed_at = timestamp UTC da alteracao.
+    suspension_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status_changed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    status_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     user = relationship("User", back_populates="walker_profile")
 
 

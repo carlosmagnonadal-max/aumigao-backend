@@ -466,7 +466,7 @@ class TestWalkerNetworkWritePermission:
 
     def test_super_admin_can_link_walker_to_tenant(self):
         """super_admin bypassa o guard e consegue vincular walker -> 200."""
-        app_, db = self._build_db(plan="business")
+        app_, db = self._build_db(plan="enterprise")
         app_.dependency_overrides[get_current_user] = lambda: db.get(User, SUPER_ADMIN_ID)
         client = TestClient(app_)
         r = client.post(f"/admin/walker-network/tenants/{TENANT_A}",

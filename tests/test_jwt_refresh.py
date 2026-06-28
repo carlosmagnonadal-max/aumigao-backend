@@ -119,10 +119,10 @@ def test_create_refresh_token_has_long_expiry():
     assert days_left >= 25, f"refresh expiry muito curto: {days_left} dias"
 
 
-def test_access_token_ttl_is_24h():
-    """ACCESS_TOKEN_EXPIRE_MINUTES deve ser 24h = 1440 min (EPIC 4.1 — reduzido de 7 dias)."""
-    assert ACCESS_TOKEN_EXPIRE_MINUTES == 60 * 24, (
-        f"TTL do access token inesperado. Esperado 1440 (24h), got {ACCESS_TOKEN_EXPIRE_MINUTES}"
+def test_access_token_ttl_is_4h():
+    """ACCESS_TOKEN_EXPIRE_MINUTES deve ser 4h = 240 min (EPIC 4.1 — reduzido de 24h→4h)."""
+    assert ACCESS_TOKEN_EXPIRE_MINUTES == 60 * 4, (
+        f"TTL do access token inesperado. Esperado 240 (4h), got {ACCESS_TOKEN_EXPIRE_MINUTES}"
     )
 
 

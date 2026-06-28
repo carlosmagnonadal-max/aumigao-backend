@@ -1330,12 +1330,13 @@ def saas_billing_sweep(request: Request, db: Session = Depends(get_global_db)):
 
 
 @router.post("/internal/commission-billing/run")
-def commission_billing_run(request: Request, period: str, db: Session = Depends(get_global_db)):
+def commission_billing_run(request: Request, period: str | None = None, db: Session = Depends(get_global_db)):
     """Dispara o faturamento mensal da comissão medida do tenant (Fase 1).
 
     Protegido por INTERNAL_SWEEP_TOKEN (mesmo header/padrão do sweep do Projeto B).
-    `period` = 'YYYY-MM' (geralmente o mês anterior). Idempotente: só fatura entradas
-    com status `accrued`.
+    `period` = 'YYYY-MM'. Se omitido, usa o MÊS ANTERIOR no fuso America/Sao_Paulo
+    (uso do cron mensal: roda no dia 1 e fatura o mês que acabou). Idempotente: só
+    fatura entradas com status `accrued`.
     """
     import os, re, secrets
     from app.services.commission_billing_service import (
@@ -1346,7 +1347,14 @@ def commission_billing_run(request: Request, period: str, db: Session = Depends(
     got = request.headers.get("x-internal-token")
     if not expected or not got or not secrets.compare_digest(got, expected):
         raise HTTPException(status_code=401, detail="unauthorized")
-    if not re.fullmatch(r"\d{4}-\d{2}", period or ""):
+    if period is None:
+        from datetime import timezone
+        # BRT = UTC-3 fixo (Brasil aboliu horário de verão em 2019). Evita depender
+        # de tzdata (ausente no python:3.13-slim e no Windows).
+        today_sp = (datetime.now(timezone.utc) - timedelta(hours=3)).date()
+        last_day_prev = today_sp.replace(day=1) - timedelta(days=1)
+        period = last_day_prev.strftime("%Y-%m")
+    if not re.fullmatch(r"\d{4}-\d{2}", period):
         raise HTTPException(status_code=422, detail="period must be YYYY-MM")
     ids = run_monthly_commission_billing(db, period, charge_fn=make_asaas_charge_fn())
     # run_monthly_commission_billing já comita por tenant individualmente;

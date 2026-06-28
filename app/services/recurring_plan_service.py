@@ -193,6 +193,12 @@ def subscribe(db: Session, tenant: Tenant, tutor_id: str, plan_id: str) -> Tutor
         existing.cancelled_at = now
         existing.updated_at = now
         db.add(existing)
+        # Item 3: breakage best-effort da assinatura anterior ao trocar de plano.
+        try:
+            from app.services.credit_expiry_service import recognize_breakage_on_cancel
+            recognize_breakage_on_cancel(db, existing)
+        except Exception:
+            logger.exception("subscribe: falha best-effort breakage anterior subscription_id=%s", existing.id)
 
     subscription = TutorSubscription(
         tenant_id=tenant.id,
@@ -209,6 +215,15 @@ def subscribe(db: Session, tenant: Tenant, tutor_id: str, plan_id: str) -> Tutor
     db.add(subscription)
     db.commit()
     db.refresh(subscription)
+    # Item 4: registra passivo de crédito best-effort (receita diferida) na subscrição síncrona.
+    # subscribe() é a versão legada sem Asaas — créditos concedidos imediatamente.
+    # O commit já ocorreu, então fazemos flush + commit separado para o ledger.
+    try:
+        from app.services.credit_ledger_service import record_liability_safe
+        record_liability_safe(db, subscription, payment_id=None)
+        db.commit()
+    except Exception:
+        logger.exception("subscribe: falha best-effort ledger liability subscription_id=%s", subscription.id)
     return subscription
 
 
@@ -341,6 +356,14 @@ def cancel_subscription(db: Session, tenant_id: str, tutor_id: str) -> TutorSubs
     subscription.cancelled_at = now
     subscription.updated_at = now
     db.add(subscription)
+    # Item 3: gatilho de breakage best-effort no cancelamento (créditos não consumidos → receita).
+    # Precede o commit para que o ledger entre na mesma transação.
+    # NUNCA propaga exceção.
+    try:
+        from app.services.credit_expiry_service import recognize_breakage_on_cancel
+        recognize_breakage_on_cancel(db, subscription)
+    except Exception:
+        logger.exception("cancel_subscription: falha best-effort breakage subscription_id=%s", subscription.id)
     db.commit()
     db.refresh(subscription)
     return subscription
@@ -361,6 +384,12 @@ async def cancel_subscription_async(db: Session, tenant_id: str, tutor_id: str) 
     subscription.cancelled_at = now
     subscription.updated_at = now
     db.add(subscription)
+    # Item 3: gatilho de breakage best-effort no cancelamento (créditos não consumidos → receita).
+    try:
+        from app.services.credit_expiry_service import recognize_breakage_on_cancel
+        recognize_breakage_on_cancel(db, subscription)
+    except Exception:
+        logger.exception("cancel_subscription_async: falha best-effort breakage subscription_id=%s", subscription.id)
     db.commit()
     db.refresh(subscription)
     return subscription
@@ -403,13 +432,16 @@ def reset_credits_if_renewal(db: Session, subscription: TutorSubscription) -> bo
     return True
 
 
-def grant_credits_on_payment(db: Session, subscription: TutorSubscription) -> bool:
+def grant_credits_on_payment(db: Session, subscription: TutorSubscription, payment_id: str | None = None) -> bool:
     """Concede os créditos do ciclo na 1ª confirmação de pagamento (idempotente).
 
     Só age uma vez por assinatura: se credits_granted é False, concede
     walks_per_cycle créditos e marca credits_granted=True. Não commita.
     Retorna True se concedeu. Renovações de ciclos seguintes são tratadas por
     reset_credits_if_renewal (que reabastece quando o período vence).
+
+    payment_id (opcional): ID do Payment/Asaas que originou a concessão — repassado
+    ao ledger contábil para rastreabilidade (Item 4).
     """
     if subscription.credits_granted:
         return False
@@ -417,6 +449,14 @@ def grant_credits_on_payment(db: Session, subscription: TutorSubscription) -> bo
     subscription.credits_granted = True
     subscription.updated_at = datetime.utcnow()
     db.add(subscription)
+    # Item 4: registra passivo de crédito (receita diferida) — best-effort.
+    # Somente na 1ª concessão (idempotente no ledger por subscription_id).
+    # NUNCA propaga exceção.
+    try:
+        from app.services.credit_ledger_service import record_liability_safe
+        record_liability_safe(db, subscription, payment_id=payment_id)
+    except Exception:
+        logger.exception("grant_credits_on_payment: falha best-effort ledger subscription_id=%s", subscription.id)
     return True
 
 

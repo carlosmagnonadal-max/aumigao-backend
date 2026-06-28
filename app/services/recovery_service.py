@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -71,10 +71,10 @@ def get_or_create_recovery_plan(walker_id: str, db: Session, reason: str | None 
         id=str(uuid4()),
         walker_id=walker_id,
         risk_level_at_start=scores["risk_level"],
-        reason=reason or "Indicadores recentes pedem acompanhamento leve e orientativo.",
+        reason=reason or "Reunimos algumas sugestoes opcionais para ajudar voce quando quiser.",
         recommended_actions=actions or build_recommendations(walker_id, db),
         started_at=datetime.utcnow(),
-        ends_at=datetime.utcnow() + timedelta(days=21),
+        ends_at=None,
         status="active",
     )
     db.add(plan)

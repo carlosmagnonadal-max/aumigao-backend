@@ -2295,7 +2295,13 @@ COMPLETION_REPORT_ALLOWED_STATUSES = {
     "completion_rejected",
 }
 
-COMPLETION_CHECKLIST_REQUIRED_KEYS = {
+# ITEM 7 — reenquadramento legal: esses campos são REGISTRO OPCIONAL do passeio,
+# não um protocolo obrigatório imposto ao passeador. Exigir um método de execução
+# específico (como retornar a guia, oferecer água etc.) configura controle de método
+# (art. 3º CLT). Os campos ficam disponíveis para que o passeador REGISTRE o que
+# aconteceu — o checklist é informativo, não um gate de finalização.
+# incident_reported continua disponível para relato de incidentes de segurança.
+COMPLETION_CHECKLIST_KNOWN_KEYS = {
     "pet_delivered",
     "leash_returned",
     "water_offered",
@@ -2329,6 +2335,21 @@ def _completion_review_payload(review: WalkCompletionReview) -> dict:
 
 
 def _normalize_completion_checklist(payload: dict) -> dict:
+    """Normaliza o checklist de registro do passeio (OPCIONAL).
+
+    ITEM 7 — reenquadramento legal: o checklist é um REGISTRO/CONFIRMAÇÃO informativo,
+    não um protocolo obrigatório de execução. Nenhum campo é obrigatório para finalizar
+    o passeio — sua ausência NÃO bloqueia a finalização nem o pagamento.
+
+    Campos conhecidos (todos opcionais — registrados se enviados):
+      - pet_delivered:    passeador registra que devolveu o pet ao tutor
+      - leash_returned:   passeador registra que devolveu a guia
+      - water_offered:    passeador registra que ofereceu água ao pet
+      - incident_reported: passeador registra que houve incidente (valor de segurança)
+
+    Chaves desconhecidas enviadas pelo frontend são ignoradas silenciosamente.
+    Campos ausentes são gravados como False (não ocorreram / não foram informados).
+    """
     checklist = payload.get("checklist") or payload.get("checklist_json") or {}
     if isinstance(checklist, str):
         try:
@@ -2337,13 +2358,9 @@ def _normalize_completion_checklist(payload: dict) -> dict:
             checklist = {}
     if not isinstance(checklist, dict):
         checklist = {}
-    missing = [key for key in COMPLETION_CHECKLIST_REQUIRED_KEYS if key not in checklist]
-    if missing:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Checklist incompleto. Campos obrigatorios: {', '.join(sorted(COMPLETION_CHECKLIST_REQUIRED_KEYS))}.",
-        )
-    return {key: bool(checklist.get(key)) for key in COMPLETION_CHECKLIST_REQUIRED_KEYS}
+    # Registra apenas as chaves conhecidas; campos ausentes = False (não informado).
+    # NÃO levanta exceção por campos faltantes — ver docstring acima.
+    return {key: bool(checklist.get(key, False)) for key in COMPLETION_CHECKLIST_KNOWN_KEYS}
 
 
 def _notify_admins_completion_review_pending(db: Session, walk: Walk, review: WalkCompletionReview, walker: User, resubmission: bool) -> None:

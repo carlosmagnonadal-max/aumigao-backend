@@ -16,9 +16,11 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_password_hash, verify_password
 from app.dependencies.rbac import require_permission
+from app.models.notification import Notification
 from app.models.user import User
 from app.models.walker_profile import WalkerProfile
 from app.services import object_storage
+from app.services.audit_service import record_audit_log
 from app.services.identity_uniqueness import ensure_unique_identity
 from app.services.signed_uploads import create_signed_upload_url
 from app.services.tenant_seed_service import default_tenant_id
@@ -46,6 +48,10 @@ from app.lib.admin_serializers import _document_key_list
 router = APIRouter(prefix="/api/partner-applications", tags=["partner-applications"])
 
 LOGGER = logging.getLogger("aumigao.walker_applications")
+
+# Statuses que implicam restrição operacional do passeador — exigem motivo obrigatório,
+# trilha de auditoria e notificação ao passeador (devido processo, risco CLT art. 3).
+_RESTRICTIVE_STATUSES = {"blocked", "rejected"}
 
 # G6: extensões permitidas para documentos (identidade/endereço) incluem PDF.
 _DOCUMENT_TYPES_ALLOW_PDF = {"identity_front", "identity_back", "address_proof", "background_certificate"}  # FIX 5
@@ -203,12 +209,26 @@ def _apply_partner_application_payload(profile: WalkerProfile, payload: PartnerA
     profile.rejection_reason = None
 
 
-def _apply_profile_status(profile: WalkerProfile, status: str, reason: str | None = None, db: Session | None = None):
+def _apply_profile_status(
+    profile: WalkerProfile,
+    status: str,
+    reason: str | None = None,
+    db: Session | None = None,
+    actor: "User | None" = None,
+):
+    """Aplica um status de candidatura ao perfil.
+
+    Para status restritivos (_RESTRICTIVE_STATUSES), grava suspension_reason,
+    status_changed_by e status_changed_at. A VALIDAÇÃO de reason obrigatório e
+    o disparo de audit_log/notificação ficam nos callers (endpoints), que têm
+    acesso ao Request e ao admin autenticado.
+    """
     raw_status = _raw_status_from_label(status)
+    now = datetime.utcnow()
     profile.status = raw_status
     if raw_status == "active":
         profile.active_as_walker = True
-        profile.approved_at = profile.approved_at or datetime.utcnow()
+        profile.approved_at = profile.approved_at or now
         profile.rejected_at = None
         profile.rejection_reason = None
         if db:
@@ -217,12 +237,12 @@ def _apply_profile_status(profile: WalkerProfile, status: str, reason: str | Non
                 user.role = "walker"
     elif raw_status == "approved":
         profile.active_as_walker = False
-        profile.approved_at = datetime.utcnow()
+        profile.approved_at = now
         profile.rejected_at = None
         profile.rejection_reason = None
     elif raw_status == "rejected":
         profile.active_as_walker = False
-        profile.rejected_at = datetime.utcnow()
+        profile.rejected_at = now
         profile.approved_at = None
         profile.rejection_reason = reason
     elif raw_status == "resubmission_requested":
@@ -237,7 +257,81 @@ def _apply_profile_status(profile: WalkerProfile, status: str, reason: str | Non
             profile.rejected_at = None
             if raw_status in {"submitted", "under_review"}:
                 profile.rejection_reason = None
-    profile.updated_at = datetime.utcnow()
+    # Trilha de devido processo: popula colunas de auditoria para status restritivos.
+    if raw_status in _RESTRICTIVE_STATUSES:
+        profile.suspension_reason = reason or ""
+        profile.status_changed_at = now
+        if actor is not None:
+            profile.status_changed_by = actor.id
+    profile.updated_at = now
+
+
+def _require_reason_for_restrictive(raw_status: str, reason: str | None) -> None:
+    """Lanca 422 se um status restritivo for aplicado sem motivo."""
+    if raw_status in _RESTRICTIVE_STATUSES and not (reason or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Um motivo (reason) nao vazio e obrigatorio para aplicar o status "
+                f"'{raw_status}'. Isso e necessario para garantir o devido processo "
+                "ao passeador e proteger a plataforma contra configuracao de vinculo "
+                "empregaticio (art. 3 CLT)."
+            ),
+        )
+
+
+def _emit_restrictive_status_audit_and_notification(
+    db: Session,
+    profile: WalkerProfile,
+    raw_status: str,
+    reason: str,
+    actor: "User | None",
+    before_status: str,
+) -> None:
+    """Registra audit_log e cria Notification para o passeador nos status restritivos."""
+    if raw_status not in _RESTRICTIVE_STATUSES:
+        return
+
+    # --- Audit log ---
+    record_audit_log(
+        db,
+        action=f"walker_profile.status_changed_to_{raw_status}",
+        entity_type="walker_profile",
+        entity_id=profile.id,
+        actor=actor,
+        before={"status": before_status},
+        after={"status": raw_status, "reason": reason},
+    )
+
+    # --- Notificacao ao passeador ---
+    status_label = "bloqueado" if raw_status == "blocked" else "reprovado"
+    walker_user = db.get(User, profile.user_id) if profile.user_id else None
+    if walker_user:
+        import json as _json
+        from uuid import uuid4 as _uuid4
+        notif = Notification(
+            id=str(_uuid4()),
+            user_id=walker_user.id,
+            user_role="walker",
+            title=f"Seu perfil foi {status_label}",
+            message=(
+                f"Seu perfil de passeador foi {status_label} pela administracao. "
+                f"Motivo: {reason}. "
+                "Se voce acredita que houve um engano ou deseja contestar esta decisao, "
+                "abra um chamado de suporte pelo app (menu Suporte) ou envie um e-mail "
+                "para suporte@aumigaowalk.com.br informando seu nome completo e o motivo "
+                "da contestacao."
+            ),
+            type="walker_profile_restricted",
+            related_entity_type="walker_profile",
+            related_entity_id=profile.id,
+            metadata_json=_json.dumps({
+                "status": raw_status,
+                "reason": reason,
+                "changed_by": getattr(actor, "id", None),
+            }, ensure_ascii=False),
+        )
+        db.add(notif)
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +512,12 @@ def update_partner_application_status(
     profile = db.get(WalkerProfile, candidate_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Candidatura nao encontrada")
-    _apply_profile_status(profile, payload.status, payload.reason, db)
+    raw_status = _raw_status_from_label(payload.status)
+    reason = (payload.reason or "").strip()
+    _require_reason_for_restrictive(raw_status, reason)
+    before_status = profile.status
+    _apply_profile_status(profile, payload.status, reason or None, db, actor=_admin)
+    _emit_restrictive_status_audit_and_notification(db, profile, raw_status, reason, _admin, before_status)
     if payload.resubmission_requested_documents:
         profile.resubmission_requested_documents = _document_key_list(payload.resubmission_requested_documents)
     # Marca referral antes do commit para que tudo persista em uma unica transacao.
@@ -444,7 +543,12 @@ def update_partner_application_admin_fields(
     if payload.internal_notes is not None:
         profile.internal_notes = payload.internal_notes
     if payload.status is not None:
-        _apply_profile_status(profile, payload.status, payload.reason, db)
+        raw_status = _raw_status_from_label(payload.status)
+        reason = (payload.reason or "").strip()
+        _require_reason_for_restrictive(raw_status, reason)
+        before_status = profile.status
+        _apply_profile_status(profile, payload.status, reason or None, db, actor=_admin)
+        _emit_restrictive_status_audit_and_notification(db, profile, raw_status, reason, _admin, before_status)
     if payload.reviewed_by_admin_id is not None:
         profile.reviewed_by_admin_id = payload.reviewed_by_admin_id
     if payload.resubmission_requested_documents:

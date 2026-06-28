@@ -219,11 +219,10 @@ def test_get_or_create_creates_plan_when_at_risk():
     assert plan.status == "active"
     assert plan.risk_level_at_start == "risk"
     assert plan.walker_id == WALKER
-    # janela de 21 dias
-    delta = plan.ends_at - plan.started_at
-    assert delta.days == 21
+    # sem prazo automatico imposto (orientacao voluntaria)
+    assert plan.ends_at is None
     # reason e actions default
-    assert plan.reason == "Indicadores recentes pedem acompanhamento leve e orientativo."
+    assert plan.reason == "Reunimos algumas sugestoes opcionais para ajudar voce quando quiser."
     assert isinstance(plan.recommended_actions, list) and plan.recommended_actions
 
 
@@ -277,3 +276,70 @@ def test_update_status_non_completed_does_not_set_completed_at():
     updated = svc.update_recovery_plan_status(plan.id, "cancelled", db)
     assert updated.status == "cancelled"
     assert updated.completed_at is None
+
+
+# ---------------------------------------------------------------------------
+# Item 6 — Recovery plan é orientação voluntária (risco trabalhista)
+# ---------------------------------------------------------------------------
+
+def test_recovery_plan_has_no_enforced_deadline():
+    """O plano criado automaticamente NÃO deve ter ends_at definido.
+    O prazo de 21 dias foi removido para que não pareça meta imposta."""
+    db = _db()
+    for _ in range(3):
+        _review(db, rating=4)
+    plan = svc.get_or_create_recovery_plan(WALKER, db)
+    assert plan is not None
+    # ends_at deve ser None — prazo automático foi removido
+    assert plan.ends_at is None, (
+        f"Recovery plan não deve ter prazo automático, mas ends_at={plan.ends_at!r}"
+    )
+
+
+def test_recovery_plan_reason_uses_voluntary_language():
+    """A razão padrão do plano deve usar linguagem de sugestão, não de
+    acompanhamento/controle."""
+    db = _db()
+    for _ in range(3):
+        _review(db, rating=4)
+    plan = svc.get_or_create_recovery_plan(WALKER, db)
+    assert plan is not None
+    reason_lower = plan.reason.lower()
+    # Não deve conter linguagem de acompanhamento obrigatório
+    FORBIDDEN_TERMS = ["acompanhamento", "plano de recupera", "recuperacao obrigat", "requerida"]
+    for term in FORBIDDEN_TERMS:
+        assert term not in reason_lower, (
+            f"Reason do plano contém linguagem de controle '{term}': {plan.reason!r}"
+        )
+    # Deve conter linguagem de sugestão voluntária
+    VOLUNTARY_TERMS = ["sugest", "dica", "opcional", "voluntar", "quando quiser", "livre"]
+    assert any(term in reason_lower for term in VOLUNTARY_TERMS), (
+        f"Reason do plano não contém linguagem voluntária: {plan.reason!r}"
+    )
+
+
+def test_default_recommendations_are_suggestions_not_mandates():
+    """As recomendações padrão devem ser sugestões, não obrigações."""
+    for rec in svc.DEFAULT_RECOMMENDATIONS:
+        rec_lower = rec.lower()
+        # Não deve conter linguagem de obrigação
+        assert "obrigat" not in rec_lower, f"Recomendação parece obrigatória: {rec!r}"
+        assert "deve " not in rec_lower, f"Recomendação parece obrigatória: {rec!r}"
+
+
+def test_recovery_plan_does_not_block_or_penalize():
+    """O plano de recuperação é puramente informativo.
+    get_or_create_recovery_plan não deve lançar exceção nem bloquear."""
+    db = _db()
+    # Walker saudável => sem plano
+    result = svc.get_or_create_recovery_plan(WALKER, db)
+    assert result is None  # sem risco, sem plano
+
+    # Walker em risco => plano criado mas apenas informativo (não levanta exceção)
+    for _ in range(3):
+        _review(db, rating=4)
+    plan = svc.get_or_create_recovery_plan(WALKER, db)
+    assert plan is not None
+    assert plan.status == "active"
+    # Sem atributo de bloqueio ou consequência de acesso
+    assert not hasattr(plan, "blocks_matching") or getattr(plan, "blocks_matching", False) is False

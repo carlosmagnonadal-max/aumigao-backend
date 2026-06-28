@@ -329,13 +329,21 @@ class TestWalkerRejectTenantIsolation:
         assert r.status_code == 404, r.text
 
     def test_tenant_a_admin_can_reject_own_walker(self, db_session):
+        # Devido processo: reason obrigatorio para rejeicao (status restritivo).
         client = _make_client(db_session, SUPER_AS_A_ID, act_as_tenant=TENANT_A)
-        r = client.post(f"/admin/walkers/{WALKER_PROFILE_A_ID}/reject")
+        r = client.post(
+            f"/admin/walkers/{WALKER_PROFILE_A_ID}/reject",
+            json={"reason": "Documentos invalidos apos verificacao presencial."},
+        )
         assert r.status_code == 200, r.text
 
     def test_super_admin_global_can_reject_walker_b(self, db_session):
+        # Devido processo: reason obrigatorio para rejeicao (status restritivo).
         client = _make_client(db_session, SUPER_GLOBAL_ID, act_as_tenant=None)
-        r = client.post(f"/admin/walkers/{WALKER_PROFILE_B_ID}/reject")
+        r = client.post(
+            f"/admin/walkers/{WALKER_PROFILE_B_ID}/reject",
+            json={"reason": "Perfil duplicado detectado pelo sistema."},
+        )
         assert r.status_code == 200, r.text
 
 

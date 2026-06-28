@@ -70,7 +70,7 @@ def motivational_message(risk_level: str, reviews_count: int) -> str:
     if risk_level == "attention":
         return "Alguns indicadores merecem atencao. Pequenos ajustes podem fortalecer sua reputacao."
     if risk_level == "risk":
-        return "Criamos recomendacoes para ajudar voce a recuperar sua reputacao nos proximos passeios."
+        return "Ha sugestoes disponiveis caso queira melhorar sua experiencia nos proximos passeios."
     if risk_level == "critical":
         return "Sua conta esta em revisao pela equipe Aumigao. Acompanhe as orientacoes disponiveis."
     return "Acompanhe sua evolucao e mantenha bons passeios."

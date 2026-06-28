@@ -117,6 +117,19 @@ def calculate_experience_score(walker_id: str, db: Session) -> float:
 
 
 def calculate_basic_behavior_score(walker_id: str, db: Session) -> dict:
+    """Calcula o score de comportamento básico para reputação e risk_level.
+
+    PRINCÍPIO LEGAL — recusa de oferta ≠ penalidade (ITEM 8):
+    O passeador autônomo pode recusar uma oferta (decline/expiração de attempt)
+    sem qualquer efeito negativo neste score. acceptance_rate_score é um valor BASE
+    fixo (não calculado a partir de recusas reais) porque rastrear aceitações/recusas
+    e transformá-las em penalidade criaria subordinação algorítmica, vedada.
+
+    O que SIM penaliza (sinal legítimo de confiabilidade):
+    - cancellation_score: derivado de walk.status=="cancelado", ou seja, passeios
+      JÁ ACEITOS que não foram entregues (no-show, cancelamento pós-aceite).
+      O passeador se comprometeu com o tutor e não cumpriu — sinal defensável.
+    """
     walks = db.query(Walk).filter(Walk.walker_id == walker_id).all()
     completed = [walk for walk in walks if (walk.status or "").strip() in COMPLETED_STATUSES]
     cancelled = [walk for walk in walks if (walk.status or "").strip().lower() == "cancelado"]
@@ -131,7 +144,14 @@ def calculate_basic_behavior_score(walker_id: str, db: Session) -> dict:
             "cancellation_rate": 0.0,
         }
 
+    # Valor BASE fixo — NÃO calculado a partir de recusas reais.
+    # Rastrear recusas de oferta e penalizá-las criaria subordinação algorítmica.
+    # Ver docstring acima.
     acceptance_rate_score = 82.0
+
+    # Calculado a partir de walks.status=="cancelado": passeios ACEITOS que não
+    # foram entregues (no-show, cancelamento pós-aceite). Sinal legítimo de
+    # confiabilidade — o passeador quebrou um compromisso já assumido.
     cancellation_rate = len(cancelled) / max(1, len(walks))
     cancellation_score = clamp_score(100 - cancellation_rate * 100)
     activity_score = clamp_score(active_days * 12) if active_days else 75.0

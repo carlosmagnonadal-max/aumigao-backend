@@ -157,11 +157,12 @@ def test_reject_walker_sets_reason():
     assert prof.active_as_walker is False
 
 
-def test_reject_walker_without_reason_ok():
+def test_reject_walker_without_reason_returns_422():
+    # Devido processo (art. 3 CLT): reason obrigatorio para status restritivos.
+    # Comportamento anterior (sem reason -> 200) foi removido intencionalmente.
     client, _ = build(profile_status="under_review")
     r = client.post(f"/admin/walkers/{CAND_ID}/reject")
-    assert r.status_code == 200, r.text
-    assert r.json()["raw_status"] == "rejected"
+    assert r.status_code == 422, r.text
 
 
 def test_reject_walker_requires_permission():

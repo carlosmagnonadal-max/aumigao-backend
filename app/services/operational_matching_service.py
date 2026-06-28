@@ -601,7 +601,7 @@ def _create_attempt(db: Session, walk: Walk, candidate: dict, attempt_number: in
         walk,
         attempt.walker_id,
         title="Novo passeio disponível",
-        message="Você recebeu uma solicitação de passeio. Aceite ou recuse dentro do prazo para manter sua pontuação operacional.",
+        message="Nova solicitação de passeio disponível. Você pode aceitar ou recusar livremente. A oferta expira em alguns minutos.",
         notification_type="new_walk",
         priority="high",
         action="walker_attempt_created",

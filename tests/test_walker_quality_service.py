@@ -109,7 +109,7 @@ def test_motivational_message_paths():
     assert "primeiros passeios" in svc.motivational_message("normal", 0)
     assert "saudavel" in svc.motivational_message("normal", 3)
     assert "atencao" in svc.motivational_message("attention", 3)
-    assert "recuperar" in svc.motivational_message("risk", 3)
+    assert "sugestoes" in svc.motivational_message("risk", 3)
     assert "revisao" in svc.motivational_message("critical", 3)
     # risk_level desconhecido cai no fallback
     assert "evolucao" in svc.motivational_message("desconhecido", 3)

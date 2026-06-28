@@ -21,18 +21,12 @@ def test_hash_round_trip():
     assert security.verify_password("s3nha-forte", h) is True
 
 
-def test_hash_format_is_pbkdf2_sha256_with_three_parts():
+def test_hash_format_is_bcrypt():
     h = security.get_password_hash("abc")
-    parts = h.split("$")
-    assert len(parts) == 3
-    algorithm, salt_hex, digest_hex = parts
-    assert algorithm == "pbkdf2_sha256"
-    # salt is 16 random bytes -> 32 hex chars
-    assert len(salt_hex) == 32
-    bytes.fromhex(salt_hex)  # valid hex
-    bytes.fromhex(digest_hex)  # valid hex
-    # sha256 digest -> 32 bytes -> 64 hex chars
-    assert len(digest_hex) == 64
+    # bcrypt hashes start with $2b$, $2a$ or $2y$
+    assert h.startswith(("$2b$", "$2a$", "$2y$")), f"Hash inesperado: {h[:10]}"
+    # roundtrip
+    assert security.verify_password("abc", h) is True
 
 
 def test_hash_is_salted_unique_per_call():
@@ -76,11 +70,9 @@ def test_verify_malformed_hash_returns_false(bad_hash):
 
 
 def test_verify_unknown_algorithm_returns_false():
-    # well-formed 3-part hash but unsupported algorithm prefix
-    h = security.get_password_hash("pw")
-    _, salt_hex, digest_hex = h.split("$")
-    tampered = f"bcrypt${salt_hex}${digest_hex}"
-    assert security.verify_password("pw", tampered) is False
+    # hash com prefixo desconhecido (nao $2x$, nao bcrypt_pbkdf2$, nao pbkdf2_sha256$) -> False
+    unknown = "sha512$somesalt$somedigest"
+    assert security.verify_password("pw", unknown) is False
 
 
 def test_verify_non_hex_salt_returns_false():
@@ -91,20 +83,24 @@ def test_verify_non_hex_salt_returns_false():
 
 def test_verify_tampered_digest_returns_false():
     h = security.get_password_hash("pw")
-    algorithm, salt_hex, digest_hex = h.split("$")
-    # flip the last hex char of the digest
-    flipped = "0" if digest_hex[-1] != "0" else "1"
-    tampered = f"{algorithm}${salt_hex}${digest_hex[:-1]}{flipped}"
+    # Corrompe um caractere no meio do hash bcrypt (fora do prefixo $2b$NN$)
+    mid = len(h) // 2
+    flipped = "A" if h[mid] != "A" else "B"
+    tampered = h[:mid] + flipped + h[mid + 1:]
+    # verify_password deve retornar False (sem levantar excecao)
     assert security.verify_password("pw", tampered) is False
 
 
-def test_verify_extra_dollar_in_digest_is_tolerated_by_split_maxsplit():
-    # split('$', 2) means the third segment may contain extra '$';
-    # such a digest is not valid hex so verification must be False, not raise.
-    h = security.get_password_hash("pw")
-    algorithm, salt_hex, digest_hex = h.split("$")
-    weird = f"{algorithm}${salt_hex}${digest_hex}$extra"
-    assert security.verify_password("pw", weird) is False
+def test_verify_garbage_hash_returns_false_without_raising():
+    # Hash sintaticamente invalido (garbage string) -> False, sem excecao
+    garbage_hashes = [
+        "totally-not-a-hash",
+        "$2b$",                    # truncado no meio do prefixo bcrypt
+        "$2b$12$",                 # sem salt+digest
+        "!!invalid!!",
+    ]
+    for garbage in garbage_hashes:
+        assert security.verify_password("pw", garbage) is False, f"Deveria ser False para: {garbage!r}"
 
 
 # --------------------------------------------------------------------------

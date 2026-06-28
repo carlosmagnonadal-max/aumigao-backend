@@ -4,8 +4,46 @@ interno fica fora por ora."""
 from app.main import app
 
 
+def _collect_paths(route_list, result: set[str]) -> None:
+    """Percorre a lista de rotas recursivamente, compondo o path completo.
+
+    FastAPI >= 0.136 usa _IncludedRouter (lazy wrapper) ao inves de achatar as
+    rotas diretamente em app.routes. Dois caminhos:
+
+    1. _IncludedRouter com effective_route_contexts() — retorna contextos com o
+       path ja composto (incluindo prefixos de roteadores pai). Usado para capturar
+       rotas aninhadas como /api/v1/payments/quote.
+    2. APIRoute normal (ou rota sem original_router) — usa route.path diretamente.
+    """
+    for route in route_list:
+        # FastAPI >= 0.136: _IncludedRouter tem effective_route_contexts()
+        # que retorna os paths COMPOSTOS (com prefixo do router pai incluido).
+        erc = getattr(route, "effective_route_contexts", None)
+        if erc is not None and callable(erc):
+            try:
+                for ctx in erc():
+                    ctx_path = getattr(ctx, "path", None)
+                    if ctx_path:
+                        result.add(ctx_path)
+            except Exception:
+                pass
+            continue
+
+        # Rota simples (APIRoute, Route): usa path direto.
+        path = getattr(route, "path", None)
+        if path:
+            result.add(path)
+
+        # Fallback: recursa em original_router.routes se existir.
+        orig = getattr(route, "original_router", None)
+        if orig is not None:
+            _collect_paths(getattr(orig, "routes", []), result)
+
+
 def _paths() -> set[str]:
-    return {getattr(r, "path", "") for r in app.routes}
+    result: set[str] = set()
+    _collect_paths(app.routes, result)
+    return result
 
 
 def test_v1_business_routes_mounted():

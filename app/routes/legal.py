@@ -15,7 +15,7 @@ from app.models.user import User
 router = APIRouter(prefix="/legal", tags=["legal"])
 api_router = APIRouter(prefix="/api/legal", tags=["legal"])
 
-LEGAL_VERSION = "beta-2026-05-21"
+LEGAL_VERSION = "2026-06-29"
 
 LEGAL_DOCUMENTS_BY_ROLE = {
     "tutor": [
@@ -55,7 +55,20 @@ LEGAL_DOCUMENTS_BY_ROLE = {
                 "legais do consumidor. Em emergências envolvendo o pet, o Tutor autoriza contato por canais informados, medidas "
                 "razoáveis de contenção, deslocamento para local seguro, acionamento de suporte e orientação para atendimento "
                 "veterinário quando necessário. O beta fechado pode ter disponibilidade limitada, análise manual e ajustes "
-                "operacionais para segurança e melhoria do serviço."
+                "operacionais para segurança e melhoria do serviço.\n\n"
+                "PLANOS DE ASSINATURA E CRÉDITOS. Ao assinar um plano mensal, o Tutor adquire créditos de passeio para uso "
+                "no ciclo, cada crédito equivalente a um passeio da modalidade contratada. Os créditos são uma facilidade de "
+                "uso do próprio serviço da plataforma: não são dinheiro, não rendem juros, só valem para passeios na "
+                "plataforma, não são transferíveis a terceiros e não são resgatáveis nem conversíveis em dinheiro. "
+                "IMPORTANTE — VALIDADE: os créditos são mensais e vinculados ao ciclo; os créditos NÃO UTILIZADOS EXPIRAM ao "
+                "final do ciclo e NÃO se acumulam para o mês seguinte, sendo concedidos novos créditos a cada renovação. O "
+                "plano renova automaticamente até o cancelamento, que pode ser feito a qualquer momento pelo app, interrompe "
+                "as cobranças futuras e produz efeito ao fim do ciclo já pago (no qual o Tutor mantém os créditos "
+                "remanescentes), sem multa. O Tutor pode desistir em até 7 dias da cobrança, com reembolso integral se não "
+                "houver uso de créditos no período (CDC art. 49); saldo pago e não utilizado é restituído ou convertido, "
+                "nunca simplesmente retido (CDC arts. 39 e 51). Passeio coberto por crédito que não se realize por falha do "
+                "passeador ou da plataforma tem o crédito restituído. Alterações de preço ou de quantidade são avisadas com "
+                "antecedência e valem apenas para ciclos futuros."
             ),
         },
         {
@@ -173,7 +186,15 @@ LEGAL_DOCUMENTS_BY_ROLE = {
                 "ao pet, fraude, assédio, exposição indevida de dados, cobrança externa ou descumprimento destes termos podem gerar medidas "
                 "imediatas de proteção da operação. Gorjetas recebidas pelo fluxo oficial são voluntárias e podem depender de regras de "
                 "processamento, antifraude, repasse e obrigações legais. O beta fechado pode ter análise manual, critérios de elegibilidade, "
-                "limites de agenda, testes de produto e ajustes operacionais para segurança, qualidade e estabilidade."
+                "limites de agenda, testes de produto e ajustes operacionais para segurança, qualidade e estabilidade.\n\n"
+                "AUTONOMIA REFORÇADA. O Passeador NÃO é penalizado por recusar solicitações nem por ficar indisponível — "
+                "recusa e indisponibilidade não reduzem reputação nem condicionam o acesso a novas solicitações. Não há "
+                "jornada, meta obrigatória ou tempo mínimo de conexão. A remuneração é por passeio efetivamente realizado, e "
+                "não por hora ou jornada. Recomenda-se atuar como Microempreendedor Individual (MEI) ou outro regime regular "
+                "de prestador autônomo. A exigência de que o passeio seja executado pela própria pessoa verificada decorre de "
+                "segurança animal e prevenção a fraude (KYC), não configurando subordinação nem vínculo empregatício. "
+                "Conforme a operação, o Passeador é pago pela empresa parceira (modelo tenant) ou pela própria plataforma na "
+                "qualidade de prestador/fornecedor, por passeio medido — sem que a plataforma custodie valores do Tutor."
             ),
         },
         {

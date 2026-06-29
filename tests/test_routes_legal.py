@@ -195,3 +195,29 @@ def test_accept_for_one_role_does_not_satisfy_other_role():
     other = client.get("/legal/acceptance", params={"role": "passeador"}).json()
     assert other["accepted"] is False
     assert other["acceptance"] is None
+
+
+# ----- Conteudo material que DEVE chegar ao usuario no aceite -----
+def _terms_content(client, role: str) -> str:
+    body = client.get("/legal/documents", params={"role": role}).json()
+    terms = next(d for d in body["documents"] if d["type"] == "terms")
+    return terms["content"].lower()
+
+
+def test_tutor_terms_disclose_credit_expiration():
+    # #8: a expiracao de credito (breakage) so e oponivel se divulgada no aceite (CDC art. 54).
+    client, _, _ = build()
+    content = _terms_content(client, "tutor")
+    assert "crédito" in content
+    assert "expiram" in content
+    assert "art. 49" in content  # direito de arrependimento
+    assert "não são" in content and "dinheiro" in content  # nao conversivel em dinheiro
+
+
+def test_passeador_terms_reinforce_autonomy():
+    # #5: reforco anti-subordinacao precisa estar no texto in-app do aceite.
+    client, _, _ = build(role="passeador")
+    content = _terms_content(client, "passeador")
+    assert "não é penalizado por recusar" in content
+    assert "mei" in content  # microempreendedor individual
+    assert "por passeio efetivamente realizado" in content

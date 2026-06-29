@@ -9,6 +9,12 @@ consumo/concessão de créditos. Registra os eventos contábeis do ciclo para:
 Cada chamada é best-effort (try/except no caller) — falha no ledger NUNCA pode
 quebrar o fluxo de pagamento/crédito/passeio.
 
+Idempotência:
+  - liability_created: 1 por (subscription_id, cycle_reference) — cada renovação
+    mensal é uma nova venda de créditos = novo passivo de contrato (CPC 47).
+  - revenue_recognized: 1 por (subscription_id, walk_id).
+  - breakage_recognized: 1 por subscription_id.
+
 TODO: O tratamento contábil EXATO (momento de reconhecimento de PIS/COFINS,
 proporcionalidade do breakage, base de cálculo do passivo) PRECISA DE VALIDAÇÃO
 DO CONTADOR antes de ser usado como base de escrituração fiscal. Esta tabela é
@@ -37,7 +43,12 @@ class CreditLedgerEntry(Base):
     """Registro imutável de um evento contábil do ciclo de crédito.
 
     Uma linha por evento (liability_created | revenue_recognized | breakage_recognized).
-    Idempotência garantida por unique constraint em (subscription_id, event_type, walk_id).
+
+    Idempotência:
+      - liability_created: 1 por (subscription_id, cycle_reference). Cada ciclo
+        mensal gera um novo passivo — renovação = nova venda de créditos (CPC 47 §106).
+      - revenue_recognized: 1 por (subscription_id, walk_id).
+      - breakage_recognized: 1 por subscription_id.
     """
 
     __tablename__ = "credit_ledger_entries"
@@ -51,10 +62,18 @@ class CreditLedgerEntry(Base):
     # Tipo do evento (liability_created | revenue_recognized | breakage_recognized)
     event_type = Column(String, nullable=False, index=True)
 
+    # Referência de ciclo: data de início do período (YYYY-MM-DD).
+    # Obrigatório em liability_created (chave de idempotência por ciclo).
+    # Informativo em revenue_recognized (qual ciclo gerou a receita).
+    # Nulo em breakage_recognized.
+    cycle_reference = Column(String, nullable=True, index=True)
+
     # Quantidade de créditos envolvidos neste evento
     credits_count = Column(Integer, nullable=False, default=0)
 
-    # Valor unitário do crédito (price / walks_per_cycle no momento da assinatura)
+    # Valor unitário do crédito: subscription.price / walks_per_cycle (snapshot).
+    # P3 (CPC 47 §106): base SEMPRE bruta (preço cheio do plano), sem dedução de
+    # comissão ou taxa de plataforma. A comissão é custo operacional separado.
     unit_value = Column(Float, nullable=False, default=0.0)
 
     # Valor total do evento (credits_count × unit_value)

@@ -429,6 +429,16 @@ def reset_credits_if_renewal(db: Session, subscription: TutorSubscription) -> bo
     locked.current_period_end = _period_end(now, interval)
     locked.updated_at = now
     db.add(locked)
+    # P1 (CPC 47): cada renovação = nova venda de créditos = novo passivo de contrato.
+    # current_period_start já foi avançado acima — _cycle_reference lerá o novo período.
+    # NÃO commita. Best-effort: falha no ledger nunca bloqueia a renovação.
+    try:
+        from app.services.credit_ledger_service import record_liability_safe
+        record_liability_safe(db, locked, payment_id=None)
+    except Exception:
+        logger.exception(
+            "reset_credits_if_renewal: falha best-effort ledger subscription_id=%s", locked.id
+        )
     return True
 
 

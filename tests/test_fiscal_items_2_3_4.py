@@ -621,3 +621,178 @@ class TestItem3SweepEndpoint:
         assert r2.status_code == 200
         body2 = r2.json()
         assert body2.get("recognized") == 0  # segunda rodada não duplica
+
+
+# ─── P1 + P3: ledger por ciclo de renovação ──────────────────────────────────
+
+class TestP1CycleLiability:
+    """P1: cada renovação mensal registra um NOVO passivo com cycle_reference distinto."""
+
+    def test_renewal_registers_second_liability(self):
+        """Ciclo 1 (subscribe) → 1 liability; após reset_credits_if_renewal → 2 liabilities com cycle_reference distintos.
+
+        Estratégia: retro-data current_period_start do ciclo 1 para 30 dias atrás
+        (simulando que a assinatura foi criada no mês passado). reset_credits_if_renewal
+        avança current_period_start para hoje — datas distintas → cycle_reference distintos.
+        """
+        from app.services.recurring_plan_service import reset_credits_if_renewal
+
+        db = _make_db()
+        plan = _make_plan(db, walks_per_cycle=4, price=80.0)
+        sub = subscribe(db, _tenant(db), TUTOR_ID, plan.id)
+        db.commit()
+
+        # Verifica que 1 liability já existe (do subscribe)
+        entries_before = db.query(CreditLedgerEntry).filter(
+            CreditLedgerEntry.subscription_id == sub.id,
+            CreditLedgerEntry.event_type == LEDGER_LIABILITY_CREATED,
+        ).all()
+        assert len(entries_before) == 1
+
+        # Retro-data o cycle 1 para 30 dias atrás e atualiza o cycle_reference no
+        # ledger para refletir isso — simula que a assinatura foi criada mês passado.
+        past_start = datetime.utcnow() - timedelta(days=30)
+        sub.current_period_start = past_start
+        sub.current_period_end = datetime.utcnow() - timedelta(seconds=1)
+        db.add(sub)
+        existing_entry = entries_before[0]
+        existing_entry.cycle_reference = past_start.date().isoformat()
+        db.add(existing_entry)
+        db.commit()
+
+        cycle_ref_1 = existing_entry.cycle_reference
+
+        # reset_credits_if_renewal avança current_period_start para agora (hoje)
+        reset = reset_credits_if_renewal(db, sub)
+        db.commit()
+        assert reset is True
+
+        entries_after = db.query(CreditLedgerEntry).filter(
+            CreditLedgerEntry.subscription_id == sub.id,
+            CreditLedgerEntry.event_type == LEDGER_LIABILITY_CREATED,
+        ).order_by(CreditLedgerEntry.created_at).all()
+        assert len(entries_after) == 2, f"Esperado 2 liabilities, got {len(entries_after)}"
+        cycle_refs = [e.cycle_reference for e in entries_after]
+        assert cycle_refs[0] != cycle_refs[1], "cycle_reference deve ser distinto entre ciclos"
+        # O 1º cycle_reference corresponde ao início do ciclo passado
+        assert cycle_refs[0] == cycle_ref_1
+
+    def test_cycle_idempotency_same_cycle(self):
+        """record_liability_safe 2× no mesmo ciclo (mesma current_period_start) → apenas 1 linha."""
+        db = _make_db()
+        sub = _make_subscription(db, walks_per_cycle=4, price=80.0)
+
+        record_liability_safe(db, sub, payment_id=None)
+        db.commit()
+        record_liability_safe(db, sub, payment_id=None)
+        db.commit()
+
+        count = db.query(CreditLedgerEntry).filter(
+            CreditLedgerEntry.subscription_id == sub.id,
+            CreditLedgerEntry.event_type == LEDGER_LIABILITY_CREATED,
+        ).count()
+        assert count == 1
+
+    def test_two_distinct_cycles_two_liabilities(self):
+        """Avançar current_period_start manualmente e chamar record_liability_safe → 2 linhas."""
+        db = _make_db()
+        sub = _make_subscription(db, walks_per_cycle=4, price=80.0)
+
+        # Ciclo 1
+        record_liability_safe(db, sub, payment_id=None)
+        db.commit()
+
+        # Simula avanço do período (como reset_credits_if_renewal faria)
+        sub.current_period_start = datetime.utcnow() + timedelta(days=30)
+        db.add(sub); db.commit()
+
+        # Ciclo 2
+        record_liability_safe(db, sub, payment_id=None)
+        db.commit()
+
+        count = db.query(CreditLedgerEntry).filter(
+            CreditLedgerEntry.subscription_id == sub.id,
+            CreditLedgerEntry.event_type == LEDGER_LIABILITY_CREATED,
+        ).count()
+        assert count == 2, f"Esperado 2 liabilities (2 ciclos), got {count}"
+
+    def test_best_effort_does_not_poison_session(self):
+        """Após registrar liability e commit, o commit do caller continua funcionando."""
+        db = _make_db()
+        sub = _make_subscription(db, walks_per_cycle=4, price=80.0)
+
+        record_liability_safe(db, sub, payment_id=None)
+        db.commit()
+
+        # A sessão deve seguir funcional — inserir outro objeto sem erro
+        sub.credits_remaining = 2
+        db.add(sub)
+        db.commit()  # não deve levantar
+
+        db.refresh(sub)
+        assert sub.credits_remaining == 2
+
+
+class TestP3GrossBase:
+    """P3: unit_value e total_value usam preço BRUTO do plano, sem dedução de comissão."""
+
+    def test_unit_value_is_gross_price_divided_by_walks(self):
+        """unit_value = price / walks_per_cycle (bruto, sem qualquer dedução)."""
+        db = _make_db()
+        # price=100, 5 passeios → unit_value = 20.0
+        sub = _make_subscription(db, walks_per_cycle=5, price=100.0)
+
+        record_liability_safe(db, sub, payment_id=None)
+        db.commit()
+
+        entry = db.query(CreditLedgerEntry).filter(
+            CreditLedgerEntry.subscription_id == sub.id,
+            CreditLedgerEntry.event_type == LEDGER_LIABILITY_CREATED,
+        ).first()
+        assert entry is not None
+        expected_unit = round(100.0 / 5, 4)
+        expected_total = round(100.0, 2)
+        assert abs(float(entry.unit_value) - expected_unit) < 0.0001, (
+            f"unit_value={entry.unit_value} != {expected_unit} (deve ser bruto)"
+        )
+        assert abs(float(entry.total_value) - expected_total) < 0.01, (
+            f"total_value={entry.total_value} != {expected_total} (deve ser bruto)"
+        )
+
+    def test_total_value_equals_plan_price(self):
+        """total_value (credits_count × unit_value) deve fechar com o preço do plano."""
+        db = _make_db()
+        price = 129.90
+        walks = 6
+        sub = _make_subscription(db, walks_per_cycle=walks, price=price)
+
+        record_liability_safe(db, sub, payment_id=None)
+        db.commit()
+
+        entry = db.query(CreditLedgerEntry).filter(
+            CreditLedgerEntry.subscription_id == sub.id,
+            CreditLedgerEntry.event_type == LEDGER_LIABILITY_CREATED,
+        ).first()
+        assert entry is not None
+        unit = round(price / walks, 4)
+        total_reconstructed = round(walks * unit, 2)
+        assert abs(float(entry.total_value) - total_reconstructed) < 0.01
+
+    def test_cycle_reference_set_on_liability(self):
+        """cycle_reference é preenchido e tem formato YYYY-MM-DD."""
+        import re
+        db = _make_db()
+        sub = _make_subscription(db, walks_per_cycle=4, price=80.0)
+
+        record_liability_safe(db, sub, payment_id=None)
+        db.commit()
+
+        entry = db.query(CreditLedgerEntry).filter(
+            CreditLedgerEntry.subscription_id == sub.id,
+            CreditLedgerEntry.event_type == LEDGER_LIABILITY_CREATED,
+        ).first()
+        assert entry is not None
+        assert entry.cycle_reference is not None
+        assert re.match(r"^\d{4}-\d{2}-\d{2}$", entry.cycle_reference), (
+            f"cycle_reference '{entry.cycle_reference}' não é YYYY-MM-DD"
+        )

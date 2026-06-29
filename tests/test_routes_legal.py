@@ -221,3 +221,48 @@ def test_passeador_terms_reinforce_autonomy():
     assert "não é penalizado por recusar" in content
     assert "mei" in content  # microempreendedor individual
     assert "por passeio efetivamente realizado" in content
+
+
+# ----- Aceite granular (CDC art. 54 §4) -----
+TUTOR_REQUIRED_TYPES = ["terms", "privacy", "cancellation", "lgpd-consent", "geolocation-consent"]
+
+
+def test_granular_accept_all_types_returns_200():
+    """Granular com TODOS os tipos requeridos deve retornar 200 e persistir aceite."""
+    client, _, _ = build(role="tutor")
+    r = client.post(
+        "/legal/acceptance",
+        json={"role": "tutor", "accepted_types": TUTOR_REQUIRED_TYPES},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["accepted"] is True
+    assert body["role"] == "tutor"
+    assert body["acceptance"] is not None
+
+    # Status deve refletir aceite registrado
+    status = client.get("/legal/acceptance").json()
+    assert status["accepted"] is True
+
+
+def test_granular_accept_missing_cancellation_returns_400():
+    """Granular SEM 'cancellation' (creditos/reembolso — CDC art. 54 §4) deve retornar 400."""
+    client, _, _ = build(role="tutor")
+    incomplete = [t for t in TUTOR_REQUIRED_TYPES if t != "cancellation"]
+    r = client.post(
+        "/legal/acceptance",
+        json={"role": "tutor", "accepted_types": incomplete},
+    )
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"].lower()
+    assert "cancellation" in detail
+    assert "obrigatorio" in detail or "obrigatório" in detail
+
+
+def test_legacy_accepted_true_still_returns_200():
+    """Caminho legado {accepted: true} sem accepted_types continua funcionando (backward-compat)."""
+    client, _, _ = build(role="tutor")
+    r = client.post("/legal/acceptance", json={"role": "tutor", "accepted": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["accepted"] is True

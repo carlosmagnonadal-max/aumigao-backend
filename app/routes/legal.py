@@ -286,6 +286,9 @@ LEGAL_DOCUMENTS_BY_ROLE = {
 class LegalAcceptanceCreate(BaseModel):
     role: str = Field(default="tutor")
     accepted: bool = Field(default=False)
+    # Granular acceptance (CDC art. 54 §4): list of document types accepted.
+    # When provided, `accepted` is ignored and each type is validated individually.
+    accepted_types: list[str] | None = Field(default=None)
 
 
 def _normalize_role(role: str | None, user: User | None = None) -> str:
@@ -392,12 +395,29 @@ def accept_documents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not payload.accepted:
-        raise HTTPException(status_code=400, detail="Aceite explicito obrigatorio para continuar.")
-
     # O aceite e do usuario logado: o role DELE e a fonte de verdade (payload.role
     # tem default "tutor", entao nao serve para distinguir passeador de tutor).
     normalized_role = _normalize_role(getattr(current_user, "role", "") or payload.role)
+
+    if payload.accepted_types is not None:
+        # --- Granular path (CDC art. 54 §4) ---
+        required_types = {doc["type"] for doc in _documents_for_role(normalized_role)}
+        provided_types = set(payload.accepted_types)
+        missing = required_types - provided_types
+        if missing:
+            missing_sorted = sorted(missing)
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Aceite granular incompleto. Tipos obrigatorios ausentes: {', '.join(missing_sorted)}. "
+                    "Todos os documentos devem ser aceitos individualmente para continuar."
+                ),
+            )
+    else:
+        # --- Legacy path: single accepted flag ---
+        if not payload.accepted:
+            raise HTTPException(status_code=400, detail="Aceite explicito obrigatorio para continuar.")
+
     versions = _versions()
     acceptance = LegalAcceptance(
         id=str(uuid.uuid4()),

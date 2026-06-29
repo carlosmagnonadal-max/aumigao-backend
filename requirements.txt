@@ -16,8 +16,9 @@ idna==3.18
 passlib==1.7.4
 psycopg2-binary==2.9.12
 pyasn1==0.6.3
-pydantic==2.13.3
-pydantic_core==2.46.3
+pydantic==2.13.4
+# pydantic_core é transitivo do pydantic (o pin exato vem do próprio pydantic);
+# não pinar aqui evita o conflito recorrente do Dependabot (par pydantic×core).
 cryptography==49.0.0
 PyJWT[crypto]==2.13.0
 python-dotenv==1.2.2

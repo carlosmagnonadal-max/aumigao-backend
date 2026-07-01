@@ -384,6 +384,14 @@ def _ensure_internal_walk_payment(walk: Walk, db: Session):
     else:
         _period = datetime.now(timezone.utc).strftime("%Y-%m")
     accrue_commission_for_walk(db, walk, split, is_network=_is_network, period=_period)
+    # Growth loop cunha 3: reconta passeios do indicado e dispara conversao+payout do referral.
+    try:
+        from app.services.walker_referrals import refresh_referred_walk_count
+        _ref_walker_id = walk.walker_id or getattr(walk, "assigned_walker_id", None)
+        if _ref_walker_id:
+            refresh_referred_walk_count(db, _ref_walker_id)
+    except Exception:
+        _logger.exception("falha ao atualizar referral do walker no fluxo de conclusao walk_id=%s", getattr(walk, "id", "?"))
     # Item 2 (fiscal): provisão de comissão best-effort para passeios de assinatura.
     # Passeio avulso já recebe provisão via webhook Asaas (_provision_safe em payments.py).
     # Passeio de assinatura (provider=subscription_walk) nunca passa pelo webhook,

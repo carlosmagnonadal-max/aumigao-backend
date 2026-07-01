@@ -34,6 +34,8 @@ CRITICAL_NOTIFICATION_TYPES = {
     "walk_live_share",
     # Growth loop cunha 3: bônus de indicação liberado para os dois lados.
     "reward_eligible",
+    # Fase 3 Perfil Vivo: lembretes determinísticos de vacina/aniversário/inatividade.
+    "pet_reminder",
 }
 CRITICAL_WALK_STATUS_ACTIONS = {"walker_accepted", "ride_in_progress"}
 

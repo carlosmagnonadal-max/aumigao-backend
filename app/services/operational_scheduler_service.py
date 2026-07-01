@@ -377,6 +377,13 @@ def _task_purge_location_pings(db: Session) -> int:
     return int(deleted or 0)
 
 
+def _task_pet_reminder_alerts(db: Session) -> int:
+    """Delega para pet_reminder_service (import lazy para evitar ciclo).
+    Gated por PET_ALERTS_ENABLED; guard diário de 23h interno ao serviço."""
+    from app.services.pet_reminder_service import task_pet_reminder_alerts
+    return task_pet_reminder_alerts(db)
+
+
 def _run_operational_scheduler_cycle_locked(session_factory) -> dict:
     SCHEDULER_STATE["scheduler_running"] = True
     SCHEDULER_STATE["last_scheduler_cycle_at"] = _utcnow().isoformat()
@@ -389,6 +396,9 @@ def _run_operational_scheduler_cycle_locked(session_factory) -> dict:
         "stuck_completions": _task_stuck_completions,
         "push_retry": _task_push_retry,
         "purge_location_pings": _task_purge_location_pings,
+        # Fase 3 Perfil Vivo: lembretes determinísticos (vacina/aniversário/inatividade).
+        # Gated por PET_ALERTS_ENABLED (default off). Guard diário de 23h interno.
+        "pet_reminder_alerts": _task_pet_reminder_alerts,
     }
     results = {name: _run_task(session_factory, name, task) for name, task in tasks.items()}
     SCHEDULER_STATE["tasks_executed"] = results

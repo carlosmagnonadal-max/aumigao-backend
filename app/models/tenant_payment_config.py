@@ -11,6 +11,7 @@ Pricing v2 (2026-06-24):
   Take-rate de REDE:  Pro 18% / Enterprise 10%.
   Controlado por PRICING_V2_ENABLED (default False → legado ativo, sem regressão).
 """
+import logging
 import os
 from datetime import datetime
 from uuid import uuid4
@@ -20,8 +21,15 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
-# Fallback legado de comissão quando o plano do tenant é desconhecido.
-DEFAULT_COMMISSION_PERCENT = 20.0
+logger = logging.getLogger(__name__)
+
+# Default da COLUNA commission_percent para novos registros SEM valor explícito.
+# Antes era 20.0 — legado MORTO da migração 3→2 planos (nenhum plano vigente cobra
+# 20%). Neutralizado para 10.0, o piso sensato do plano Pro (take-rate próprio).
+# Todo caminho de criação real de TenantPaymentConfig passa `commission_percent`
+# derivado do plano (commission_default_for_plan); este default só cobre linhas
+# criadas sem plano resolvido — usar o piso Pro evita cobrar 20% fantasma.
+DEFAULT_COMMISSION_PERCENT = 10.0
 
 # ── Pricing v1 (legado) ─────────────────────────────────────────────────────
 # 3 planos: starter 12% / business 8% / enterprise 5%.
@@ -76,14 +84,52 @@ def canonical_plan_v2(plan: str | None) -> str:
 def commission_default_for_plan(plan: str | None) -> float:
     """Take-rate PRÓPRIO por plano.
 
-    PRICING_V2_ENABLED=False (default): legado 12/8/5 + fallback 10.
+    PRICING_V2_ENABLED=False (default): legado 12/8/5.
     PRICING_V2_ENABLED=True:            v2 Pro 10% / Enterprise 5%.
+
+    Fallback (money-fix P1): antes, QUALQUER plano fora da tabela retornava 10%
+    silencioso — inclusive um plano com nome desconhecido (typo, plano renomeado,
+    dado corrompido), o que cobra a esmo. Decisão explícita agora:
+
+      - plano AUSENTE (None/"" — tenant sem plano definido): usa o piso do plano
+        padrão (Pro 10% v2 / fallback legado 10%). É o caso benigno de "ainda não
+        configurado" e manter uma comissão default é aceitável.
+      - plano PRESENTE mas DESCONHECIDO (string não vazia fora da tabela): NÃO
+        cobrar às cegas. Loga ERRO e retorna 0.0 (não cobrar sem config reconhecida).
+        O caller de billing deve tratar 0% como "sem comissão" e a configuração
+        correta deve ser feita explicitamente no admin.
     """
-    normalized = (plan or "").strip().lower()
+    raw = (plan or "").strip()
+    normalized = raw.lower()
+    plan_absent = raw == ""
+
     if _PRICING_V2_ENABLED:
+        table = PLAN_COMMISSION_DEFAULTS_V2
         canon = canonical_plan_v2(normalized)
-        return PLAN_COMMISSION_DEFAULTS_V2.get(canon, PLAN_COMMISSION_FALLBACK_V2)
-    return PLAN_COMMISSION_DEFAULTS.get(normalized, PLAN_COMMISSION_FALLBACK)
+        # canonical_plan_v2 mapeia desconhecido → 'pro'; então detecte "desconhecido"
+        # ANTES: só é conhecido se estava no mapa legado→canônico.
+        if plan_absent:
+            return table.get(TENANT_PLAN_PRO, PLAN_COMMISSION_FALLBACK_V2)
+        if normalized not in _LEGACY_PLAN_MAP:
+            logger.error(
+                "commission_default_for_plan: plano DESCONHECIDO %r (v2) — retornando 0%% "
+                "(nao cobrar sem config reconhecida). Configure a comissao no admin.",
+                raw,
+            )
+            return 0.0
+        return table.get(canon, PLAN_COMMISSION_FALLBACK_V2)
+
+    # v1 (legado)
+    if plan_absent:
+        return PLAN_COMMISSION_FALLBACK
+    if normalized not in PLAN_COMMISSION_DEFAULTS:
+        logger.error(
+            "commission_default_for_plan: plano DESCONHECIDO %r (v1) — retornando 0%% "
+            "(nao cobrar sem config reconhecida). Configure a comissao no admin.",
+            raw,
+        )
+        return 0.0
+    return PLAN_COMMISSION_DEFAULTS[normalized]
 
 
 def network_commission_default_for_plan(plan: str | None) -> float:

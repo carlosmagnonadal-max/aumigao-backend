@@ -85,8 +85,11 @@ def redeem_coupon(
     amount = 0.0
     if payload.walk_id:
         _walk = db.get(Walk, payload.walk_id)
-        if _walk is not None:
-            amount = float(getattr(_walk, "price", 0) or 0)
+        if _walk is None:
+            raise HTTPException(status_code=404, detail="Passeio não encontrado.")
+        if _walk.tenant_id != tenant.id or _walk.tutor_id != user.id:
+            raise HTTPException(status_code=403, detail="Passeio não pertence a este usuário.")
+        amount = float(getattr(_walk, "price", 0) or 0)
     redemption = svc.redeem(db, tenant, payload.code, user.id, amount, walk_id=payload.walk_id)
     return {"ok": True, "redemption_id": redemption.id, "status": "redeemed"}
 

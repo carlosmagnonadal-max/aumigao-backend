@@ -53,3 +53,18 @@ def test_redeem_endpoint_without_walk():
     resp = client.post("/api/coupons/redeem", json={"code": "TREF-R1-RED"})
     assert resp.status_code == 200, resp.text
     assert resp.json().get("ok") is True
+
+
+def test_redeem_rejects_walk_from_other_tenant():
+    client, db = _client()
+    # cria um passeio de outro tenant/usuário
+    from app.models.tenant import Tenant as _T
+    from app.models.user import User as _U
+    db.add(_T(id="t2", name="T2", slug="t2", status="active", plan="business"))
+    db.add(_U(id="u9", email="u9@x.com", password_hash="x", role="tutor", tenant_id="t2"))
+    db.add(Walk(id="w2", tenant_id="t2", tutor_id="u9", price=50.0, operational_status="agendado",
+                pet_id="p1", scheduled_date="2026-07-01", duration_minutes=30))
+    db.commit()
+    resp = client.post("/api/coupons/redeem", json={"code": "TREF-R1-RED", "walk_id": "w2"})
+    assert resp.status_code == 403
+    assert db.get(Walk, "w2").is_referral_gift is False   # não marcou o passeio alheio

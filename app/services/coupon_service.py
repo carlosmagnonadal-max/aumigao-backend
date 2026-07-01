@@ -107,7 +107,7 @@ def redeem(db: Session, tenant: Tenant, code: str, user_id: str, amount: float, 
     if walk_id and getattr(coupon, "is_referral_gift", False):
         from app.models.walk import Walk
         _walk = db.get(Walk, walk_id)
-        if _walk is not None:
+        if _walk is not None and _walk.tenant_id == tenant.id:   # guard cross-tenant
             _walk.is_referral_gift = True
     db.commit()
     db.refresh(redemption)

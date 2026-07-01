@@ -263,6 +263,11 @@ def ensure_pet_schema():
             "medications": "TEXT DEFAULT ''",
             "restrictions": "TEXT DEFAULT ''",
             "created_at": _sql_type("datetime"),
+            "birth_date": "DATE",
+            "chip_number": "VARCHAR",
+            "vet_name": "VARCHAR",
+            "vet_phone": "VARCHAR",
+            "emergency_contact": "VARCHAR",
         },
     )
     inspector = inspect(engine)

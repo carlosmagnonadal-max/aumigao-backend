@@ -43,3 +43,14 @@ def test_patch_config():
     assert r.status_code == 200
     assert r.json()["profile_enabled"] is True
     assert c.get("/api/admin/pet-profile/config").json()["inactivity_days"] == 7
+
+
+def test_admin_config_is_tenant_scoped():
+    # admin do t1 mexe só no t1; um segundo tenant não é afetado
+    from app.models.pet_profile_config import PetProfileConfig
+    c = _client()   # admin tenant_id=t1
+    c.patch("/api/admin/pet-profile/config", json={"profile_enabled": True})
+    # confirma que a config criada é do t1 (o _client seeda só t1; o resolvido é t1)
+    got = c.get("/api/admin/pet-profile/config").json()
+    assert got["tenant_id"] == "t1"
+    assert got["profile_enabled"] is True

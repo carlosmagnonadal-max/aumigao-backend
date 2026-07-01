@@ -75,3 +75,20 @@ def test_ownership_other_users_pet_404(monkeypatch):
     db.add(User(id="u2", email="u2@x.com", password_hash="x", role="tutor", tenant_id="t1")); db.commit()
     c = _client(db, db.get(User, "u2"), env=True, monkeypatch=monkeypatch)
     assert c.get("/api/pets/p1/timeline").status_code == 404
+
+
+def test_delete_rejects_non_tutor_event(monkeypatch):
+    db = _ctx(active=True)
+    from app.models.pet_timeline_event import PetTimelineEvent
+    from datetime import datetime as _dt
+    db.add(PetTimelineEvent(id="ev1", pet_id="p1", tenant_id="t1", event_type="walk_observation",
+                            title="obs", occurred_at=_dt(2026,7,1), source="walker"))
+    db.commit()
+    c = _client(db, db.get(User, "u1"), env=True, monkeypatch=monkeypatch)
+    assert c.delete("/api/pets/p1/timeline/ev1").status_code == 403
+
+
+def test_bad_cursor_returns_400(monkeypatch):
+    db = _ctx(active=True)
+    c = _client(db, db.get(User, "u1"), env=True, monkeypatch=monkeypatch)
+    assert c.get("/api/pets/p1/timeline", params={"cursor": "lixo"}).status_code == 400

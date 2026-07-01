@@ -95,7 +95,11 @@ def get_timeline(pet_id: str, cursor: str | None = Query(None), limit: int = Que
     _get_owned_pet(db, pet_id, user)
     q = db.query(PetTimelineEvent).filter(PetTimelineEvent.pet_id == pet_id)
     if cursor:
-        q = q.filter(PetTimelineEvent.occurred_at < datetime.fromisoformat(cursor))
+        try:
+            _cur = datetime.fromisoformat(cursor)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="cursor inválido")
+        q = q.filter(PetTimelineEvent.occurred_at < _cur)
     rows = q.order_by(PetTimelineEvent.occurred_at.desc()).limit(limit + 1).all()
     events = rows[:limit]
     next_cursor = events[-1].occurred_at.isoformat() if len(rows) > limit and events else None

@@ -85,9 +85,10 @@ def _require_gates(db: Session, user: User) -> Tenant:
     return tenant
 
 
-def _calculate_age(birth_date) -> Optional[str]:
-    """Retorna idade legível (ex: '2 anos', '7 meses') a partir de birth_date (date).
-    Nunca expõe a data crua.
+def _calculate_age(birth_date) -> Optional[dict]:
+    """Retorna idade calculada como objeto {"years": int, "months": int} a partir
+    de birth_date (date). Nunca expõe a data crua. None se sem birth_date.
+    Contrato do site (review P1): objeto estruturado, não string.
     """
     if birth_date is None:
         return None
@@ -96,14 +97,11 @@ def _calculate_age(birth_date) -> Optional[str]:
         bd = birth_date if hasattr(birth_date, "year") else datetime.fromisoformat(str(birth_date)).date()
     except (ValueError, TypeError):
         return None
-    years = today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
-    if years >= 1:
-        return f"{years} {'ano' if years == 1 else 'anos'}"
-    months = (today.year - bd.year) * 12 + (today.month - bd.month)
+    total_months = (today.year - bd.year) * 12 + (today.month - bd.month)
     if today.day < bd.day:
-        months -= 1
-    months = max(months, 0)
-    return f"{months} {'mês' if months == 1 else 'meses'}"
+        total_months -= 1
+    total_months = max(total_months, 0)
+    return {"years": total_months // 12, "months": total_months % 12}
 
 
 def _latest_weight_kg(db: Session, pet_id: str) -> Optional[float]:
@@ -128,8 +126,35 @@ def _latest_weight_kg(db: Session, pet_id: str) -> Optional[float]:
         return None
 
 
+# Allow-list de chaves do payload_json por tipo de evento no público (review P2):
+# nunca repassa o JSON cru — parse, filtra e re-serializa. Malformado → None.
+_PUBLIC_PAYLOAD_KEYS: dict[str, set[str]] = {
+    "weight": {"kg"},
+    "vaccine": {"name", "next_due_date"},
+    "medication": {"name", "dosage"},
+    "health_note": set(),
+}
+
+
+def _sanitize_event_payload(event_type: str, payload_json: Optional[str]) -> Optional[str]:
+    """Filtra o payload_json pelo allow-list de chaves do tipo. Malformado/vazio → None."""
+    if not payload_json:
+        return None
+    allowed = _PUBLIC_PAYLOAD_KEYS.get(event_type, set())
+    if not allowed:
+        return None
+    try:
+        data = json.loads(payload_json)
+        if not isinstance(data, dict):
+            return None
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    filtered = {k: v for k, v in data.items() if k in allowed}
+    return json.dumps(filtered) if filtered else None
+
+
 def _public_timeline(db: Session, pet_id: str) -> list[dict]:
-    """Últimos 50 eventos dos tipos permitidos, sem ids internos."""
+    """Últimos 50 eventos dos tipos permitidos, sem ids internos, payload filtrado."""
     events = (
         db.query(PetTimelineEvent)
         .filter(
@@ -145,7 +170,7 @@ def _public_timeline(db: Session, pet_id: str) -> list[dict]:
             "event_type": e.event_type,
             "title": e.title,
             "occurred_at": e.occurred_at.isoformat() if e.occurred_at else None,
-            "payload_json": e.payload_json,
+            "payload_json": _sanitize_event_payload(e.event_type, e.payload_json),
         }
         for e in events
     ]
@@ -270,15 +295,16 @@ def _public_pet_profile(token: str) -> dict:
         timeline = _public_timeline(db, pet.id)
 
         return {
-            # Identidade — nunca expõe nome completo ou dados do tutor
+            # Identidade — nunca expõe nome completo ou dados do tutor.
+            # Chaves alinhadas ao contrato do site (review P1).
             "pet_first_name": pet_first_name(pet.name),
-            "photo_url": pet.photo_url,
+            "pet_photo_url": pet.photo_url,
             "species": pet.species,
             "breed": pet.breed,
             "size": pet.size,
-            # Idade calculada — NUNCA birth_date cru
+            # Idade calculada {"years", "months"} — NUNCA birth_date cru
             "age": age,
-            "weight_kg": weight_kg,
+            "latest_weight_kg": weight_kg,
             # Saúde (dados do pet, não do tutor)
             "allergies": pet.allergies or None,
             "medications": pet.medications or None,
@@ -299,4 +325,11 @@ def _public_pet_profile(token: str) -> dict:
 
 @public_router.get("/public/pet/{token}")
 def public_pet_profile(token: str):
+    return _public_pet_profile(token)
+
+
+# Review P0: o site consome /api/public/pet/{token} — variante no api_router
+# (mesmo padrão de live_share.py, que registra o público nos dois prefixos).
+@api_router.get("/public/pet/{token}")
+def api_public_pet_profile(token: str):
     return _public_pet_profile(token)

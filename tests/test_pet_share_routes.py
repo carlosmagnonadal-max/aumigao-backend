@@ -247,17 +247,26 @@ def test_public_route_returns_sanitized_payload(monkeypatch):
 
     assert r.status_code == 200, r.text
     body = r.json()
-    # Inclui
+    # Inclui — chaves alinhadas ao contrato do site (review P1)
     assert body["pet_first_name"] == "Rex"
+    assert "pet_photo_url" in body
+    assert "latest_weight_kg" in body
     assert "allergies" in body
     assert "medications" in body
     assert "health_notes" in body
     assert "vet_name" in body
     assert "timeline" in body
     assert "tenant" in body
-    # Inclui idade calculada (string), NUNCA birth_date cru
+    # Chaves antigas NÃO existem mais (review P1)
+    assert "photo_url" not in body
+    assert "weight_kg" not in body
+    # Idade calculada como OBJETO {years, months}, NUNCA birth_date cru
     assert "age" in body
-    assert body.get("age") is not None  # birth_date 2022-01-01 → tem idade
+    age = body["age"]
+    assert isinstance(age, dict)  # birth_date 2022-01-01 → objeto
+    assert isinstance(age["years"], int)
+    assert isinstance(age["months"], int)
+    assert age["years"] >= 4  # nascido 2022-01-01, hoje >= 2026
     # Exclui dados sensíveis
     assert "emergency_contact" not in body
     assert "chip_number" not in body
@@ -464,3 +473,176 @@ def test_delete_then_public_returns_410(monkeypatch):
         r_pub = c2.get(f"/public/pet/{token}")
 
     assert r_pub.status_code == 410
+
+
+# ---------------------------------------------------------------------------
+# Review P0 — rota /api/public/pet/{token} (o site consome esse caminho)
+# ---------------------------------------------------------------------------
+
+def test_api_public_route_exact_path(monkeypatch):
+    """GET exatamente em /api/public/pet/{token} → 200 (contrato do site)."""
+    db = _ctx()
+    monkeypatch.setenv("PET_SHARE_ENABLED", "true")
+    link = _make_link(db)
+
+    from unittest.mock import patch
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _mock_global_scope():
+        db.info["rls_tenant"] = "*"
+        yield db
+
+    app = FastAPI()
+    app.include_router(routes.api_router)
+    with patch("app.routes.pet_share.global_scope_session", _mock_global_scope):
+        c = TestClient(app)
+        r = c.get(f"/api/public/pet/{link.token}")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["pet_first_name"] == "Rex"
+
+
+# ---------------------------------------------------------------------------
+# Review P1 — age null sem birth_date
+# ---------------------------------------------------------------------------
+
+def test_public_age_null_without_birth_date(monkeypatch):
+    """Pet sem birth_date → age null no payload público."""
+    db = _ctx()
+    monkeypatch.setenv("PET_SHARE_ENABLED", "true")
+    pet = db.get(Pet, "p1")
+    pet.birth_date = None
+    db.commit()
+    link = _make_link(db)
+
+    from unittest.mock import patch
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _mock_global_scope():
+        db.info["rls_tenant"] = "*"
+        yield db
+
+    app = FastAPI()
+    app.include_router(routes.public_router)
+    with patch("app.routes.pet_share.global_scope_session", _mock_global_scope):
+        c = TestClient(app)
+        r = c.get(f"/public/pet/{link.token}")
+
+    assert r.status_code == 200
+    assert r.json()["age"] is None
+
+
+# ---------------------------------------------------------------------------
+# Review P2 — allow-list de chaves do payload_json na timeline pública
+# ---------------------------------------------------------------------------
+
+def test_public_timeline_payload_allowlist_filters_extra_keys(monkeypatch):
+    """Evento weight com chaves extras no payload → público só contém 'kg'."""
+    import json as _json
+
+    db = _ctx()
+    monkeypatch.setenv("PET_SHARE_ENABLED", "true")
+    link = _make_link(db)
+
+    db.add(PetTimelineEvent(
+        pet_id="p1", tenant_id="t1", event_type="weight",
+        title="Peso", occurred_at=datetime(2026, 6, 1), source="tutor",
+        payload_json=_json.dumps({"kg": 12, "qualquer_outra": "x"}),
+    ))
+    db.commit()
+
+    from unittest.mock import patch
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _mock_global_scope():
+        db.info["rls_tenant"] = "*"
+        yield db
+
+    app = FastAPI()
+    app.include_router(routes.public_router)
+    with patch("app.routes.pet_share.global_scope_session", _mock_global_scope):
+        c = TestClient(app)
+        r = c.get(f"/public/pet/{link.token}")
+
+    assert r.status_code == 200
+    timeline = r.json()["timeline"]
+    weight_events = [e for e in timeline if e["event_type"] == "weight"]
+    assert len(weight_events) == 1
+    payload = _json.loads(weight_events[0]["payload_json"])
+    assert payload == {"kg": 12}
+    assert "qualquer_outra" not in weight_events[0]["payload_json"]
+
+
+def test_public_timeline_payload_malformed_becomes_null(monkeypatch):
+    """Payload malformado → payload_json null no público (não vaza cru)."""
+    db = _ctx()
+    monkeypatch.setenv("PET_SHARE_ENABLED", "true")
+    link = _make_link(db)
+
+    db.add(PetTimelineEvent(
+        pet_id="p1", tenant_id="t1", event_type="weight",
+        title="Peso quebrado", occurred_at=datetime(2026, 6, 1), source="tutor",
+        payload_json="not-json{{{",
+    ))
+    db.commit()
+
+    from unittest.mock import patch
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _mock_global_scope():
+        db.info["rls_tenant"] = "*"
+        yield db
+
+    app = FastAPI()
+    app.include_router(routes.public_router)
+    with patch("app.routes.pet_share.global_scope_session", _mock_global_scope):
+        c = TestClient(app)
+        r = c.get(f"/public/pet/{link.token}")
+
+    assert r.status_code == 200
+    timeline = r.json()["timeline"]
+    weight_events = [e for e in timeline if e["event_type"] == "weight"]
+    assert len(weight_events) == 1
+    assert weight_events[0]["payload_json"] is None
+    assert "not-json" not in str(r.json())
+
+
+def test_public_timeline_health_note_payload_always_null(monkeypatch):
+    """health_note: allow-list vazia → payload_json sempre null no público."""
+    import json as _json
+
+    db = _ctx()
+    monkeypatch.setenv("PET_SHARE_ENABLED", "true")
+    link = _make_link(db)
+
+    db.add(PetTimelineEvent(
+        pet_id="p1", tenant_id="t1", event_type="health_note",
+        title="Nota", occurred_at=datetime(2026, 6, 1), source="tutor",
+        payload_json=_json.dumps({"detalhe_sensivel": "abc"}),
+    ))
+    db.commit()
+
+    from unittest.mock import patch
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _mock_global_scope():
+        db.info["rls_tenant"] = "*"
+        yield db
+
+    app = FastAPI()
+    app.include_router(routes.public_router)
+    with patch("app.routes.pet_share.global_scope_session", _mock_global_scope):
+        c = TestClient(app)
+        r = c.get(f"/public/pet/{link.token}")
+
+    assert r.status_code == 200
+    timeline = r.json()["timeline"]
+    hn = [e for e in timeline if e["event_type"] == "health_note"]
+    assert len(hn) == 1
+    assert hn[0]["payload_json"] is None
+    assert "detalhe_sensivel" not in str(r.json())

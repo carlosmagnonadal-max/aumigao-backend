@@ -104,6 +104,11 @@ def redeem(db: Session, tenant: Tenant, code: str, user_id: str, amount: float, 
     db.add(redemption)
     coupon.uses_count += 1
     coupon.updated_at = datetime.utcnow()
+    if walk_id and getattr(coupon, "is_referral_gift", False):
+        from app.models.walk import Walk
+        _walk = db.get(Walk, walk_id)
+        if _walk is not None:
+            _walk.is_referral_gift = True
     db.commit()
     db.refresh(redemption)
     return redemption

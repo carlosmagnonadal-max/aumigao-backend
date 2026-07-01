@@ -12,6 +12,10 @@ updates:
       time: "06:00"
       timezone: "America/Sao_Paulo"
     open-pull-requests-limit: 5
+    # Cooldown anti-supply-chain: versões maliciosas (axios mar/2026, chalk set/2025)
+    # viveram ~3h no registry; esperar 7 dias antes de adotar release nova neutraliza isso.
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
       - "python"
@@ -33,6 +37,8 @@ updates:
       day: "monday"
       timezone: "America/Sao_Paulo"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
       - "github-actions"

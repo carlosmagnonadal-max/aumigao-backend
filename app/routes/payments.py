@@ -488,6 +488,23 @@ async def create_payment(payload: PaymentCreate, request: Request, user: User = 
         if _covered is not None and getattr(_covered, "subscription_id", None):
             raise HTTPException(status_code=409, detail="Este passeio já está coberto pelo seu plano mensal.")
 
+        # P2: quando há walk_id, o `amount` NÃO é confiável (vem do client). Casa
+        # com a cotação server-authoritative (build_quote = preço do walk - desconto
+        # de plano do tenant). Rejeita subcotação/supercotação para evitar que o
+        # tutor pague um valor arbitrário por um passeio. Tolerância de 1 centavo
+        # para ruído de float.
+        if _covered is not None:
+            _quote_total = round(float(build_quote(db, _covered.tenant_id, _covered.price)["total"]), 2)
+            if abs(round(float(payload.amount), 2) - _quote_total) > 0.01:
+                logger.warning(
+                    "create_payment.amount_mismatch walk_id=%s amount=%s quote_total=%s tutor=%s",
+                    payload.walk_id, payload.amount, _quote_total, user.id,
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail="Valor do pagamento não confere com a cotação do passeio.",
+                )
+
     # Idempotencia: se ja existe um pagamento em aberto para este walk_id,
     # devolve o existente sem criar novo no Asaas.
     if payload.walk_id:

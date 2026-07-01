@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import app.models  # noqa: F401
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.core.database import Base
+from app.core.database import Base, get_db
+from app.dependencies.auth import get_current_user
+from app.dependencies.tenant_scope import AdminTenantScope
 from app.models.tenant import Tenant
 from app.models.tutor_referral import TutorReferral
-from app.dependencies.tenant_scope import AdminTenantScope
+from app.models.user import User
+from app.routes import tutor_referral_config as routes
 from app.services.metrics_service import get_tutor_referral_metrics
 
 
@@ -87,3 +92,20 @@ def test_metrics_tenant_scoped():
         "registered": 1,
         "converted": 1,
     }
+
+
+def test_metrics_endpoint():
+    # super_admin without _act_as_tenant_id → is_global=True → apply_tenant_filter
+    # skips the WHERE clause → sees ALL 4 rows (t1: 3 + t2: 1).
+    # granted_count: c (t1, granted) + d (t2, granted) = 2.
+    db = _db()
+    admin = User(id="a1", email="a@x.com", password_hash="x", role="super_admin", tenant_id="t1")
+    app = FastAPI()
+    app.include_router(routes.metrics_api_router)
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_current_user] = lambda: admin
+    client = TestClient(app)
+    r = client.get("/api/admin/tutor-referral/metrics")
+    assert r.status_code == 200
+    assert r.json()["total"] == 4
+    assert r.json()["granted_count"] == 2

@@ -108,3 +108,26 @@ def update_config(
     db.commit()
     db.refresh(cfg)
     return _response(cfg)
+
+
+metrics_admin_router = APIRouter(
+    prefix="/admin/tutor-referral",
+    tags=["tutor-referral-admin"],
+    dependencies=[Depends(require_permission("admin.access"))],
+)
+metrics_api_router = APIRouter(
+    prefix="/api/admin/tutor-referral",
+    tags=["tutor-referral-admin"],
+    dependencies=[Depends(require_permission("admin.access"))],
+)
+
+
+@metrics_admin_router.get("/metrics")
+@metrics_api_router.get("/metrics")
+def tutor_referral_metrics(
+    admin: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.metrics_service import get_tutor_referral_metrics  # noqa: PLC0415
+    scope = get_admin_tenant_scope(admin, db)
+    return get_tutor_referral_metrics(db, scope)

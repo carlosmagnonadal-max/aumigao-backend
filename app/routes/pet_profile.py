@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+import json
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -8,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.constants import WALK_COMPLETED_STATUSES
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_permission
@@ -332,3 +334,120 @@ def post_walk_observation(
             raise HTTPException(status_code=409, detail="Conflito ao registrar observação; tente novamente")
 
     return {"observation": _obs_dict(obs)}
+
+
+# ---------------------------------------------------------------------------
+# Stats de evolução do pet (Fase 5)
+# GET /pets/{pet_id}/stats  e  /api/pets/{pet_id}/stats
+# ---------------------------------------------------------------------------
+
+def _monday_of(d: date) -> date:
+    """Segunda-feira da semana de `d`."""
+    return d - timedelta(days=d.weekday())
+
+
+def _pet_stats(pet_id: str, db: Session) -> dict:
+    # 1. Série de pesos (últimos 100 eventos weight, asc)
+    weight_events = (
+        db.query(PetTimelineEvent)
+        .filter(PetTimelineEvent.pet_id == pet_id, PetTimelineEvent.event_type == "weight")
+        .order_by(PetTimelineEvent.occurred_at.asc())
+        .limit(100)
+        .all()
+    )
+    weight_series = []
+    for ev in weight_events:
+        if not ev.payload_json:
+            continue
+        try:
+            data = json.loads(ev.payload_json)
+            kg = float(data["kg"])
+            weight_series.append({
+                "occurred_at": ev.occurred_at.isoformat() if ev.occurred_at else None,
+                "kg": kg,
+            })
+        except (json.JSONDecodeError, TypeError, ValueError, KeyError):
+            continue  # payload malformado: ignorado silenciosamente
+
+    # 2. Passeios por semana (12 semanas, status in WALK_COMPLETED_STATUSES, proxy created_at)
+    now = datetime.utcnow()
+    cutoff = now - timedelta(weeks=12)
+    walks = (
+        db.query(Walk)
+        .filter(
+            Walk.pet_id == pet_id,
+            Walk.status.in_(list(WALK_COMPLETED_STATUSES)),
+            Walk.created_at >= cutoff,
+        )
+        .all()
+    )
+    week_counts: dict[date, int] = {}
+    for w in walks:
+        if not w.created_at:
+            continue
+        week_start = _monday_of(w.created_at.date())
+        week_counts[week_start] = week_counts.get(week_start, 0) + 1
+
+    # Garante 12 semanas contínuas (pode ter semanas com 0)
+    weeks_per_week = []
+    for i in range(11, -1, -1):
+        ws = _monday_of((now - timedelta(weeks=i)).date())
+        weeks_per_week.append({"week_start": ws.isoformat(), "count": week_counts.get(ws, 0)})
+
+    # 3. Observações dos últimos 90 dias
+    obs_cutoff = now - timedelta(days=90)
+    observations_rows = (
+        db.query(WalkObservation)
+        .filter(
+            WalkObservation.pet_id == pet_id,
+            WalkObservation.created_at >= obs_cutoff,
+        )
+        .all()
+    )
+    total = len(observations_rows)
+    mood_dist = {k: 0 for k in MOOD_VALUES}
+    energy_dist = {k: 0 for k in ENERGY_VALUES}
+    soc_dist = {k: 0 for k in SOCIALIZATION_VALUES}
+    peed_vals, pooped_vals, incidents = [], [], 0
+    for o in observations_rows:
+        if o.mood and o.mood in mood_dist:
+            mood_dist[o.mood] += 1
+        if o.energy and o.energy in energy_dist:
+            energy_dist[o.energy] += 1
+        if o.socialization and o.socialization in soc_dist:
+            soc_dist[o.socialization] += 1
+        if o.peed is not None:
+            peed_vals.append(o.peed)
+        if o.pooped is not None:
+            pooped_vals.append(o.pooped)
+        if o.incident:
+            incidents += 1
+
+    peed_pct = round(sum(peed_vals) / len(peed_vals) * 100, 1) if peed_vals else None
+    pooped_pct = round(sum(pooped_vals) / len(pooped_vals) * 100, 1) if pooped_vals else None
+
+    return {
+        "weight_series": weight_series,
+        "walks_per_week": weeks_per_week,
+        "observations": {
+            "total": total,
+            "mood": mood_dist,
+            "energy": energy_dist,
+            "socialization": soc_dist,
+            "peed_pct": peed_pct,
+            "pooped_pct": pooped_pct,
+            "incidents": incidents,
+        },
+    }
+
+
+@router.get("/{pet_id}/stats")
+@api_router.get("/{pet_id}/stats")
+def get_pet_stats(
+    pet_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_active(db, user)
+    _get_owned_pet(db, pet_id, user)
+    return _pet_stats(pet_id, db)

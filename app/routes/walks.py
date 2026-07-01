@@ -233,6 +233,18 @@ def _approved_completion_review_exists(walk_id: str, db: Session) -> bool:
     )
 
 
+def _walk_observations_enabled(walk: Walk, db: Session) -> bool:
+    """Review P2 #3: booleano ADITIVO no GET do walk — o app do passeador esconde
+    o formulário de observação quando False. Sem tenant no walk → False."""
+    if not walk.tenant_id:
+        return False
+    tenant = db.get(Tenant, walk.tenant_id)
+    if not tenant:
+        return False
+    from app.services import pet_profile_service as _pet_profile_svc
+    return _pet_profile_svc.observations_active(tenant, db)
+
+
 def _get_walk_for_user(walk_id: str, user: User, db: Session) -> Walk:
     walk = db.get(Walk, walk_id)
     if not walk:
@@ -533,7 +545,11 @@ def get_walk(walk_id: str, user: User = Depends(get_current_user), db: Session =
     process_expired_attempts(db)
     walk = _get_walk_for_user(walk_id, user, db)
     _refresh_reliability_events([walk], db)
-    return serialize_operational_walk(walk, db, user=user)
+    data = serialize_operational_walk(walk, db, user=user)
+    # Campo ADITIVO (review P2 #3): o app do passeador usa este booleano para
+    # esconder o formulário de observação quando a feature está dormente.
+    data["walk_observations_enabled"] = _walk_observations_enabled(walk, db)
+    return data
 
 @router.put("/{walk_id}/status", response_model=WalkResponse)
 def update_status(walk_id: str, payload: WalkUpdateStatus, user: User = Depends(get_current_user), db: Session = Depends(get_db)):

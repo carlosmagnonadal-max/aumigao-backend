@@ -61,3 +61,6 @@ class WalkResponse(ORMModel):
     address_snapshot: str
     notes: str
     created_at: datetime
+    # Aditivo (review P2 #3): app do passeador esconde o formulário de observação
+    # do passeio quando False. Default False para compat com serializers de listagem.
+    walk_observations_enabled: bool = False

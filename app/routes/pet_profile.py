@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -16,7 +17,7 @@ from app.models.pet_timeline_event import PetTimelineEvent, EVENT_TYPES
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.walk import Walk
-from app.models.walk_observation import MOOD_VALUES, ENERGY_VALUES, SOCIALIZATION_VALUES
+from app.models.walk_observation import MOOD_VALUES, ENERGY_VALUES, SOCIALIZATION_VALUES, WalkObservation
 from app.services import pet_profile_service as svc
 
 router = APIRouter(prefix="/pets", tags=["pet-profile"])
@@ -280,10 +281,11 @@ def post_walk_observation(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # 1. Walk existe?
+    # 1. Walk existe? — mesmo detail do gate (review P2 #1): um 404 com mensagem
+    # diferente vazaria a existência do passeio quando a feature está OFF.
     walk = db.get(Walk, walk_id)
     if not walk:
-        raise HTTPException(status_code=404, detail="Passeio não encontrado")
+        raise HTTPException(status_code=404, detail="Not found")
 
     # 2. Feature ativa para o tenant deste passeio?
     tenant = db.get(Tenant, walk.tenant_id) if walk.tenant_id else None
@@ -295,9 +297,17 @@ def post_walk_observation(
     if not is_walker:
         raise HTTPException(status_code=403, detail="Apenas o passeador deste passeio pode registrar observações")
 
-    # 4. Registra (idempotente)
+    # 4. Registra (idempotente). Review P2 #2: dois POSTs concorrentes podem passar
+    # ambos pelo SELECT do serviço e o 2º INSERT viola o unique de walk_id — em vez
+    # de estourar 500, faz rollback e retorna a observação que venceu a corrida.
     data = {**payload.model_dump(), "walker_user_id": user.id}
-    obs = svc.record_walk_observation(db, walk, data)
-    db.commit()
+    try:
+        obs = svc.record_walk_observation(db, walk, data)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        obs = db.query(WalkObservation).filter(WalkObservation.walk_id == walk_id).first()
+        if not obs:
+            raise HTTPException(status_code=409, detail="Conflito ao registrar observação; tente novamente")
 
     return {"observation": _obs_dict(obs)}

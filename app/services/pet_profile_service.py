@@ -59,6 +59,12 @@ def record_walk_observation(db: Session, walk: Walk, payload: dict) -> WalkObser
 
     Idempotente por walk_id: se já existe uma WalkObservation para o passeio, faz UPDATE
     dos campos e NÃO cria um segundo PetTimelineEvent.
+
+    Semântica de re-submissão: LAST-WRITE-WINS do formulário INTEIRO — não há merge
+    parcial. O cliente deve reenviar TODOS os campos a cada submissão (a rota envia
+    sempre o model_dump completo do Pydantic, então campos omitidos no request viram
+    None/default e SOBRESCREVEM o valor anterior). incident=False sempre zera
+    incident_notes.
     """
     incident = bool(payload.get("incident", False))
     incident_notes = payload.get("incident_notes", "") if incident else ""

@@ -1,5 +1,5 @@
-﻿from datetime import datetime
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+﻿from datetime import date, datetime
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
@@ -27,6 +27,11 @@ class Pet(Base):
     medications: Mapped[str] = mapped_column(Text, default="")
     restrictions: Mapped[str] = mapped_column(Text, default="")
     health_notes: Mapped[str] = mapped_column(Text, default="")
+    birth_date: Mapped["date | None"] = mapped_column(Date, nullable=True)
+    chip_number: Mapped[str | None] = mapped_column(String, nullable=True)
+    vet_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    vet_phone: Mapped[str | None] = mapped_column(String, nullable=True)
+    emergency_contact: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     tutor = relationship("User", back_populates="pets")

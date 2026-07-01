@@ -13,6 +13,7 @@ depends_on = None
 
 _POLICY_USING = (
     "current_setting('app.current_tenant', true) = '*' "
+    "OR tenant_id IS NULL "
     "OR tenant_id::text = current_setting('app.current_tenant', true)"
 )
 

@@ -28,6 +28,8 @@ def accrue_commission_for_walk(
     """
     if is_network:
         return None
+    if getattr(walk, "is_referral_gift", False):
+        return None  # brinde de indicação: plataforma não fatura comissão (decisão do fundador)
     if not getattr(walk, "tenant_id", None):
         return None
     price = float(getattr(walk, "price", 0) or 0)

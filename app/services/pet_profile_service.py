@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
 from uuid import uuid4
@@ -10,6 +11,8 @@ from app.models.pet import Pet
 from app.models.pet_profile_config import PetProfileConfig
 from app.models.pet_timeline_event import PetTimelineEvent
 from app.models.tenant import Tenant
+from app.models.walk import Walk
+from app.models.walk_observation import WalkObservation
 from app.services.tenant_plan_service import tenant_feature_enabled
 
 PET_PROFILE_FEATURE_KEY = "pet_live_profile"
@@ -49,6 +52,66 @@ def observations_active(tenant: Tenant, db: Session) -> bool:
 
 def reminders_active(tenant: Tenant, db: Session) -> bool:
     return _three_layer(tenant, db, "PET_ALERTS_ENABLED", REMINDERS_FEATURE_KEY, "reminders_enabled")
+
+
+def record_walk_observation(db: Session, walk: Walk, payload: dict) -> WalkObservation:
+    """Registra (ou atualiza) a observação estruturada do passeador para um passeio.
+
+    Idempotente por walk_id: se já existe uma WalkObservation para o passeio, faz UPDATE
+    dos campos e NÃO cria um segundo PetTimelineEvent.
+    """
+    incident = bool(payload.get("incident", False))
+    incident_notes = payload.get("incident_notes", "") if incident else ""
+
+    # Busca observação existente
+    existing = db.query(WalkObservation).filter(WalkObservation.walk_id == walk.id).first()
+
+    if existing:
+        # UPDATE dos campos — não cria novo timeline event
+        for field in ("mood", "energy", "socialization", "peed", "pooped"):
+            if field in payload:
+                setattr(existing, field, payload[field])
+        existing.incident = incident
+        existing.incident_notes = incident_notes
+        db.flush()
+        return existing
+
+    # Primeira vez: INSERT + emite timeline event
+    obs = WalkObservation(
+        walk_id=walk.id,
+        pet_id=walk.pet_id,
+        tenant_id=walk.tenant_id,
+        walker_user_id=payload.get("walker_user_id"),
+        mood=payload.get("mood"),
+        energy=payload.get("energy"),
+        socialization=payload.get("socialization"),
+        peed=payload.get("peed"),
+        pooped=payload.get("pooped"),
+        incident=incident,
+        incident_notes=incident_notes,
+    )
+    db.add(obs)
+    db.flush()
+
+    pet = db.get(Pet, walk.pet_id)
+    if pet:
+        summary = {
+            k: payload.get(k)
+            for k in ("mood", "energy", "socialization", "peed", "pooped", "incident")
+        }
+        record_timeline_event(
+            db, pet,
+            event_type="walk_observation",
+            title="Observação do passeio",
+            occurred_at=datetime.utcnow(),
+            source="walker",
+            created_by_user_id=payload.get("walker_user_id"),
+            related_entity_type="walk",
+            related_entity_id=walk.id,
+            payload_json=json.dumps(summary),
+        )
+
+    return obs
 
 
 def record_timeline_event(

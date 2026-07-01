@@ -32,6 +32,8 @@ CRITICAL_NOTIFICATION_TYPES = {
     "tip_received",
     # Growth loop: convida tutor a acompanhar/compartilhar passeio ao vivo.
     "walk_live_share",
+    # Growth loop cunha 3: bônus de indicação liberado para os dois lados.
+    "reward_eligible",
 }
 CRITICAL_WALK_STATUS_ACTIONS = {"walker_accepted", "ride_in_progress"}
 

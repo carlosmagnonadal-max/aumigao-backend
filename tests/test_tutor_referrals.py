@@ -68,3 +68,88 @@ def test_link_rejects_self_referral():
     ref = svc.create_tutor_referral(db, u1, "t1")
     with pytest.raises(HTTPException):
         svc.link_tutor_referral(db, ref.referral_code, "u1", "t1")
+
+
+# ---------------------------------------------------------------------------
+# Task 6: refresh_referral_conversion — os 3 gatilhos
+# ---------------------------------------------------------------------------
+
+import json
+import uuid
+
+from app.models.tutor_referral import TutorReferralConfig
+from app.models.walk import Walk
+
+
+def _enable(db, **cfg):
+    c = TutorReferralConfig(tenant_id="t1", enabled=True, **cfg)
+    db.add(c); db.commit()
+    return c
+
+
+def _paid_completed_walk(db, tutor_id, status="ride_completed", price=50.0):
+    db.add(Walk(
+        id=uuid.uuid4().hex,
+        tenant_id="t1",
+        tutor_id=tutor_id,
+        pet_id="pet1",
+        scheduled_date="2026-07-01",
+        duration_minutes=30,
+        price=price,
+        operational_status=status,
+    ))
+    db.commit()
+
+
+def _registered_referral(db):
+    u1 = db.get(User, "u1")
+    ref = svc.create_tutor_referral(db, u1, "t1")
+    return svc.link_tutor_referral(db, ref.referral_code, "u2", "t1")
+
+
+def test_no_cadastro_converts_immediately():
+    db = _db(); _enable(db, trigger_type="no_cadastro")
+    ref = _registered_referral(db)
+    svc.refresh_referral_conversion(db, "u2", "t1")
+    db.refresh(ref)
+    assert ref.status == "converted"
+    assert ref.reward_status == "eligible"
+    assert json.loads(ref.reward_snapshot_json)["reward_type"] == "desconto"
+
+
+def test_primeiro_passeio_pago_needs_a_paid_walk():
+    db = _db(); _enable(db, trigger_type="primeiro_passeio_pago")
+    ref = _registered_referral(db)
+    svc.refresh_referral_conversion(db, "u2", "t1")
+    db.refresh(ref); assert ref.status == "registered"
+    _paid_completed_walk(db, "u2")
+    svc.refresh_referral_conversion(db, "u2", "t1")
+    db.refresh(ref); assert ref.status == "converted"
+
+
+def test_n_passeios_threshold():
+    db = _db(); _enable(db, trigger_type="n_passeios", trigger_n=2)
+    ref = _registered_referral(db)
+    _paid_completed_walk(db, "u2")
+    svc.refresh_referral_conversion(db, "u2", "t1")
+    db.refresh(ref); assert ref.status == "registered"
+    _paid_completed_walk(db, "u2")
+    svc.refresh_referral_conversion(db, "u2", "t1")
+    db.refresh(ref); assert ref.status == "converted"
+    assert ref.completed_paid_walks_count == 2
+
+
+def test_disabled_config_does_not_convert():
+    db = _db()
+    ref = _registered_referral(db)   # nenhuma config habilitada
+    svc.refresh_referral_conversion(db, "u2", "t1")
+    db.refresh(ref); assert ref.status == "registered"
+
+
+def test_conversion_is_idempotent():
+    db = _db(); _enable(db, trigger_type="no_cadastro")
+    ref = _registered_referral(db)
+    svc.refresh_referral_conversion(db, "u2", "t1")
+    svc.refresh_referral_conversion(db, "u2", "t1")  # 2ª vez não muda nada
+    db.refresh(ref)
+    assert ref.status == "converted"

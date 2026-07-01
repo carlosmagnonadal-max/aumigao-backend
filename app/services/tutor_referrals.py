@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import json
 import os
+from datetime import datetime
 from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app.constants import WALK_COMPLETED_STATUSES
 from app.models.tenant import Tenant
+from app.models.tutor_referral import TutorReferral, TutorReferralConfig
 from app.models.user import User
-from app.models.tutor_referral import TutorReferral
+from app.models.walk import Walk
 
 PUBLIC_APP_BASE = "https://app.aumigaowalk.com.br"
 
@@ -91,3 +95,78 @@ def link_tutor_referral(db: Session, code: str, referred_user_id: str, tenant_id
     db.commit()
     db.refresh(ref)
     return ref
+
+
+# ---------------------------------------------------------------------------
+# Conversion engine (Task 6) — os 3 gatilhos
+# ---------------------------------------------------------------------------
+
+def _count_paid_completed_walks(db: Session, tutor_id: str, tenant_id: str) -> int:
+    return (
+        db.query(Walk)
+        .filter(
+            Walk.tenant_id == tenant_id,
+            Walk.tutor_id == tutor_id,
+            Walk.price > 0,
+            Walk.operational_status.in_(list(WALK_COMPLETED_STATUSES)),
+        )
+        .count()
+    )
+
+
+def _reward_snapshot(cfg: TutorReferralConfig) -> str:
+    return json.dumps({
+        "reward_type": cfg.reward_type,
+        "discount_kind": cfg.discount_kind,
+        "discount_value": cfg.discount_value,
+        "free_walks_count": cfg.free_walks_count,
+        "credit_walks": cfg.credit_walks,
+        "same_reward_both_sides": cfg.same_reward_both_sides,
+        "referrer_multiplier": cfg.referrer_multiplier,
+        "referred_multiplier": cfg.referred_multiplier,
+    })
+
+
+def refresh_referral_conversion(db: Session, referred_user_id: str, tenant_id: str) -> None:
+    """Avalia o gatilho do tenant e converte a indicação (sem grant — Plano 2).
+
+    Idempotente: só age sobre um referral em status 'registered' do convidado no tenant.
+    """
+    ref = (
+        db.query(TutorReferral)
+        .filter(
+            TutorReferral.tenant_id == tenant_id,
+            TutorReferral.referred_user_id == referred_user_id,
+            TutorReferral.status == "registered",
+        )
+        .first()
+    )
+    if not ref:
+        return
+    cfg = (
+        db.query(TutorReferralConfig)
+        .filter(TutorReferralConfig.tenant_id == tenant_id, TutorReferralConfig.enabled.is_(True))
+        .first()
+    )
+    if not cfg:
+        return
+
+    should_convert = False
+    if cfg.trigger_type == "no_cadastro":
+        should_convert = True
+    elif cfg.trigger_type == "primeiro_passeio_pago":
+        count = _count_paid_completed_walks(db, referred_user_id, tenant_id)
+        ref.completed_paid_walks_count = count
+        should_convert = count >= 1
+    elif cfg.trigger_type == "n_passeios":
+        count = _count_paid_completed_walks(db, referred_user_id, tenant_id)
+        ref.completed_paid_walks_count = count
+        should_convert = count >= max(1, cfg.trigger_n)
+
+    if should_convert:
+        ref.status = "converted"
+        ref.reward_status = "eligible"
+        ref.reward_snapshot_json = _reward_snapshot(cfg)
+        ref.converted_at = datetime.utcnow()
+        # NOTA: o grant da recompensa (gated por _payout_enabled) entra no Plano 2.
+    db.commit()

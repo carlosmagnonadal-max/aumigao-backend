@@ -59,4 +59,8 @@ class CouponRedemption(Base):
     user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     walk_id: Mapped[str | None] = mapped_column(String, nullable=True)
     amount_discounted: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # Denormalizado do cupom no momento do resgate: alimenta o índice único parcial
+    # (coupon_id, user_id) WHERE single_use_per_user, que impede double-grant do mesmo
+    # usuário em cupons de uso único (max_uses_per_user == 1) sob concorrência.
+    single_use_per_user: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

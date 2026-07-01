@@ -111,6 +111,14 @@ def grant_reward(db: Session, referral: TutorReferral) -> None:
             _grant_credit(db, referral, side, _uid_field, snap, mult)
 
     referral.reward_status = "granted"
+    try:
+        from app.services.tutor_referral_notify import notify_tutor_referral_rewards
+        notify_tutor_referral_rewards(db, referral)
+    except Exception:
+        import logging
+        logging.getLogger("aumigao.tutor").exception(
+            "falha ao notificar recompensa de indicação referral_id=%s", referral.id
+        )
     db.commit()
 
 

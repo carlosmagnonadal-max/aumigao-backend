@@ -1,6 +1,9 @@
+import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
+
+from app.models.walker_earning import WalkerEarning, WE_ACCRUED
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -85,7 +88,7 @@ def create_walker_referral(payload: WalkerReferralCreate, user: User, db: Sessio
         neighborhood=payload.neighborhood.strip(),
         notes=(payload.notes or "").strip() or None,
         referral_code=code,
-        invite_link=f"/walker/register?referralCode={code}",
+        invite_link=_build_invite_link(code),
         status="pending",
         reward_status="not_eligible",
         performance_status="neutral",
@@ -205,3 +208,121 @@ def update_referral_status(referral: WalkerReferral, payload: AdminWalkerReferra
     db.commit()
     db.refresh(referral)
     return referral
+
+
+PUBLIC_APP_BASE = "https://app.aumigaowalk.com.br"
+
+
+def _build_invite_link(code: str) -> str:
+    return f"{PUBLIC_APP_BASE}/referral/{code}"
+
+
+def _referral_payout_enabled() -> bool:
+    """Gate do payout de referral (dinheiro). Default OFF. Lido em runtime (monkeypatch-safe)."""
+    return os.getenv("WALKER_REFERRAL_PAYOUT_ENABLED", "false").lower() in {"true", "1", "yes", "on"}
+
+
+def pay_referral_rewards(db, referral) -> bool:
+    """Credita o bônus de indicação (dois lados) no ledger WalkerEarning.
+
+    Idempotente: guard por reward_status + walk_id sintética única. Gated por
+    WALKER_REFERRAL_PAYOUT_ENABLED. Não faz commit (caller comita).
+    Retorna True se criou ao menos uma entrada nova.
+    """
+    if not _referral_payout_enabled():
+        return False
+    if referral.reward_status not in {"eligible", "pending"}:
+        return False
+
+    amount = float(referral.reward_amount or DEFAULT_REWARD_AMOUNT)
+    now = datetime.now(timezone.utc)
+    sides = [("referrer", referral.referrer_user_id), ("referred", referral.referred_user_id)]
+    created = False
+    for side, walker_id in sides:
+        if not walker_id:
+            continue
+        synth_walk_id = f"referral-{referral.id}-{side}"
+        if db.query(WalkerEarning).filter(WalkerEarning.walk_id == synth_walk_id).first():
+            continue
+        db.add(WalkerEarning(
+            id=str(uuid4()),
+            walker_id=walker_id,
+            tenant_id=None,
+            walk_id=synth_walk_id,
+            gross=amount,
+            platform_amount=0.0,
+            amount=amount,
+            status=WE_ACCRUED,
+            payable_at=now,
+        ))
+        created = True
+
+    referral.reward_status = "paid"
+    return created
+
+
+def notify_referral_rewards(db, referral) -> None:
+    """Notifica os dois lados que o bônus de indicação foi liberado."""
+    from app.models.user import User
+    from app.routes.notifications import NotificationCreate, _create_notification
+
+    amount = float(referral.reward_amount or DEFAULT_REWARD_AMOUNT)
+    targets = [
+        (referral.referrer_user_id, "🎉 Sua indicação converteu",
+         f"R$ {amount:.0f} caíram no seu saldo. Obrigado por indicar!"),
+        (referral.referred_user_id, "🎉 Você ganhou um bônus",
+         f"R$ {amount:.0f} no seu saldo por completar seus primeiros passeios!"),
+    ]
+    for user_id, title, message in targets:
+        if not user_id:
+            continue
+        user = db.get(User, user_id)
+        _create_notification(db, NotificationCreate(
+            user_id=user_id,
+            user_role=getattr(user, "role", "walker") if user else "walker",
+            title=title,
+            message=message,
+            type="reward_eligible",
+            related_entity_type="walker_referral",
+            related_entity_id=referral.id,
+            metadata={"reward_amount": amount},
+        ))
+
+
+def refresh_referred_walk_count(db, walker_id: str) -> None:
+    """Reconta os passeios concluídos do passeador indicado e dispara conversão+payout.
+
+    Idempotente (recompute + guards de estado). Chamada no fluxo de conclusão de passeio.
+    """
+    if not walker_id:
+        return
+    from app.constants import WALK_COMPLETED_STATUSES
+    from app.models.walk import Walk
+
+    referral = (
+        db.query(WalkerReferral)
+        .filter(
+            WalkerReferral.referred_user_id == walker_id,
+            WalkerReferral.status.in_(["approved", "converted"]),
+        )
+        .first()
+    )
+    if not referral:
+        return
+
+    count = (
+        db.query(Walk)
+        .filter(
+            Walk.walker_id == walker_id,
+            Walk.operational_status.in_(list(WALK_COMPLETED_STATUSES)),
+        )
+        .count()
+    )
+    referral.completed_walks_count = count
+
+    if count >= BONUS_AFTER_COMPLETED_WALKS and referral.status == "approved":
+        referral.status = "converted"
+        referral.reward_status = "eligible"
+        referral.converted_at = datetime.now(timezone.utc)
+        if pay_referral_rewards(db, referral):
+            notify_referral_rewards(db, referral)

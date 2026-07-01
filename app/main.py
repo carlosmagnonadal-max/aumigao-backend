@@ -155,9 +155,9 @@ def ensure_legacy_id_compatibility():
                     )
 
 _db_diagnostics = get_database_diagnostics()
-print(f"[database] backend DATABASE_URL={mask_database_url(_db_diagnostics['database_url'])}")
+logger.info("[database] backend DATABASE_URL=%s", mask_database_url(_db_diagnostics['database_url']))
 if "sqlite_path" in _db_diagnostics:
-    print(f"[database] backend SQLite path={_db_diagnostics['sqlite_path']}")
+    logger.info("[database] backend SQLite path=%s", _db_diagnostics['sqlite_path'])
 
 def _sql_type(kind: str) -> str:
     if kind == "datetime":
@@ -315,12 +315,12 @@ _run_startup_admin_seed = get_bool_env("RUN_STARTUP_ADMIN_SEED", default=not _pr
 _run_legacy_id_compat = get_bool_env("RUN_LEGACY_ID_COMPAT", default=False)
 
 if _run_startup_schema_ensure:
-    print("[startup] schema ensure enabled")
+    logger.info("[startup] schema ensure enabled")
     if _run_legacy_id_compat:
-        print("[startup] legacy id compatibility ENABLED (DDL destrutivo) — RUN_LEGACY_ID_COMPAT=true")
+        logger.info("[startup] legacy id compatibility ENABLED (DDL destrutivo) — RUN_LEGACY_ID_COMPAT=true")
         ensure_legacy_id_compatibility()
     else:
-        print("[startup] legacy id compatibility SKIPPED (defina RUN_LEGACY_ID_COMPAT=true para habilitar)")
+        logger.info("[startup] legacy id compatibility SKIPPED (defina RUN_LEGACY_ID_COMPAT=true para habilitar)")
     Base.metadata.create_all(bind=engine)
     ensure_operational_schema(engine)
     ensure_user_schema()
@@ -330,10 +330,10 @@ if _run_startup_schema_ensure:
     ensure_walk_schema()
     ensure_notification_schema()
 else:
-    print("[startup] schema ensure skipped")
+    logger.info("[startup] schema ensure skipped")
 
 if _run_startup_admin_seed:
-    print("[startup] admin seed enabled")
+    logger.info("[startup] admin seed enabled")
     with SessionLocal() as db:
         # Fase 2c: seed é operação global de plataforma → acesso irrestrito.
         db.info["rls_tenant"] = "*"
@@ -341,7 +341,7 @@ if _run_startup_admin_seed:
         ensure_default_tenant_links(db)
         ensure_network_profiles(db)
 else:
-    print("[startup] admin seed skipped")
+    logger.info("[startup] admin seed skipped")
 
 # Sec: em produção desabilita /docs, /redoc e /openapi.json. Expor o schema
 # completo da API publicamente facilita reconhecimento de atacante. Em dev/staging

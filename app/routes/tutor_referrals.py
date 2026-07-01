@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.tenant_session import global_scope_session
 from app.dependencies.auth import get_current_user
 from app.models.tutor_referral import TutorReferral
 from app.models.user import User
@@ -61,8 +62,14 @@ def my_referrals(user: User = Depends(get_current_user), db: Session = Depends(g
 
 @router.post("/validate-code")
 @api_router.post("/validate-code")
-def validate_code(payload: ValidateCodeRequest, db: Session = Depends(get_db)):
-    return svc.validate_tutor_referral_code(db, payload.code)
+def validate_code(payload: ValidateCodeRequest):
+    # Rota PUBLICA (sem auth): o convite e cross-tenant por natureza — o code
+    # identifica de qual tenant o tutor foi convidado. Usa global_scope_session
+    # (escopo "*") EXPLICITAMENTE — como pet_share/live_share — para resolver o
+    # tenant de forma previsivel quando a tabela tiver RLS (migration 0077). O
+    # servico ja retorna SO campos de marketing (tenant_id/name/slug + first_name).
+    with global_scope_session() as db:
+        return svc.validate_tutor_referral_code(db, payload.code)
 
 
 @router.patch("/link-user")

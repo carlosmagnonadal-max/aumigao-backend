@@ -463,26 +463,39 @@ def grant_credits_on_payment(db: Session, subscription: TutorSubscription, payme
 
     payment_id (opcional): ID do Payment/Asaas que originou a concessão — repassado
     ao ledger contábil para rastreabilidade (Item 4).
+
+    Thread-safe (P1): releitura com with_for_update serializa duas entregas
+    concorrentes de PAYMENT_CONFIRMED do mesmo evento. Sem o lock, ambas viam
+    credits_granted=False e concediam créditos DUAS vezes. A 2ª agora vê o flag
+    já True (após o commit da 1ª) e desiste.
     """
-    if subscription.credits_granted:
+    locked = (
+        db.query(TutorSubscription)
+        .filter(TutorSubscription.id == subscription.id)
+        .with_for_update()
+        .first()
+    )
+    if locked is None:
         return False
-    subscription.credits_remaining = subscription.walks_per_cycle
-    subscription.credits_granted = True
-    subscription.updated_at = datetime.utcnow()
-    db.add(subscription)
+    if locked.credits_granted:
+        return False
+    locked.credits_remaining = locked.walks_per_cycle
+    locked.credits_granted = True
+    locked.updated_at = datetime.utcnow()
+    db.add(locked)
     # Item 4: registra passivo de crédito (receita diferida) — best-effort.
     # Somente na 1ª concessão (idempotente no ledger por subscription_id).
     # NUNCA propaga exceção.
     try:
         from app.services.credit_ledger_service import record_liability_safe
-        record_liability_safe(db, subscription, payment_id=payment_id)
+        record_liability_safe(db, locked, payment_id=payment_id)
     except Exception:
-        logger.exception("grant_credits_on_payment: falha best-effort ledger subscription_id=%s", subscription.id)
+        logger.exception("grant_credits_on_payment: falha best-effort ledger subscription_id=%s", locked.id)
     try:
         from app.services.tutor_referral_rewards import apply_held_credit_on_subscription
-        apply_held_credit_on_subscription(db, subscription)
+        apply_held_credit_on_subscription(db, locked)
     except Exception:
-        logger.exception("falha ao aplicar crédito de indicação retido subscription_id=%s", subscription.id)
+        logger.exception("falha ao aplicar crédito de indicação retido subscription_id=%s", locked.id)
     return True
 
 

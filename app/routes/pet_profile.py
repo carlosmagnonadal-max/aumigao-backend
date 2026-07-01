@@ -4,7 +4,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -60,6 +60,9 @@ class TimelineEventCreate(BaseModel):
     notes: str = Field("", max_length=4000)
     occurred_at: datetime
     payload_json: str | None = None
+    # Campo opcional (Fase 3): data-alvo de lembrete de vacina/vermífugo.
+    # Só tem efeito quando event_type in ("vaccine", "medication"). Deve ser futura.
+    reminder_due_date: date | None = None
 
     @field_validator("event_type")
     @classmethod
@@ -73,6 +76,13 @@ class TimelineEventCreate(BaseModel):
     def _not_future(cls, v: datetime) -> datetime:
         if v > datetime.utcnow():
             raise ValueError("occurred_at não pode ser no futuro")
+        return v
+
+    @field_validator("reminder_due_date")
+    @classmethod
+    def _reminder_future(cls, v: date | None) -> date | None:
+        if v is not None and v <= date.today():
+            raise ValueError("reminder_due_date deve ser uma data futura")
         return v
 
 
@@ -126,6 +136,17 @@ def add_event(pet_id: str, payload: TimelineEventCreate,
         occurred_at=payload.occurred_at, payload_json=payload.payload_json,
         source="tutor", created_by_user_id=user.id,
     )
+    # Fiação aditiva (Fase 3): se reminder_due_date presente e event_type elegível,
+    # cria/atualiza PetReminder ligado ao evento. Sem efeito quando campo ausente.
+    _REMINDER_EVENT_TYPES = {"vaccine", "medication"}
+    if payload.reminder_due_date is not None and payload.event_type in _REMINDER_EVENT_TYPES:
+        reminder_kind = "vaccine" if payload.event_type == "vaccine" else "vermifuge"
+        svc.ensure_vaccine_reminder(
+            db, pet,
+            due_date=payload.reminder_due_date,
+            source_event_id=ev.id,
+            kind=reminder_kind,
+        )
     db.commit()
     db.refresh(ev)
     return {"event": _event_dict(ev)}

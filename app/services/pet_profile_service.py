@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import date, datetime
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from app.models.pet import Pet
 from app.models.pet_profile_config import PetProfileConfig
+from app.models.pet_reminder import PetReminder
 from app.models.pet_timeline_event import PetTimelineEvent
 from app.models.tenant import Tenant
 from app.models.walk import Walk
@@ -118,6 +119,43 @@ def record_walk_observation(db: Session, walk: Walk, payload: dict) -> WalkObser
         )
 
     return obs
+
+
+def ensure_vaccine_reminder(
+    db: Session, pet: Pet, due_date: date,
+    source_event_id: str | None = None, kind: str = "vaccine",
+) -> PetReminder:
+    """Upsert de PetReminder de vacina/vermífugo ligado a um evento da timeline.
+
+    Idempotência por (pet_id, kind, source_event_id): se já existe um reminder ativo
+    com o mesmo source_event_id, atualiza due_date; caso contrário cria um novo.
+    """
+    q = db.query(PetReminder).filter(
+        PetReminder.pet_id == pet.id,
+        PetReminder.kind == kind,
+        PetReminder.active == True,  # noqa: E712
+    )
+    if source_event_id:
+        q = q.filter(PetReminder.source_event_id == source_event_id)
+    existing = q.first()
+    if existing:
+        if existing.due_date != due_date:
+            existing.due_date = due_date
+        db.flush()
+        return existing
+    reminder = PetReminder(
+        id=str(uuid4()),
+        pet_id=pet.id,
+        tenant_id=pet.tenant_id,
+        kind=kind,
+        due_date=due_date,
+        active=True,
+        source_event_id=source_event_id,
+        created_at=datetime.utcnow(),
+    )
+    db.add(reminder)
+    db.flush()
+    return reminder
 
 
 def record_timeline_event(

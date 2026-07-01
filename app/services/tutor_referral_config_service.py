@@ -19,7 +19,18 @@ def get_or_create_tutor_referral_config(db: Session, tenant_id: str) -> TutorRef
         .first()
     )
     if not config:
-        config = TutorReferralConfig(tenant_id=tenant_id)
+        # Meio-termo "pré-preenchido + 1 clique" (decisão do fundador): o config nasce
+        # com uma recompensa padrão sensata mas DESLIGADO — o tenant só liga o master.
+        # Não força custo em ninguém (enabled=False); só reduz a fricção de configurar.
+        config = TutorReferralConfig(
+            tenant_id=tenant_id,
+            enabled=False,
+            reward_type="desconto",
+            discount_kind="fixed",
+            discount_value=20.0,
+            same_reward_both_sides=True,
+            trigger_type="primeiro_passeio_pago",
+        )
         db.add(config)
         db.flush()  # flush, não commit — o caller comita
     return config

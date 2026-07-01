@@ -96,6 +96,7 @@ def update_profile(payload: TutorProfileUpdate, user: User = Depends(get_current
 
 class TutorJoinRequest(BaseModel):
     tenant_slug: str
+    referral_code: str | None = None
 
 
 def _tenant_brand_dict(a: TenantTutorAccess, tenant: Tenant) -> dict:
@@ -167,4 +168,16 @@ def tutor_join_tenant(
         )
         db.add(access)
         db.commit()
+    # Growth loop cunha 4: se veio código de indicação, liga o convidado ao referral.
+    if payload.referral_code:
+        try:
+            from app.services.tutor_referrals import link_tutor_referral, refresh_referral_conversion
+            link_tutor_referral(db, payload.referral_code, user.id, tenant.id)
+            # gatilho "no_cadastro" converte já na entrada; os demais convertem na conclusão do passeio.
+            refresh_referral_conversion(db, user.id, tenant.id)
+        except Exception:
+            import logging
+            logging.getLogger("aumigao.tutor").warning(
+                "falha ao ligar referral do tutor code=%s user=%s", payload.referral_code, user.id
+            )
     return _tenant_brand_dict(access, tenant)

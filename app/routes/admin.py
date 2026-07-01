@@ -427,6 +427,17 @@ def _ensure_internal_walk_payment(walk: Walk, db: Session):
             refresh_referred_walk_count(db, _ref_walker_id)
     except Exception:
         _logger.exception("falha ao atualizar referral do walker no fluxo de conclusao walk_id=%s", getattr(walk, "id", "?"))
+    # Growth loop cunha 4: reconta/gatilho do referral do TUTOR na conclusão do passeio.
+    try:
+        from app.services.tutor_referrals import refresh_referral_conversion
+        _tutor_id = getattr(walk, "tutor_id", None)
+        _tenant_id_w = getattr(walk, "tenant_id", None)
+        if _tutor_id and _tenant_id_w:
+            refresh_referral_conversion(db, _tutor_id, _tenant_id_w)
+    except Exception:
+        _logger.exception(
+            "falha ao atualizar referral do tutor na conclusao walk_id=%s", getattr(walk, "id", "?")
+        )
     # Item 2 (fiscal): provisão de comissão best-effort para passeios de assinatura.
     # Passeio avulso já recebe provisão via webhook Asaas (_provision_safe em payments.py).
     # Passeio de assinatura (provider=subscription_walk) nunca passa pelo webhook,

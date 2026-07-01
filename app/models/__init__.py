@@ -63,3 +63,4 @@ from app.models.credit_ledger import CreditLedgerEntry  # noqa: F401
 from app.models.tutor_referral import TutorReferralConfig, TutorReferral  # noqa: F401
 from app.models.pet_timeline_event import PetTimelineEvent  # noqa: F401
 from app.models.pet_profile_config import PetProfileConfig  # noqa: F401
+from app.models.walk_observation import WalkObservation  # noqa: F401

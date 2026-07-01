@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
+from app.dependencies.rbac import require_permission
+from app.dependencies.tenant_scope import get_admin_tenant_scope
 from app.models.pet import Pet
 from app.models.pet_timeline_event import PetTimelineEvent, EVENT_TYPES
 from app.models.user import User
@@ -15,6 +17,17 @@ from app.services import pet_profile_service as svc
 
 router = APIRouter(prefix="/pets", tags=["pet-profile"])
 api_router = APIRouter(prefix="/api/pets", tags=["pet-profile"])
+
+admin_router = APIRouter(
+    prefix="/admin/pet-profile",
+    tags=["pet-profile-admin"],
+    dependencies=[Depends(require_permission("admin.access"))],
+)
+api_admin_router = APIRouter(
+    prefix="/api/admin/pet-profile",
+    tags=["pet-profile-admin"],
+    dependencies=[Depends(require_permission("admin.access"))],
+)
 
 
 def _get_owned_pet(db: Session, pet_id: str, user: User) -> Pet:
@@ -134,3 +147,60 @@ def delete_event(pet_id: str, event_id: str,
     db.delete(ev)
     db.commit()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Admin — config get/patch (tenant-scoped)
+# ---------------------------------------------------------------------------
+
+class PetProfileConfigUpdate(BaseModel):
+    profile_enabled: bool | None = None
+    observations_enabled: bool | None = None
+    reminders_enabled: bool | None = None
+    vaccine_lead_days: int | None = Field(None, ge=0)
+    inactivity_days: int | None = Field(None, ge=1)
+    share_enabled: bool | None = None
+
+
+def _config_dict(c) -> dict:
+    return {
+        "tenant_id": c.tenant_id,
+        "profile_enabled": c.profile_enabled,
+        "observations_enabled": c.observations_enabled,
+        "reminders_enabled": c.reminders_enabled,
+        "vaccine_lead_days": c.vaccine_lead_days,
+        "inactivity_days": c.inactivity_days,
+        "share_enabled": c.share_enabled,
+    }
+
+
+def _admin_tenant_id(admin: User, db: Session) -> str:
+    scope = get_admin_tenant_scope(admin, db)
+    # Super-admin global (sem act-as) retorna scope.tenant_id=None;
+    # usa o tenant_id do próprio user como fallback — igual a tutor_referral_config.py.
+    tid = scope.tenant_id or getattr(admin, "tenant_id", None)
+    if not tid:
+        raise HTTPException(status_code=400, detail="tenant_id obrigatório para admin global.")
+    return tid
+
+
+@admin_router.get("/config")
+@api_admin_router.get("/config")
+def get_config(admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    tid = _admin_tenant_id(admin, db)
+    cfg = svc.get_or_create_pet_profile_config(db, tid)
+    db.commit()
+    return _config_dict(cfg)
+
+
+@admin_router.patch("/config")
+@api_admin_router.patch("/config")
+def patch_config(payload: PetProfileConfigUpdate,
+                 admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    tid = _admin_tenant_id(admin, db)
+    cfg = svc.get_or_create_pet_profile_config(db, tid)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(cfg, field, value)
+    db.commit()
+    db.refresh(cfg)
+    return _config_dict(cfg)

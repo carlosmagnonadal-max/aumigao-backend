@@ -70,3 +70,13 @@ def test_held_credit_applied_on_subscribe():
     assert s.credits_remaining == 6
     db.refresh(ref)
     assert json.loads(ref.held_credits_json).get("referrer") in (0, None)
+
+
+def test_no_double_grant_on_retry():
+    db = _db()
+    _sub(db, "u1", credits=0)
+    ref = _ref(db)
+    rewards.grant_reward(db, ref)
+    rewards.grant_reward(db, ref)   # 2ª chamada = no-op
+    s1 = db.get(TutorSubscription, "s-u1")
+    assert s1.credits_remaining == 2   # não 4

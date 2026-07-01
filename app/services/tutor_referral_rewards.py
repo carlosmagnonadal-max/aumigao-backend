@@ -80,6 +80,9 @@ def grant_reward(db: Session, referral: TutorReferral) -> None:
     if not referral.reward_snapshot_json:
         return
 
+    if referral.reward_status == "granted":
+        return  # idempotência: não reconceder (protege o crédito do += duplo)
+
     snap = json.loads(referral.reward_snapshot_json)
     rtype = snap.get("reward_type")
 

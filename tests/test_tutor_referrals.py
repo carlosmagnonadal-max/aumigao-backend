@@ -153,3 +153,24 @@ def test_conversion_is_idempotent():
     svc.refresh_referral_conversion(db, "u2", "t1")  # 2ª vez não muda nada
     db.refresh(ref)
     assert ref.status == "converted"
+
+
+def test_price_zero_walk_does_not_count():
+    db = _db(); _enable(db, trigger_type="primeiro_passeio_pago")
+    ref = _registered_referral(db)
+    _paid_completed_walk(db, "u2", price=0.0)   # passeio grátis
+    svc.refresh_referral_conversion(db, "u2", "t1")
+    db.refresh(ref); assert ref.status == "registered"   # não converteu
+
+
+def test_walk_from_other_tenant_does_not_count():
+    db = _db(); _enable(db, trigger_type="primeiro_passeio_pago")
+    ref = _registered_referral(db)
+    # passeio do convidado, mas em outro tenant
+    import uuid as _uuid
+    db.add(Walk(id=_uuid.uuid4().hex, tenant_id="t2", tutor_id="u2", price=50.0,
+                operational_status="ride_completed", pet_id="pet1",
+                scheduled_date="2026-07-01", duration_minutes=30))
+    db.commit()
+    svc.refresh_referral_conversion(db, "u2", "t1")
+    db.refresh(ref); assert ref.status == "registered"

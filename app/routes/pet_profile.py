@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
@@ -12,7 +13,10 @@ from app.dependencies.rbac import require_permission
 from app.dependencies.tenant_scope import get_admin_tenant_scope
 from app.models.pet import Pet
 from app.models.pet_timeline_event import PetTimelineEvent, EVENT_TYPES
+from app.models.tenant import Tenant
 from app.models.user import User
+from app.models.walk import Walk
+from app.models.walk_observation import MOOD_VALUES, ENERGY_VALUES, SOCIALIZATION_VALUES
 from app.services import pet_profile_service as svc
 
 router = APIRouter(prefix="/pets", tags=["pet-profile"])
@@ -28,6 +32,10 @@ api_admin_router = APIRouter(
     tags=["pet-profile-admin"],
     dependencies=[Depends(require_permission("admin.access"))],
 )
+
+# Routers para observação do passeador (prefixo /walks e /api/walks)
+walk_obs_router = APIRouter(prefix="/walks", tags=["pet-profile"])
+api_walk_obs_router = APIRouter(prefix="/api/walks", tags=["pet-profile"])
 
 
 def _get_owned_pet(db: Session, pet_id: str, user: User) -> Pet:
@@ -208,3 +216,88 @@ def patch_config(payload: PetProfileConfigUpdate,
     db.commit()
     db.refresh(cfg)
     return _config_dict(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Observação do passeador (Fase 2)
+# POST /walks/{walk_id}/observation  e  /api/walks/{walk_id}/observation
+# ---------------------------------------------------------------------------
+
+class WalkObservationCreate(BaseModel):
+    mood: Optional[str] = None
+    energy: Optional[str] = None
+    socialization: Optional[str] = None
+    peed: Optional[bool] = None
+    pooped: Optional[bool] = None
+    incident: bool = False
+    incident_notes: str = Field("", max_length=2000)
+
+    @field_validator("mood")
+    @classmethod
+    def _mood(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in MOOD_VALUES:
+            raise ValueError(f"mood inválido: {v!r}. Válidos: {MOOD_VALUES}")
+        return v
+
+    @field_validator("energy")
+    @classmethod
+    def _energy(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ENERGY_VALUES:
+            raise ValueError(f"energy inválido: {v!r}. Válidos: {ENERGY_VALUES}")
+        return v
+
+    @field_validator("socialization")
+    @classmethod
+    def _socialization(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in SOCIALIZATION_VALUES:
+            raise ValueError(f"socialization inválido: {v!r}. Válidos: {SOCIALIZATION_VALUES}")
+        return v
+
+
+def _obs_dict(obs) -> dict:
+    return {
+        "id": obs.id,
+        "walk_id": obs.walk_id,
+        "pet_id": obs.pet_id,
+        "tenant_id": obs.tenant_id,
+        "walker_user_id": obs.walker_user_id,
+        "mood": obs.mood,
+        "energy": obs.energy,
+        "socialization": obs.socialization,
+        "peed": obs.peed,
+        "pooped": obs.pooped,
+        "incident": obs.incident,
+        "incident_notes": obs.incident_notes,
+        "created_at": obs.created_at.isoformat() if obs.created_at else None,
+    }
+
+
+@walk_obs_router.post("/{walk_id}/observation", status_code=201)
+@api_walk_obs_router.post("/{walk_id}/observation", status_code=201)
+def post_walk_observation(
+    walk_id: str,
+    payload: WalkObservationCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # 1. Walk existe?
+    walk = db.get(Walk, walk_id)
+    if not walk:
+        raise HTTPException(status_code=404, detail="Passeio não encontrado")
+
+    # 2. Feature ativa para o tenant deste passeio?
+    tenant = db.get(Tenant, walk.tenant_id) if walk.tenant_id else None
+    if not tenant or not svc.observations_active(tenant, db):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # 3. Ownership: usuário deve ser o passeador do passeio
+    is_walker = (walk.walker_id == user.id) or (walk.assigned_walker_id == user.id)
+    if not is_walker:
+        raise HTTPException(status_code=403, detail="Apenas o passeador deste passeio pode registrar observações")
+
+    # 4. Registra (idempotente)
+    data = {**payload.model_dump(), "walker_user_id": user.id}
+    obs = svc.record_walk_observation(db, walk, data)
+    db.commit()
+
+    return {"observation": _obs_dict(obs)}

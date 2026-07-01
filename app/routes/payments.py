@@ -1132,6 +1132,56 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
     external_ref = payment_data.get("externalReference") or ""
 
     # ---------------------------------------------------------------------------
+    # Dedup persistente por event-id (P1). O Asaas envia um `id` de EVENTO no topo
+    # do payload; um reenvio (retry do provedor, janela de falha parcial) traria o
+    # MESMO event-id. Gravamos o event-id com UNIQUE e commitamos ANTES dos
+    # handlers: se já existir, o evento JÁ foi processado → 200 sem reaplicar efeito.
+    #
+    # Ordenação: gravamos o marcador ANTES do efeito. Se um handler downstream
+    # falhar, ele levanta 500 (Asaas reenvia); para não engolir o reenvio, o marcador
+    # é REMOVIDO no caminho de erro (ver os `except` dos handlers, que chamam
+    # _drop_webhook_marker). Assim: sucesso → marcador persiste (bloqueia duplicata);
+    # falha → marcador some (o reenvio reprocessa).
+    #
+    # Sem id no topo (ex.: alguns eventos de sandbox): seguimos sem dedup
+    # (best-effort) — a idempotência por provider_payment_id ainda cobre.
+    _webhook_event_id = payload.get("id")
+    _dedup_marked = False
+    if _webhook_event_id:
+        from sqlalchemy.exc import IntegrityError
+        from app.models.webhook_event import WebhookEvent
+        db.add(WebhookEvent(
+            event_id=str(_webhook_event_id),
+            provider="asaas",
+            event_type=event if isinstance(event, str) else None,
+        ))
+        try:
+            db.commit()
+            _dedup_marked = True
+        except IntegrityError:
+            db.rollback()
+            logger.info(
+                "asaas_webhook.duplicate_event event_id=%s event=%s — ignorado (ja processado)",
+                _webhook_event_id, event,
+            )
+            return {"ok": True, "received": event, "duplicate": True}
+
+    def _drop_webhook_marker() -> None:
+        """Remove o marcador de dedup quando o processamento falha (para o reenvio
+        do Asaas poder reprocessar). Best-effort — nunca mascara o erro original."""
+        if not _dedup_marked:
+            return
+        try:
+            from app.models.webhook_event import WebhookEvent as _WE
+            db.query(_WE).filter(_WE.event_id == str(_webhook_event_id)).delete()
+            db.commit()
+        except Exception:
+            logger.exception(
+                "asaas_webhook: falha ao remover marcador de dedup event_id=%s",
+                _webhook_event_id,
+            )
+
+    # ---------------------------------------------------------------------------
     # INVOICE_* — eventos de NFS-e (nota fiscal). Processados ANTES dos eventos
     # PAYMENT_* para evitar qualquer interferência com o caminho de dinheiro.
     # Dormente enquanto a tabela nfse estiver vazia (flag NFS_E_ENABLED=false).
@@ -1145,6 +1195,7 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                 "asaas_webhook.nfse_error event=%s",
                 event,
             )
+            _drop_webhook_marker()
             raise HTTPException(status_code=500, detail="Erro ao processar webhook de NFS-e.")
         return {"ok": True, "received": event}
 
@@ -1191,11 +1242,11 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
     # ---------------------------------------------------------------------------
 
     # NOTA SOBRE IDEMPOTÊNCIA E STATUS CODE:
-    # Não existe tabela de dedup persistente por event-id (seria uma migration).
-    # As funções _handle_tip_webhook / _handle_subscription_webhook já são
+    # A dedup persistente por event-id agora EXISTE (tabela webhook_events, gravada
+    # no topo deste handler): um reenvio do mesmo event-id retorna 200 sem reaplicar
+    # efeito. Além disso, _handle_tip_webhook / _handle_subscription_webhook já são
     # idempotentes por design (upsert baseado em provider_payment_id / localização
-    # de registro existente), mas sem uma chave de evento gravada não há garantia
-    # 100% contra reenvio duplo em janela de falha parcial.
+    # de registro existente) — defesa em profundidade.
     # Decisão de status code:
     #   - Em caso de erro de persistência retornamos 500 (não 200) para que o
     #     Asaas reenvia o evento. O risco de duplicata em reenvio é mitigado pela
@@ -1219,6 +1270,7 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                 "asaas_webhook.tip_error event=%s provider_payment_id=%s",
                 event, provider_payment_id,
             )
+            _drop_webhook_marker()
             raise HTTPException(status_code=500, detail="Erro interno ao processar webhook de gorjeta.")
         return {"ok": True, "received": event}
 
@@ -1232,6 +1284,7 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                 "asaas_webhook.tenant_saas_error event=%s provider_payment_id=%s",
                 event, provider_payment_id,
             )
+            _drop_webhook_marker()
             raise HTTPException(status_code=500, detail="Erro ao processar webhook de mensalidade.")
         if handled:
             return {"ok": True, "received": event}
@@ -1248,6 +1301,7 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                 "asaas_webhook.tenant_comm_error event=%s provider_payment_id=%s",
                 event, provider_payment_id,
             )
+            _drop_webhook_marker()
             raise HTTPException(status_code=500, detail="Erro ao processar webhook de comissão.")
         return {"ok": True, "received": event}
 
@@ -1261,6 +1315,7 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                 "asaas_webhook.subscription_error event=%s provider_payment_id=%s",
                 event, provider_payment_id,
             )
+            _drop_webhook_marker()
             raise HTTPException(status_code=500, detail="Erro interno ao processar webhook de assinatura.")
         if handled:
             return {"ok": True, "received": event}
@@ -1328,6 +1383,7 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
             "asaas_webhook.regular_error event=%s provider_payment_id=%s",
             event, provider_payment_id,
         )
+        _drop_webhook_marker()
         raise HTTPException(status_code=500, detail="Erro interno ao processar webhook de pagamento.")
     return {"ok": True, "received": event}
 

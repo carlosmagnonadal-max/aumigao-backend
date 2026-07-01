@@ -94,3 +94,13 @@ jobs:
 
       - name: Audit Python dependencies
         run: pip-audit -r requirements.txt --strict
+
+      - name: Gera SBOM (CycloneDX)
+        run: pip-audit -r requirements.txt -f cyclonedx-json -o sbom-backend.json
+
+      - name: Publica SBOM como artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        with:
+          name: sbom-backend
+          path: sbom-backend.json
+          retention-days: 90

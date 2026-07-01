@@ -896,7 +896,11 @@ def _handle_tenant_saas_subscription_webhook(db, event: str, payment_data: dict)
         sub.last_payment_at = now
         sub.overdue_since = None
         sub.current_period_start = now
-        sub.current_period_end = now + timedelta(days=31)
+        # P1: usar o mesmo cálculo de fim-de-mês da CRIAÇÃO (overflow-safe), não
+        # timedelta(days=31). O +31 dias desalinha o vencimento (ex.: confirmar em
+        # 31/jan cairia em 03/mar, "pulando" fevereiro) e desloca o ciclo a cada mês.
+        from app.services.tenant_saas_billing_service import _period_end_month
+        sub.current_period_end = _period_end_month(now)
         db.add(sub)
 
         # Reativa tenant apenas se suspenso por inadimplência (não por suspensão manual)

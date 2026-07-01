@@ -108,6 +108,7 @@ from app.models.walker_background_certificate import WalkerBackgroundCertificate
 from app.models.tenant import Tenant
 from app.models.tenant_onboarding import TenantOnboarding
 from app.models.walker_network_profile import WalkerNetworkProfile
+from app.models.tenant_tutor_access import TenantTutorAccess
 from app.services.background_check_service import (
     compute_background_status,
     official_validation_url as background_official_validation_url,
@@ -287,6 +288,40 @@ def list_operational_events(
         query = query.filter(AdminOperationalEvent.severity == severity)
     rows = query.order_by(AdminOperationalEvent.created_at.desc()).limit(limit).all()
     return {"items": [serialize_admin_operational_event(row) for row in rows], "total": len(rows)}
+
+
+@api_router.get("/tenant-network/stats")
+def tenant_network_stats(
+    tenant_id: str | None = Query(None),
+    admin: User = Depends(require_permission("admin.access")),
+    db: Session = Depends(get_db),
+):
+    """Contagem de tutores do tenant no app (Cunha ② — B2B2C seeding "Minha Rede").
+
+    Read-only. Escopo: admin de tenant vê o SEU tenant (scope.tenant_id manda —
+    query param é ignorado por segurança). super_admin global precisa passar
+    ?tenant_id=; sem ele e sem escopo → 400.
+    """
+    scope = get_admin_tenant_scope(admin, db)
+    target_tenant_id = scope.tenant_id or tenant_id
+    if not target_tenant_id:
+        raise HTTPException(
+            status_code=400,
+            detail="tenant_id obrigatório para admin global.",
+        )
+
+    def _count(status: str) -> int:
+        return int(
+            db.query(func.count(TenantTutorAccess.id))
+            .filter(
+                TenantTutorAccess.tenant_id == target_tenant_id,
+                TenantTutorAccess.status == status,
+            )
+            .scalar()
+            or 0
+        )
+
+    return {"active_tutors": _count("active"), "pending_tutors": _count("pending")}
 
 
 # api-T2: schema permissivo do evento operacional manual. Os campos espelham os lidos

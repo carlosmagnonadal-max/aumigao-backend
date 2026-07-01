@@ -168,5 +168,13 @@ def refresh_referral_conversion(db: Session, referred_user_id: str, tenant_id: s
         ref.reward_status = "eligible"
         ref.reward_snapshot_json = _reward_snapshot(cfg)
         ref.converted_at = datetime.utcnow()
-        # NOTA: o grant da recompensa (gated por _payout_enabled) entra no Plano 2.
+        if _payout_enabled():
+            try:
+                from app.services.tutor_referral_rewards import grant_reward
+                grant_reward(db, ref)  # concede aos 2 lados; seta reward_status="granted" e comita
+            except Exception:
+                import logging
+                logging.getLogger("aumigao.tutor").exception(
+                    "falha ao conceder recompensa de indicação referral_id=%s", ref.id
+                )
     db.commit()

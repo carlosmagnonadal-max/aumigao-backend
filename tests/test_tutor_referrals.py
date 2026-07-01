@@ -174,3 +174,33 @@ def test_walk_from_other_tenant_does_not_count():
     db.commit()
     svc.refresh_referral_conversion(db, "u2", "t1")
     db.refresh(ref); assert ref.status == "registered"
+
+
+# ---------------------------------------------------------------------------
+# Task 7: grant_reward gated por TUTOR_REFERRAL_PAYOUT_ENABLED
+# ---------------------------------------------------------------------------
+
+from app.models.coupon import Coupon
+
+
+def test_conversion_grants_when_flag_on(monkeypatch):
+    db = _db(); _enable(db, trigger_type="no_cadastro", reward_type="desconto",
+                        discount_kind="fixed", discount_value=15.0)
+    ref = _registered_referral(db)
+    monkeypatch.setenv("TUTOR_REFERRAL_PAYOUT_ENABLED", "true")
+    svc.refresh_referral_conversion(db, "u2", "t1")
+    db.refresh(ref)
+    assert ref.reward_status == "granted"
+    assert db.query(Coupon).filter(Coupon.tenant_id == "t1").count() == 2
+
+
+def test_conversion_does_not_grant_when_flag_off(monkeypatch):
+    db = _db(); _enable(db, trigger_type="no_cadastro", reward_type="desconto",
+                        discount_kind="fixed", discount_value=15.0)
+    ref = _registered_referral(db)
+    monkeypatch.setenv("TUTOR_REFERRAL_PAYOUT_ENABLED", "false")
+    svc.refresh_referral_conversion(db, "u2", "t1")
+    db.refresh(ref)
+    assert ref.status == "converted"
+    assert ref.reward_status == "eligible"
+    assert db.query(Coupon).filter(Coupon.tenant_id == "t1").count() == 0

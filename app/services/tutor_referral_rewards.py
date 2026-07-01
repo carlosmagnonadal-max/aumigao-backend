@@ -3,17 +3,20 @@
 Veículos implementados:
 - desconto    → Coupon com discount_type fixed|percent
 - passeio_gratis → Coupon com discount_type percent 100 % (is_referral_gift=True)
-- credito     → no-op (Tarefa 4)
+- credito     → créditos na assinatura ativa; retidos em held_credits_json se sem assinatura
 """
 from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
+from uuid import uuid4
 
+from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session
 
 from app.models.coupon import Coupon, DISCOUNT_FIXED, DISCOUNT_PERCENT
 from app.models.tutor_referral import TutorReferral
+from app.models.recurring_plan import TutorSubscription
 
 COUPON_VALIDITY_DAYS = 90
 
@@ -101,7 +104,84 @@ def grant_reward(db: Session, referral: TutorReferral) -> None:
             )
 
         elif rtype == "credito":
-            pass  # Tarefa 4 — crédito closed-loop no ledger
+            _uid_field = "referrer_user_id" if side == "referrer" else "referred_user_id"
+            _grant_credit(db, referral, side, _uid_field, snap, mult)
 
     referral.reward_status = "granted"
     db.commit()
+
+
+def _active_subscription(db: Session, tenant_id: str, tutor_id: str):
+    return (
+        db.query(TutorSubscription)
+        .filter(
+            TutorSubscription.tenant_id == tenant_id,
+            TutorSubscription.tutor_id == tutor_id,
+            TutorSubscription.status == "active",
+        )
+        .first()
+    )
+
+
+def _add_ledger_bonus(db: Session, subscription, credits: int) -> None:
+    try:
+        from app.models.credit_ledger import CreditLedgerEntry
+        entry = CreditLedgerEntry(
+            id=str(uuid4()), tenant_id=subscription.tenant_id, subscription_id=subscription.id,
+            event_type="referral_bonus_granted", credits_count=credits,
+            unit_value=0.0, total_value=0.0,
+        )
+        db.add(entry)
+    except Exception:
+        pass  # ledger contábil best-effort; nunca quebra a concessão
+
+
+def _grant_credit(db: Session, referral: TutorReferral, side: str, uid_field: str,
+                  snap: dict, mult: float) -> None:
+    credits = int(round(float(snap.get("credit_walks", 0)) * mult))
+    if credits <= 0:
+        return
+    tutor_id = getattr(referral, uid_field, None)
+    if not tutor_id:
+        return
+    sub = _active_subscription(db, referral.tenant_id, tutor_id)
+    if sub is not None:
+        db.execute(
+            sa_update(TutorSubscription)
+            .where(TutorSubscription.id == sub.id)
+            .values(credits_remaining=TutorSubscription.credits_remaining + credits,
+                    updated_at=datetime.utcnow())
+        )
+        _add_ledger_bonus(db, sub, credits)
+    else:
+        held = json.loads(referral.held_credits_json) if referral.held_credits_json else {}
+        held[side] = credits
+        referral.held_credits_json = json.dumps(held)
+
+
+def apply_held_credit_on_subscription(db: Session, subscription) -> None:
+    refs = (
+        db.query(TutorReferral)
+        .filter(TutorReferral.tenant_id == subscription.tenant_id,
+                TutorReferral.held_credits_json.isnot(None))
+        .all()
+    )
+    total = 0
+    for ref in refs:
+        held = json.loads(ref.held_credits_json) if ref.held_credits_json else {}
+        changed = False
+        for side, uid_field in (("referrer", "referrer_user_id"), ("referred", "referred_user_id")):
+            if held.get(side) and getattr(ref, uid_field, None) == subscription.tutor_id:
+                total += int(held[side])
+                held[side] = 0
+                changed = True
+        if changed:
+            ref.held_credits_json = json.dumps(held)
+    if total > 0:
+        db.execute(
+            sa_update(TutorSubscription)
+            .where(TutorSubscription.id == subscription.id)
+            .values(credits_remaining=TutorSubscription.credits_remaining + total,
+                    updated_at=datetime.utcnow())
+        )
+        _add_ledger_bonus(db, subscription, total)

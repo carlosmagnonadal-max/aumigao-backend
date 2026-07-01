@@ -55,6 +55,7 @@ class TutorReferral(Base):
     status: Mapped[str] = mapped_column(String, default="pending", index=True)
     reward_status: Mapped[str] = mapped_column(String, default="not_eligible", index=True)
     reward_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    held_credits_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     completed_paid_walks_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

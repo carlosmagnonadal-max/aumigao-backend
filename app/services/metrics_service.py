@@ -21,6 +21,7 @@ from app.models.coupon import Coupon, CouponRedemption
 from app.models.incentive_rule import IncentiveRule
 from app.models.user import User
 from app.models.walker_incentive import WalkerIncentive
+from app.models.tutor_referral import TutorReferral
 from app.models.walker_referral import WalkerReferral
 
 # Quantas semanas mostrar nas séries históricas
@@ -248,7 +249,39 @@ def get_referral_metrics(db: Session, scope: AdminTenantScope) -> dict:
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# 4. Ocorrências (Complaint)
+# 4. Indicações de Tutor (TutorReferral)
+# ────────────────────────────────────────────────────────────────────────────
+
+def get_tutor_referral_metrics(db: Session, scope: AdminTenantScope) -> dict:
+    """Métricas de indicações de tutor, scoped por tenant.
+
+    TutorReferral possui tenant_id — apply_tenant_filter filtra por tenant.
+    Conta `granted` (reward_status=="granted") em vez de valor R$.
+    """
+    query = apply_tenant_filter(db.query(TutorReferral), TutorReferral, scope)
+    referrals = query.all()
+    total = len(referrals)
+    converted_count = sum(1 for r in referrals if r.status == "converted")
+    granted_count = sum(1 for r in referrals if r.reward_status == "granted")
+
+    status_counts: dict[str, int] = defaultdict(int)
+    for r in referrals:
+        status_counts[r.status] += 1
+    by_status = [{"status": s, "count": c} for s, c in sorted(status_counts.items())]
+
+    created_by_week = _aggregate_by_week(referrals, "created_at")
+
+    return {
+        "total": total,
+        "converted_count": converted_count,
+        "granted_count": granted_count,
+        "by_status": by_status,
+        "created_by_week": created_by_week,
+    }
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 5. Ocorrências (Complaint)
 # ────────────────────────────────────────────────────────────────────────────
 
 def get_complaint_metrics(db: Session, scope: AdminTenantScope) -> dict:

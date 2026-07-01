@@ -30,6 +30,8 @@ CRITICAL_NOTIFICATION_TYPES = {
     "protected_chat_message",
     # Fase 7 $-2: gorjeta confirmada — notificação crítica para o walker.
     "tip_received",
+    # Growth loop: convida tutor a acompanhar/compartilhar passeio ao vivo.
+    "walk_live_share",
 }
 CRITICAL_WALK_STATUS_ACTIONS = {"walker_accepted", "ride_in_progress"}
 

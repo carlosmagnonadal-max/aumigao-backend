@@ -2822,6 +2822,32 @@ def confirm_start_checklist(
     db.commit()
     db.refresh(walk)
 
+    # Growth loop cunha 1: convida o tutor a acompanhar/compartilhar ao vivo.
+    try:
+        from app.models.tenant import Tenant
+        from app.services.live_share_service import is_live_share_enabled, pet_first_name
+        from app.services.tenant_plan_service import tenant_feature_enabled
+
+        _tenant = db.get(Tenant, walk.tenant_id) if walk.tenant_id else None
+        _gps_on = (_tenant is None) or tenant_feature_enabled(_tenant, db, "live_gps")
+        if is_live_share_enabled() and _gps_on:
+            _pet = db.get(Pet, walk.pet_id) if walk.pet_id else None
+            _name = pet_first_name(_pet.name if _pet else "") or "seu pet"
+            _create_notification(
+                db,
+                NotificationCreate(
+                    user_id=walk.tutor_id,
+                    user_role="cliente",
+                    title=f"🐕 {_name} saiu para passear",
+                    message="Acompanhe o passeio ao vivo e compartilhe com a família.",
+                    type="walk_live_share",
+                    related_entity_type="walk",
+                    related_entity_id=walk.id,
+                ),
+            )
+    except Exception:
+        LOGGER.exception("falha ao enviar push walk_live_share walk_id=%s", walk.id)
+
     result = serialize_operational_walk(walk, db, user=user)
     result["ok"] = True
     # Injeta campo de compatibilidade com frontend (não há coluna — melhoria futura)

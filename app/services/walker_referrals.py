@@ -324,5 +324,9 @@ def refresh_referred_walk_count(db, walker_id: str) -> None:
         referral.status = "converted"
         referral.reward_status = "eligible"
         referral.converted_at = datetime.now(timezone.utc)
+
+    # Pagar quando convertido e ainda elegível (cobre o caso de a flag de payout
+    # ter sido ligada DEPOIS da conversão — senão o bônus ficaria preso em 'eligible').
+    if referral.status == "converted" and referral.reward_status == "eligible":
         if pay_referral_rewards(db, referral):
             notify_referral_rewards(db, referral)

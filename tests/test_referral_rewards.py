@@ -237,3 +237,38 @@ def test_invite_link_is_full_public_url():
     from app.services.walker_referrals import _build_invite_link
     link = _build_invite_link("AUM-ABC-123456")
     assert link == "https://app.aumigaowalk.com.br/referral/AUM-ABC-123456"
+
+
+def test_refresh_pays_stranded_eligible_when_flag_flips_on(monkeypatch):
+    monkeypatch.setattr(svc, "notify_referral_rewards", lambda db, r: None)
+    db, Walk = _db_with_walks()
+    r = WalkerReferral(
+        id="ref1", referrer_user_id="u_referrer", referred_user_id="u_referred",
+        referred_name="F", referred_phone="71999999999", referred_phone_normalized="5571999999999",
+        city="C", neighborhood="N", referral_code="AUM-ABC-123456", invite_link="x",
+        status="approved", reward_status="pending", reward_amount=20.0,
+        performance_status="neutral", completed_walks_count=0,
+    )
+    db.add(r)
+    for i in range(5):
+        db.add(_mk_walk(Walk, f"w{i}", "u_referred", "ride_completed"))
+    db.commit()
+
+    # 1) flag OFF: converte para eligible, mas NÃO paga
+    monkeypatch.delenv("WALKER_REFERRAL_PAYOUT_ENABLED", raising=False)
+    svc.refresh_referred_walk_count(db, "u_referred")
+    db.commit()
+    r1 = db.query(WalkerReferral).get("ref1")
+    assert r1.status == "converted"
+    assert r1.reward_status == "eligible"
+    assert db.query(WalkerEarning).count() == 0
+
+    # 2) flag ON + novo passeio dispara refresh: agora paga o bonus preso
+    monkeypatch.setenv("WALKER_REFERRAL_PAYOUT_ENABLED", "true")
+    db.add(_mk_walk(Walk, "w5", "u_referred", "ride_completed"))
+    db.commit()
+    svc.refresh_referred_walk_count(db, "u_referred")
+    db.commit()
+    r2 = db.query(WalkerReferral).get("ref1")
+    assert r2.reward_status == "paid"
+    assert db.query(WalkerEarning).count() == 2

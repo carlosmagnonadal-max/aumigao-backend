@@ -55,6 +55,18 @@ def reminders_active(tenant: Tenant, db: Session) -> bool:
     return _three_layer(tenant, db, "PET_ALERTS_ENABLED", REMINDERS_FEATURE_KEY, "reminders_enabled")
 
 
+SHARE_FEATURE_KEY = "pet_share"
+
+
+def share_active(tenant: Tenant, db: Session) -> bool:
+    """Gate de 3 camadas para o compartilhamento público do perfil do pet (Fase 4).
+
+    Env PET_SHARE_ENABLED + TenantFeature pet_share + config.share_enabled.
+    Dormente por padrão (todas as camadas default-OFF).
+    """
+    return _three_layer(tenant, db, "PET_SHARE_ENABLED", SHARE_FEATURE_KEY, "share_enabled")
+
+
 def record_walk_observation(db: Session, walk: Walk, payload: dict) -> WalkObservation:
     """Registra (ou atualiza) a observação estruturada do passeador para um passeio.
 

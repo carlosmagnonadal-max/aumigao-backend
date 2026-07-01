@@ -224,6 +224,12 @@ def subscribe(db: Session, tenant: Tenant, tutor_id: str, plan_id: str) -> Tutor
         db.commit()
     except Exception:
         logger.exception("subscribe: falha best-effort ledger liability subscription_id=%s", subscription.id)
+    try:
+        from app.services.tutor_referral_rewards import apply_held_credit_on_subscription
+        apply_held_credit_on_subscription(db, subscription)
+        db.commit()
+    except Exception:
+        logger.exception("falha ao aplicar crédito de indicação retido subscription_id=%s", subscription.id)
     return subscription
 
 
@@ -439,6 +445,11 @@ def reset_credits_if_renewal(db: Session, subscription: TutorSubscription) -> bo
         logger.exception(
             "reset_credits_if_renewal: falha best-effort ledger subscription_id=%s", locked.id
         )
+    try:
+        from app.services.tutor_referral_rewards import apply_held_credit_on_subscription
+        apply_held_credit_on_subscription(db, locked)
+    except Exception:
+        logger.exception("falha ao aplicar crédito de indicação retido subscription_id=%s", locked.id)
     return True
 
 
@@ -467,6 +478,11 @@ def grant_credits_on_payment(db: Session, subscription: TutorSubscription, payme
         record_liability_safe(db, subscription, payment_id=payment_id)
     except Exception:
         logger.exception("grant_credits_on_payment: falha best-effort ledger subscription_id=%s", subscription.id)
+    try:
+        from app.services.tutor_referral_rewards import apply_held_credit_on_subscription
+        apply_held_credit_on_subscription(db, subscription)
+    except Exception:
+        logger.exception("falha ao aplicar crédito de indicação retido subscription_id=%s", subscription.id)
     return True
 
 

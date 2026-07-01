@@ -80,3 +80,19 @@ def test_no_double_grant_on_retry():
     rewards.grant_reward(db, ref)   # 2ª chamada = no-op
     s1 = db.get(TutorSubscription, "s-u1")
     assert s1.credits_remaining == 2   # não 4
+
+
+from app.services import recurring_plan_service as rps
+
+
+def test_grant_credits_on_payment_applies_held():
+    db = _db()
+    ref = _ref(db)
+    rewards.grant_reward(db, ref)  # tudo retido (sem assinatura)
+    s = _sub(db, "u1", credits=0)
+    s.credits_granted = False  # simula pré-primeiro-pagamento
+    db.commit()
+    rps.grant_credits_on_payment(db, s)  # 1º pagamento confirma
+    db.commit()
+    db.refresh(s)
+    assert s.credits_remaining == 6   # 4 do plano + 2 retidos

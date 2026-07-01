@@ -5,6 +5,7 @@
 O resgate (redeem) acontece no checkout/pagamento — ver coupon_service.redeem.
 """
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -14,6 +15,7 @@ from app.dependencies.tenant_scope import get_admin_tenant_scope
 from app.models.coupon import Coupon
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.models.walk import Walk
 from app.schemas.coupon import (
     CouponCreate,
     CouponResponse,
@@ -61,6 +63,32 @@ def validate_coupon(payload: CouponValidateRequest, request: Request, user: User
     if not svc.coupons_enabled(tenant, db):
         return CouponValidateResult(valid=False, code=payload.code, final_amount=payload.amount, message="Cupons indisponíveis.")
     return CouponValidateResult(**svc.validate(db, tenant, payload.code, user.id, payload.amount))
+
+
+# --------------------------------------------------------------------------- #
+# Cliente — resgatar cupom (registra CouponRedemption + marca brinde no passeio)
+# --------------------------------------------------------------------------- #
+class CouponRedeemRequest(BaseModel):
+    code: str
+    walk_id: str | None = None
+
+
+@router.post("/redeem")
+@api_router.post("/redeem")
+def redeem_coupon(
+    payload: CouponRedeemRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    tenant = _resolve_user_tenant(user, db, request)
+    amount = 0.0
+    if payload.walk_id:
+        _walk = db.get(Walk, payload.walk_id)
+        if _walk is not None:
+            amount = float(getattr(_walk, "price", 0) or 0)
+    redemption = svc.redeem(db, tenant, payload.code, user.id, amount, walk_id=payload.walk_id)
+    return {"ok": True, "redemption_id": redemption.id, "status": "redeemed"}
 
 
 # --------------------------------------------------------------------------- #

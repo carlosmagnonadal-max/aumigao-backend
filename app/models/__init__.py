@@ -65,3 +65,4 @@ from app.models.pet_timeline_event import PetTimelineEvent  # noqa: F401
 from app.models.pet_profile_config import PetProfileConfig  # noqa: F401
 from app.models.walk_observation import WalkObservation  # noqa: F401
 from app.models.pet_reminder import PetReminder  # noqa: F401 — Fase 3: lembretes determinísticos
+from app.models.pet_share_link import PetShareLink  # noqa: F401 — Fase 4: compartilhamento público LGPD

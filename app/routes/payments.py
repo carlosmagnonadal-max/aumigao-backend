@@ -1066,8 +1066,28 @@ def _handle_subscription_webhook(db, event: str, payment_data: dict) -> bool:
 
         # Projeto A: 1º pagamento concede créditos; renovações rebastecem.
         from app.services.recurring_plan_service import grant_credits_on_payment, reset_credits_if_renewal
+        from app.models.recurring_plan import SUBSCRIPTION_ACTIVE, SUBSCRIPTION_OVERDUE
+        # Regularização: se a assinatura estava OVERDUE (inadimplente), o pagamento
+        # confirmado a reativa. Não mexe em assinaturas canceladas.
+        if sub.status == SUBSCRIPTION_OVERDUE:
+            sub.status = SUBSCRIPTION_ACTIVE
+            db.add(sub)
         grant_credits_on_payment(db, sub)
         reset_credits_if_renewal(db, sub)
+
+    # Inadimplência (P1): PAYMENT_OVERDUE marca a assinatura do tutor como OVERDUE,
+    # o que bloqueia consume_credit_if_available (exige status ACTIVE). Sem isso o
+    # tutor inadimplente continuava gastando créditos. Só rebaixa quem está ACTIVE
+    # (não ressuscita cancelada).
+    elif event == "PAYMENT_OVERDUE":
+        from app.models.recurring_plan import SUBSCRIPTION_ACTIVE, SUBSCRIPTION_OVERDUE
+        if sub.status == SUBSCRIPTION_ACTIVE:
+            sub.status = SUBSCRIPTION_OVERDUE
+            db.add(sub)
+            logger.info(
+                "webhook sub: assinatura %s marcada OVERDUE (tutor %s inadimplente)",
+                sub.id, sub.tutor_id,
+            )
 
     try:
         db.commit()

@@ -45,6 +45,8 @@ class Walk(Base):
     )
     # Idempotência do estorno de crédito no cancelamento/deleção.
     credit_refunded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Passeio concedido como brinde de indicação (gift para indicado ou indicante).
+    is_referral_gift: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     tutor = relationship("User", back_populates="walks", foreign_keys=[tutor_id])
 

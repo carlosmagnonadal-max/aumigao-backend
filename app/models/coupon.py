@@ -41,6 +41,7 @@ class Coupon(Base):
     max_uses_per_user: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1)
     uses_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_referral_gift: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     valid_from: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     valid_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

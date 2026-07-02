@@ -187,8 +187,8 @@ class TestPetLiveProfileTables:
                 """
                 INSERT INTO walk_observations
                     (id, walk_id, pet_id, tenant_id, walker_user_id,
-                     incident, created_at)
-                VALUES (%s, %s, %s, %s, %s, false, NOW())
+                     incident, incident_notes, created_at)
+                VALUES (%s, %s, %s, %s, %s, false, '', NOW())
                 """,
                 (oid, wid, pid, tid, uid),
             )

@@ -122,14 +122,21 @@ def commission_default_for_plan(plan: str | None) -> float:
     # v1 (legado)
     if plan_absent:
         return PLAN_COMMISSION_FALLBACK
-    if normalized not in PLAN_COMMISSION_DEFAULTS:
-        logger.error(
-            "commission_default_for_plan: plano DESCONHECIDO %r (v1) — retornando 0%% "
-            "(nao cobrar sem config reconhecida). Configure a comissao no admin.",
-            raw,
-        )
-        return 0.0
-    return PLAN_COMMISSION_DEFAULTS[normalized]
+    if normalized in PLAN_COMMISSION_DEFAULTS:
+        return PLAN_COMMISSION_DEFAULTS[normalized]
+    # Plano canônico v2 (pro/enterprise) rodando com PRICING_V2 desligado: ainda é
+    # um plano VÁLIDO, não um nome bogus. Usa a comissão própria v2 (pro 10/ent 5)
+    # em vez de tratar como desconhecido. Antes deste money-fix caía no fallback 10%.
+    if normalized in _LEGACY_PLAN_MAP:
+        canon = canonical_plan_v2(normalized)
+        return PLAN_COMMISSION_DEFAULTS_V2.get(canon, PLAN_COMMISSION_FALLBACK)
+    # Genuinamente desconhecido (typo, plano renomeado): não cobrar às cegas.
+    logger.error(
+        "commission_default_for_plan: plano DESCONHECIDO %r (v1) — retornando 0%% "
+        "(nao cobrar sem config reconhecida). Configure a comissao no admin.",
+        raw,
+    )
+    return 0.0
 
 
 def network_commission_default_for_plan(plan: str | None) -> float:

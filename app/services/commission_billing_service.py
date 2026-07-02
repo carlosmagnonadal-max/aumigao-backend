@@ -4,6 +4,7 @@ Princípio: MEDIÇÃO ≠ CUSTÓDIA. O valor vem de Walk.price × taxa resolvida
 Aumigão nunca toca no pagamento do tutor. Passeio de REDE não acumula aqui.
 """
 import logging
+import os
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -14,6 +15,32 @@ from app.models.commission_entry import (
 )
 
 _logger = logging.getLogger("aumigao.commission_billing_service")
+
+
+def _test_tenant_slugs() -> set[str]:
+    """Slugs de tenants de TESTE que NÃO devem acumular/ser cobrados de comissão live.
+
+    Lido em runtime de TEST_TENANT_SLUGS (CSV), default "pmg" (PetMagno = tenant de
+    teste; ver memória tenants-reais-vs-teste). Conservador: só blinda o accrue,
+    não inventa cobrança nova."""
+    raw = os.getenv("TEST_TENANT_SLUGS", "pmg")
+    return {s.strip().lower() for s in raw.split(",") if s.strip()}
+
+
+def _is_test_tenant(db: Session, tenant_id: str | None) -> bool:
+    if not tenant_id:
+        return False
+    try:
+        from app.models.tenant import Tenant
+        tenant = db.get(Tenant, tenant_id)
+    except Exception:
+        return False
+    if tenant is None:
+        return False
+    # Flag explícita no model, se um dia existir (is_test/is_demo), tem prioridade.
+    if getattr(tenant, "is_test", False) or getattr(tenant, "is_demo", False):
+        return True
+    return (getattr(tenant, "slug", "") or "").strip().lower() in _test_tenant_slugs()
 
 
 def accrue_commission_for_walk(
@@ -31,6 +58,14 @@ def accrue_commission_for_walk(
     if getattr(walk, "is_referral_gift", False):
         return None  # brinde de indicação: plataforma não fatura comissão (decisão do fundador)
     if not getattr(walk, "tenant_id", None):
+        return None
+    # P2: tenant de teste (ex.: pmg/PetMagno) NÃO acumula comissão — blindagem
+    # contra cobrança live de um tenant interno/de teste.
+    if _is_test_tenant(db, walk.tenant_id):
+        _logger.info(
+            "accrue_commission_for_walk: pulado — tenant de teste tenant_id=%s walk_id=%s",
+            walk.tenant_id, getattr(walk, "id", "?"),
+        )
         return None
     price = float(getattr(walk, "price", 0) or 0)
     if price <= 0:

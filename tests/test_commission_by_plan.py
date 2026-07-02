@@ -30,8 +30,12 @@ def test_commission_default_for_plan():
     assert commission_default_for_plan("starter") == 12.0
     assert commission_default_for_plan("business") == 8.0
     assert commission_default_for_plan("enterprise") == 5.0
-    assert commission_default_for_plan("desconhecido") == 10.0
+    # money-fix P1: plano AUSENTE (None/"") mantém o piso default (10%).
     assert commission_default_for_plan(None) == 10.0
+    assert commission_default_for_plan("") == 10.0
+    assert commission_default_for_plan("   ") == 10.0
+    # money-fix P1: plano PRESENTE mas DESCONHECIDO NÃO cobra às cegas -> 0%.
+    assert commission_default_for_plan("desconhecido") == 0.0
 
 
 def test_new_config_uses_plan_default():
@@ -115,10 +119,13 @@ def test_get_commission_percent_falls_back_to_plan_default():
     assert get_commission_percent(db, "t-ent") == 5.0
 
 
-def test_get_commission_percent_unknown_plan_falls_back_to_10():
+def test_get_commission_percent_unknown_plan_returns_zero_not_ten():
+    # money-fix P1: um tenant cujo plano é uma string DESCONHECIDA não deve ser
+    # cobrado a esmo (antes: 10% silencioso). Agora retorna 0% (não cobrar sem
+    # config reconhecida) + log de erro; o correto é configurar a comissão no admin.
     db = _db()
     _tenant(db, "t-x", "plano_inexistente")
-    assert get_commission_percent(db, "t-x") == 10.0
+    assert get_commission_percent(db, "t-x") == 0.0
 
 
 def test_get_commission_percent_no_tenant_falls_back_to_10():

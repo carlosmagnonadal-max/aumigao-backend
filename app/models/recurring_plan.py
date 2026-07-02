@@ -25,6 +25,10 @@ RECURRING_PLANS_FEATURE_KEY = "recurring_plans"
 
 SUBSCRIPTION_ACTIVE = "active"
 SUBSCRIPTION_CANCELLED = "cancelled"
+# Inadimplência do tutor (PAYMENT_OVERDUE da assinatura): bloqueia o consumo de
+# crédito até a mensalidade ser regularizada (volta a ACTIVE no próximo
+# PAYMENT_CONFIRMED). NÃO cancela — a assinatura permanece, só suspensa.
+SUBSCRIPTION_OVERDUE = "overdue"
 
 
 class RecurringPlan(Base):

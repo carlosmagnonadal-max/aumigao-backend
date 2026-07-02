@@ -2989,6 +2989,14 @@ def request_withdrawal(payload: WithdrawalRequest, user: User = Depends(get_curr
     if amount < 20:
         raise HTTPException(status_code=400, detail="Valor minimo para saque e R$ 20,00")
 
+    # Anti-race (P1): serializa pedidos de saque concorrentes do MESMO walker.
+    # Sem o lock, dois requests simultâneos leem o mesmo saldo e ambos criam um
+    # saque, permitindo sacar 2x o disponível. O SELECT ... FOR UPDATE numa linha-
+    # âncora (o próprio User do walker) faz a 2ª requisição esperar a 1ª commitar;
+    # aí a revalidação de saldo abaixo já reflete o saque pendente recém-criado.
+    # No-op em SQLite (testes); efetivo em Postgres/Neon.
+    db.query(User).filter(User.id == user.id).with_for_update().first()
+
     # FIX 6e: validar que walker tem chave Pix cadastrada antes de criar o saque.
     _wp = db.query(WalkerProfile).filter(WalkerProfile.user_id == user.id).first()
     _pix_key_for_withdrawal = (_wp.pix_key or "").strip() if _wp else ""

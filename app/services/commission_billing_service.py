@@ -4,16 +4,43 @@ Princípio: MEDIÇÃO ≠ CUSTÓDIA. O valor vem de Walk.price × taxa resolvida
 Aumigão nunca toca no pagamento do tutor. Passeio de REDE não acumula aqui.
 """
 import logging
+import os
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from app.models.commission_entry import (
-    CommissionEntry, COMM_ACCRUED, COMM_BILLED, COMM_PAID,
+    CommissionEntry, COMM_ACCRUED, COMM_BILLED, COMM_PAID, COMM_VOID,
 )
 
 _logger = logging.getLogger("aumigao.commission_billing_service")
+
+
+def _test_tenant_slugs() -> set[str]:
+    """Slugs de tenants de TESTE que NÃO devem acumular/ser cobrados de comissão live.
+
+    Lido em runtime de TEST_TENANT_SLUGS (CSV), default "pmg" (PetMagno = tenant de
+    teste; ver memória tenants-reais-vs-teste). Conservador: só blinda o accrue,
+    não inventa cobrança nova."""
+    raw = os.getenv("TEST_TENANT_SLUGS", "pmg")
+    return {s.strip().lower() for s in raw.split(",") if s.strip()}
+
+
+def _is_test_tenant(db: Session, tenant_id: str | None) -> bool:
+    if not tenant_id:
+        return False
+    try:
+        from app.models.tenant import Tenant
+        tenant = db.get(Tenant, tenant_id)
+    except Exception:
+        return False
+    if tenant is None:
+        return False
+    # Flag explícita no model, se um dia existir (is_test/is_demo), tem prioridade.
+    if getattr(tenant, "is_test", False) or getattr(tenant, "is_demo", False):
+        return True
+    return (getattr(tenant, "slug", "") or "").strip().lower() in _test_tenant_slugs()
 
 
 def accrue_commission_for_walk(
@@ -31,6 +58,14 @@ def accrue_commission_for_walk(
     if getattr(walk, "is_referral_gift", False):
         return None  # brinde de indicação: plataforma não fatura comissão (decisão do fundador)
     if not getattr(walk, "tenant_id", None):
+        return None
+    # P2: tenant de teste (ex.: pmg/PetMagno) NÃO acumula comissão — blindagem
+    # contra cobrança live de um tenant interno/de teste.
+    if _is_test_tenant(db, walk.tenant_id):
+        _logger.info(
+            "accrue_commission_for_walk: pulado — tenant de teste tenant_id=%s walk_id=%s",
+            walk.tenant_id, getattr(walk, "id", "?"),
+        )
         return None
     price = float(getattr(walk, "price", 0) or 0)
     if price <= 0:
@@ -52,6 +87,76 @@ def accrue_commission_for_walk(
     )
     db.add(entry)
     return entry
+
+
+def _next_period(period: str) -> str:
+    """"YYYY-MM" → mês seguinte "YYYY-MM" (overflow de ano)."""
+    try:
+        year, month = (int(x) for x in period.split("-")[:2])
+    except Exception:
+        # fallback: mês atual (nunca deveria acontecer com period válido)
+        now = datetime.now(timezone.utc)
+        year, month = now.year, now.month
+    month += 1
+    if month > 12:
+        month = 1
+        year += 1
+    return f"{year:04d}-{month:02d}"
+
+
+def reverse_commission_for_walk(db: Session, walk_id: str, *, reason: str) -> "CommissionEntry | None":
+    """Reverte (idempotente) a comissão do tenant de um passeio estornado (COMM_VOID).
+
+    Chamado no refund/chargeback (webhook, quando há walk_id) e no void manual do admin.
+    Dois casos:
+      - entrada ainda COMM_ACCRUED (mês não faturado): vira COMM_VOID → não entra no
+        faturamento. Sem cobrança do tenant por passeio estornado.
+      - entrada já COMM_BILLED/COMM_PAID (mês já cobrado): NÃO apaga. Gera um AJUSTE
+        negativo (entrada COMM_ACCRUED com amount<0) no PERÍODO SEGUINTE, que o
+        faturamento mensal soma → o tenant é creditado no próximo mês.
+
+    Idempotência: o ajuste usa walk_id sintético único (comm-void-adj-<walk_id>);
+    reverter 2x o mesmo passeio não gera crédito dobrado. Não faz commit.
+    Retorna a entrada afetada (a void ou o ajuste), ou None se nada a fazer.
+    """
+    entry = db.query(CommissionEntry).filter(CommissionEntry.walk_id == walk_id).first()
+    if entry is None:
+        return None
+    if entry.status == COMM_VOID:
+        return None  # já revertida
+
+    if entry.status == COMM_ACCRUED:
+        entry.status = COMM_VOID
+        _logger.info(
+            "reverse_commission_for_walk: entrada accrued -> void walk_id=%s tenant_id=%s reason=%s",
+            walk_id, entry.tenant_id, reason,
+        )
+        return entry
+
+    # Já faturada/paga: cria ajuste (crédito) no período seguinte, idempotente.
+    adj_walk_id = f"comm-void-adj-{walk_id}"
+    existing_adj = db.query(CommissionEntry).filter(CommissionEntry.walk_id == adj_walk_id).first()
+    if existing_adj is not None:
+        return existing_adj  # já ajustado — não duplica crédito
+
+    adjustment = CommissionEntry(
+        id=str(uuid4()),
+        tenant_id=entry.tenant_id,
+        walk_id=adj_walk_id,
+        period=_next_period(entry.period),
+        walk_price=0.0,
+        commission_percent=0.0,
+        amount=round(-float(entry.amount or 0), 2),  # crédito (negativo)
+        is_network=False,
+        status=COMM_ACCRUED,
+    )
+    db.add(adjustment)
+    _logger.warning(
+        "reverse_commission_for_walk: entrada %s já faturada — ajuste de crédito %.2f no período %s "
+        "walk_id=%s tenant_id=%s reason=%s",
+        entry.status, adjustment.amount, adjustment.period, walk_id, entry.tenant_id, reason,
+    )
+    return adjustment
 
 
 # ---------------------------------------------------------------------------

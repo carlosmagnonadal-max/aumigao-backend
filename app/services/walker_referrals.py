@@ -80,6 +80,7 @@ def create_walker_referral(payload: WalkerReferralCreate, user: User, db: Sessio
     code = generate_referral_code(user, db)
     referral = WalkerReferral(
         id=str(uuid4()),
+        tenant_id=getattr(user, "tenant_id", None),
         referrer_user_id=user.id,
         referred_name=payload.referred_name.strip(),
         referred_phone=payload.referred_phone.strip(),
@@ -247,7 +248,7 @@ def pay_referral_rewards(db, referral) -> bool:
         db.add(WalkerEarning(
             id=str(uuid4()),
             walker_id=walker_id,
-            tenant_id=None,
+            tenant_id=getattr(referral, "tenant_id", None),
             walk_id=synth_walk_id,
             gross=amount,
             platform_amount=0.0,

@@ -2710,7 +2710,12 @@ def void_walker_earning_endpoint(
         raise HTTPException(status_code=404, detail="Ganho do passeador nao encontrado para este passeio.")
     ensure_tenant_access(earning.tenant_id, get_admin_tenant_scope(admin, db))
     out = void_walker_earning(db, payload.walk_id, reason=payload.reason, source="admin")
+    # FIX 13: o void manual também reverte a COMISSÃO do tenant (COMM_VOID / ajuste
+    # de crédito se já faturada). Idempotente e independente do earning existir.
+    from app.services.commission_billing_service import reverse_commission_for_walk
+    reverse_commission_for_walk(db, payload.walk_id, reason=payload.reason)
     if out is None:
+        db.commit()
         return {"ok": True, "already_void": True}
     record_admin_operational_event(
         db,

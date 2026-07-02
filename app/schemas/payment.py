@@ -1,13 +1,15 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.schemas.common import ORMModel
 
 
 class PaymentCreate(BaseModel):
     walk_id: str | None = None
-    amount: float
+    # P2: valor deve ser estritamente positivo. Antes `amount: float` aceitava 0
+    # ou negativo, permitindo criar pagamento de valor <= 0.
+    amount: float = Field(gt=0)
     provider: str = "asaas"
     method: str = "pix"
 

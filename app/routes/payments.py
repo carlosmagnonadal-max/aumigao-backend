@@ -488,6 +488,23 @@ async def create_payment(payload: PaymentCreate, request: Request, user: User = 
         if _covered is not None and getattr(_covered, "subscription_id", None):
             raise HTTPException(status_code=409, detail="Este passeio já está coberto pelo seu plano mensal.")
 
+        # P2: quando há walk_id, o `amount` NÃO é confiável (vem do client). Casa
+        # com a cotação server-authoritative (build_quote = preço do walk - desconto
+        # de plano do tenant). Rejeita subcotação/supercotação para evitar que o
+        # tutor pague um valor arbitrário por um passeio. Tolerância de 1 centavo
+        # para ruído de float.
+        if _covered is not None:
+            _quote_total = round(float(build_quote(db, _covered.tenant_id, _covered.price)["total"]), 2)
+            if abs(round(float(payload.amount), 2) - _quote_total) > 0.01:
+                logger.warning(
+                    "create_payment.amount_mismatch walk_id=%s amount=%s quote_total=%s tutor=%s",
+                    payload.walk_id, payload.amount, _quote_total, user.id,
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail="Valor do pagamento não confere com a cotação do passeio.",
+                )
+
     # Idempotencia: se ja existe um pagamento em aberto para este walk_id,
     # devolve o existente sem criar novo no Asaas.
     if payload.walk_id:
@@ -896,7 +913,11 @@ def _handle_tenant_saas_subscription_webhook(db, event: str, payment_data: dict)
         sub.last_payment_at = now
         sub.overdue_since = None
         sub.current_period_start = now
-        sub.current_period_end = now + timedelta(days=31)
+        # P1: usar o mesmo cálculo de fim-de-mês da CRIAÇÃO (overflow-safe), não
+        # timedelta(days=31). O +31 dias desalinha o vencimento (ex.: confirmar em
+        # 31/jan cairia em 03/mar, "pulando" fevereiro) e desloca o ciclo a cada mês.
+        from app.services.tenant_saas_billing_service import _period_end_month
+        sub.current_period_end = _period_end_month(now)
         db.add(sub)
 
         # Reativa tenant apenas se suspenso por inadimplência (não por suspensão manual)
@@ -1066,8 +1087,28 @@ def _handle_subscription_webhook(db, event: str, payment_data: dict) -> bool:
 
         # Projeto A: 1º pagamento concede créditos; renovações rebastecem.
         from app.services.recurring_plan_service import grant_credits_on_payment, reset_credits_if_renewal
+        from app.models.recurring_plan import SUBSCRIPTION_ACTIVE, SUBSCRIPTION_OVERDUE
+        # Regularização: se a assinatura estava OVERDUE (inadimplente), o pagamento
+        # confirmado a reativa. Não mexe em assinaturas canceladas.
+        if sub.status == SUBSCRIPTION_OVERDUE:
+            sub.status = SUBSCRIPTION_ACTIVE
+            db.add(sub)
         grant_credits_on_payment(db, sub)
         reset_credits_if_renewal(db, sub)
+
+    # Inadimplência (P1): PAYMENT_OVERDUE marca a assinatura do tutor como OVERDUE,
+    # o que bloqueia consume_credit_if_available (exige status ACTIVE). Sem isso o
+    # tutor inadimplente continuava gastando créditos. Só rebaixa quem está ACTIVE
+    # (não ressuscita cancelada).
+    elif event == "PAYMENT_OVERDUE":
+        from app.models.recurring_plan import SUBSCRIPTION_ACTIVE, SUBSCRIPTION_OVERDUE
+        if sub.status == SUBSCRIPTION_ACTIVE:
+            sub.status = SUBSCRIPTION_OVERDUE
+            db.add(sub)
+            logger.info(
+                "webhook sub: assinatura %s marcada OVERDUE (tutor %s inadimplente)",
+                sub.id, sub.tutor_id,
+            )
 
     try:
         db.commit()
@@ -1112,6 +1153,56 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
     external_ref = payment_data.get("externalReference") or ""
 
     # ---------------------------------------------------------------------------
+    # Dedup persistente por event-id (P1). O Asaas envia um `id` de EVENTO no topo
+    # do payload; um reenvio (retry do provedor, janela de falha parcial) traria o
+    # MESMO event-id. Gravamos o event-id com UNIQUE e commitamos ANTES dos
+    # handlers: se já existir, o evento JÁ foi processado → 200 sem reaplicar efeito.
+    #
+    # Ordenação: gravamos o marcador ANTES do efeito. Se um handler downstream
+    # falhar, ele levanta 500 (Asaas reenvia); para não engolir o reenvio, o marcador
+    # é REMOVIDO no caminho de erro (ver os `except` dos handlers, que chamam
+    # _drop_webhook_marker). Assim: sucesso → marcador persiste (bloqueia duplicata);
+    # falha → marcador some (o reenvio reprocessa).
+    #
+    # Sem id no topo (ex.: alguns eventos de sandbox): seguimos sem dedup
+    # (best-effort) — a idempotência por provider_payment_id ainda cobre.
+    _webhook_event_id = payload.get("id")
+    _dedup_marked = False
+    if _webhook_event_id:
+        from sqlalchemy.exc import IntegrityError
+        from app.models.webhook_event import WebhookEvent
+        db.add(WebhookEvent(
+            event_id=str(_webhook_event_id),
+            provider="asaas",
+            event_type=event if isinstance(event, str) else None,
+        ))
+        try:
+            db.commit()
+            _dedup_marked = True
+        except IntegrityError:
+            db.rollback()
+            logger.info(
+                "asaas_webhook.duplicate_event event_id=%s event=%s — ignorado (ja processado)",
+                _webhook_event_id, event,
+            )
+            return {"ok": True, "received": event, "duplicate": True}
+
+    def _drop_webhook_marker() -> None:
+        """Remove o marcador de dedup quando o processamento falha (para o reenvio
+        do Asaas poder reprocessar). Best-effort — nunca mascara o erro original."""
+        if not _dedup_marked:
+            return
+        try:
+            from app.models.webhook_event import WebhookEvent as _WE
+            db.query(_WE).filter(_WE.event_id == str(_webhook_event_id)).delete()
+            db.commit()
+        except Exception:
+            logger.exception(
+                "asaas_webhook: falha ao remover marcador de dedup event_id=%s",
+                _webhook_event_id,
+            )
+
+    # ---------------------------------------------------------------------------
     # INVOICE_* — eventos de NFS-e (nota fiscal). Processados ANTES dos eventos
     # PAYMENT_* para evitar qualquer interferência com o caminho de dinheiro.
     # Dormente enquanto a tabela nfse estiver vazia (flag NFS_E_ENABLED=false).
@@ -1125,6 +1216,7 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                 "asaas_webhook.nfse_error event=%s",
                 event,
             )
+            _drop_webhook_marker()
             raise HTTPException(status_code=500, detail="Erro ao processar webhook de NFS-e.")
         return {"ok": True, "received": event}
 
@@ -1171,11 +1263,11 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
     # ---------------------------------------------------------------------------
 
     # NOTA SOBRE IDEMPOTÊNCIA E STATUS CODE:
-    # Não existe tabela de dedup persistente por event-id (seria uma migration).
-    # As funções _handle_tip_webhook / _handle_subscription_webhook já são
+    # A dedup persistente por event-id agora EXISTE (tabela webhook_events, gravada
+    # no topo deste handler): um reenvio do mesmo event-id retorna 200 sem reaplicar
+    # efeito. Além disso, _handle_tip_webhook / _handle_subscription_webhook já são
     # idempotentes por design (upsert baseado em provider_payment_id / localização
-    # de registro existente), mas sem uma chave de evento gravada não há garantia
-    # 100% contra reenvio duplo em janela de falha parcial.
+    # de registro existente) — defesa em profundidade.
     # Decisão de status code:
     #   - Em caso de erro de persistência retornamos 500 (não 200) para que o
     #     Asaas reenvia o evento. O risco de duplicata em reenvio é mitigado pela
@@ -1199,6 +1291,7 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                 "asaas_webhook.tip_error event=%s provider_payment_id=%s",
                 event, provider_payment_id,
             )
+            _drop_webhook_marker()
             raise HTTPException(status_code=500, detail="Erro interno ao processar webhook de gorjeta.")
         return {"ok": True, "received": event}
 
@@ -1212,6 +1305,7 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                 "asaas_webhook.tenant_saas_error event=%s provider_payment_id=%s",
                 event, provider_payment_id,
             )
+            _drop_webhook_marker()
             raise HTTPException(status_code=500, detail="Erro ao processar webhook de mensalidade.")
         if handled:
             return {"ok": True, "received": event}
@@ -1228,6 +1322,7 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                 "asaas_webhook.tenant_comm_error event=%s provider_payment_id=%s",
                 event, provider_payment_id,
             )
+            _drop_webhook_marker()
             raise HTTPException(status_code=500, detail="Erro ao processar webhook de comissão.")
         return {"ok": True, "received": event}
 
@@ -1241,6 +1336,7 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                 "asaas_webhook.subscription_error event=%s provider_payment_id=%s",
                 event, provider_payment_id,
             )
+            _drop_webhook_marker()
             raise HTTPException(status_code=500, detail="Erro interno ao processar webhook de assinatura.")
         if handled:
             return {"ok": True, "received": event}
@@ -1286,6 +1382,10 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                 if event in _WALKER_EARNING_VOID_EVENTS and payment.walk_id:
                     from app.services.walker_payout_service import void_walker_earning
                     void_walker_earning(db, payment.walk_id, reason=f"asaas:{event}", source="webhook")
+                    # FIX 13: estorno também reverte a COMISSÃO do tenant (COMM_VOID).
+                    # Se a entrada já foi faturada, gera ajuste de crédito no mês seguinte.
+                    from app.services.commission_billing_service import reverse_commission_for_walk
+                    reverse_commission_for_walk(db, payment.walk_id, reason=f"asaas:{event}")
 
                 db.commit()
 
@@ -1308,6 +1408,7 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
             "asaas_webhook.regular_error event=%s provider_payment_id=%s",
             event, provider_payment_id,
         )
+        _drop_webhook_marker()
         raise HTTPException(status_code=500, detail="Erro interno ao processar webhook de pagamento.")
     return {"ok": True, "received": event}
 

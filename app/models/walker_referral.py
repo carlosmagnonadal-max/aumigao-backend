@@ -10,6 +10,11 @@ class WalkerReferral(Base):
     __tablename__ = "walker_referrals"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    # Tenant do passeador que indicou (isolamento multi-tenant). Nullable para
+    # linhas legadas; novas indicações gravam o tenant do referrer. Sem isso, o
+    # WalkerEarning de referral ficava com tenant_id=None e quebrava o isolamento
+    # ao ligar WALKER_REFERRAL_PAYOUT_ENABLED.
+    tenant_id: Mapped[str | None] = mapped_column(String, ForeignKey("tenants.id"), nullable=True, index=True)
     referrer_user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), index=True)
     referred_user_id: Mapped[str | None] = mapped_column(String, ForeignKey("users.id"), nullable=True, index=True)
     referred_name: Mapped[str] = mapped_column(String)

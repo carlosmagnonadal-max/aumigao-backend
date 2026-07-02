@@ -222,4 +222,64 @@ def app_session(tenant: str):
         conn.close()
 
 
-__all__ = ["app_session", "APP_ROLE", "PG_TEST_DATABASE_URL"]
+# ---------------------------------------------------------------------------
+# Helpers de setup de dados compartilhados entre os blocos de teste.
+# ---------------------------------------------------------------------------
+
+def make_uid() -> str:
+    """Retorna um UUID string para IDs de teste."""
+    import uuid
+    return str(uuid.uuid4())
+
+
+def setup_tenants(cur) -> tuple[str, str]:
+    """Insere dois tenants distintos e retorna (tenant_a_id, tenant_b_id)."""
+    ta, tb = make_uid(), make_uid()
+    for tid in (ta, tb):
+        cur.execute(
+            """
+            INSERT INTO tenants (id, slug, name, plan, active, created_at, updated_at)
+            VALUES (%s, %s, %s, 'pro', true, NOW(), NOW())
+            """,
+            (tid, f"slug-{tid[:8]}", f"Tenant {tid[:8]}"),
+        )
+    return ta, tb
+
+
+def setup_user(cur, tenant_id: str) -> str:
+    """Insere um usuário pertencente ao tenant e retorna o user_id."""
+    uid = make_uid()
+    cur.execute(
+        """
+        INSERT INTO users (id, tenant_id, email, hashed_password, name,
+                           cpf_encrypted, role, active, created_at, updated_at)
+        VALUES (%s, %s, %s, 'hash', 'Test User', 'enc', 'tutor', true, NOW(), NOW())
+        """,
+        (uid, tenant_id, f"user-{uid[:8]}@test.com"),
+    )
+    return uid
+
+
+def setup_pet(cur, tenant_id: str, user_id: str) -> str:
+    """Insere um pet pertencente ao tenant e retorna o pet_id."""
+    pid = make_uid()
+    cur.execute(
+        """
+        INSERT INTO pets (id, tenant_id, tutor_user_id, name, species,
+                          breed, weight_kg, active, created_at, updated_at)
+        VALUES (%s, %s, %s, 'Rex', 'dog', 'SRD', 5.0, true, NOW(), NOW())
+        """,
+        (pid, tenant_id, user_id),
+    )
+    return pid
+
+
+__all__ = [
+    "app_session",
+    "APP_ROLE",
+    "PG_TEST_DATABASE_URL",
+    "make_uid",
+    "setup_tenants",
+    "setup_user",
+    "setup_pet",
+]

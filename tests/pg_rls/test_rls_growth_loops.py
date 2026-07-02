@@ -107,11 +107,14 @@ class TestGrowthLoopsTables:
             cur.execute(
                 """
                 INSERT INTO walker_referrals
-                    (id, referrer_walker_user_id, referred_walker_user_id,
-                     status, tenant_id, created_at)
-                VALUES (%s, %s, %s, 'pending', %s, NOW())
+                    (id, referrer_user_id, referred_name, referred_phone,
+                     referred_phone_normalized, city, neighborhood,
+                     referral_code, status, tenant_id, created_at, updated_at)
+                VALUES (%s, %s, 'Indicado Teste', '71999990000',
+                        '71999990000', 'Salvador', 'Centro',
+                        %s, 'pending', %s, NOW(), NOW())
                 """,
-                (rid, uid, uid, tid),
+                (rid, uid, f"CODE-{rid[:6]}", tid),
             )
         owner_tx.commit()
 
@@ -161,11 +164,14 @@ class TestGrowthLoopsTables:
                     app_cur.execute(
                         """
                         INSERT INTO walker_referrals
-                            (id, referrer_walker_user_id, referred_walker_user_id,
-                             status, tenant_id, created_at)
-                        VALUES (%s, %s, %s, 'pending', %s, NOW())
+                            (id, referrer_user_id, referred_name, referred_phone,
+                             referred_phone_normalized, city, neighborhood,
+                             referral_code, status, tenant_id, created_at, updated_at)
+                        VALUES (%s, %s, 'Indicado Teste', '71999990001',
+                                '71999990001', 'Salvador', 'Centro',
+                                %s, 'pending', %s, NOW(), NOW())
                         """,
-                        (rid, ua, ua, tb),  # sessão=ta mas tenant_id=tb
+                        (rid, ua, f"CODE-{rid[:6]}", tb),  # sessão=ta mas tenant_id=tb
                     )
         finally:
             cur2 = owner_tx.cursor()
@@ -187,8 +193,9 @@ class TestGrowthLoopsTables:
             cur.execute(
                 """
                 INSERT INTO coupons (id, tenant_id, code, discount_type,
-                                     discount_value, active, created_at, updated_at)
-                VALUES (%s, %s, %s, 'percent', 10, true, NOW(), NOW())
+                                     discount_value, min_amount, active,
+                                     created_at, updated_at)
+                VALUES (%s, %s, %s, 'percent', 10, 0.0, true, NOW(), NOW())
                 """,
                 (cid, tid, f"COUP-{cid[:6]}"),
             )
@@ -240,8 +247,9 @@ class TestGrowthLoopsTables:
         cur.execute(
             """
             INSERT INTO coupons (id, tenant_id, code, discount_type,
-                                 discount_value, active, created_at, updated_at)
-            VALUES (%s, %s, 'TESTCOUP', 'percent', 10, true, NOW(), NOW())
+                                 discount_value, min_amount, active,
+                                 created_at, updated_at)
+            VALUES (%s, %s, 'TESTCOUP', 'percent', 10, 0.0, true, NOW(), NOW())
             """,
             (ca, ta),
         )

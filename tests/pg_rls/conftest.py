@@ -432,8 +432,8 @@ def setup_pet(cur, tenant_id: str, user_id: str) -> str:
     cur.execute(
         """
         INSERT INTO pets (id, tenant_id, tutor_id, name, species,
-                          breed, weight, created_at)
-        VALUES (%s, %s, %s, 'Rex', 'dog', 'SRD', 5.0, NOW())
+                          sex, breed, weight, created_at)
+        VALUES (%s, %s, %s, 'Rex', 'dog', 'M', 'SRD', 5.0, NOW())
         """,
         (pid, tenant_id, user_id),
     )

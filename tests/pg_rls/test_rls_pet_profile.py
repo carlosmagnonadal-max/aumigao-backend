@@ -115,8 +115,9 @@ class TestPetLiveProfileTables:
                 """
                 INSERT INTO pet_profile_configs
                     (id, tenant_id, profile_enabled, observations_enabled,
-                     reminders_enabled, share_enabled, created_at, updated_at)
-                VALUES (%s, %s, false, false, false, false, NOW(), NOW())
+                     reminders_enabled, vaccine_lead_days, inactivity_days,
+                     share_enabled, created_at, updated_at)
+                VALUES (%s, %s, false, false, false, 15, 10, false, NOW(), NOW())
                 ON CONFLICT (tenant_id) DO NOTHING
                 """,
                 (cid, tid),

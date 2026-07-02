@@ -10,8 +10,15 @@ pacote são ignorados com pytest.skip limpo.
 
 O que este conftest faz:
   1. Pula toda a sessão se PG_TEST_DATABASE_URL não estiver definida.
-  2. Conecta como owner (SUPERUSER / CREATEROLE), aplica todas as migrations
-     Alembic (schema + RLS) em session scope.
+  2. Conecta como owner (SUPERUSER / CREATEROLE), cria o schema via
+     Base.metadata.create_all e depois stampa o Alembic em head (sem
+     rodar as migrations individualmente).  Por quê: a cadeia de migrations
+     da casa é incremental (pressupõe schema pré-existente — padrão de
+     produção); num banco vazio a migration 0002 falha porque 0001 é
+     intencialmente NO-OP.  create_all cria o estado final das tabelas e
+     o stamp avisa o Alembic que não há nada a fazer.  As policies RLS
+     (que as migrations aplicam) são então reaplicadas via SQL idempotente
+     diretamente sobre o schema já criado.
   3. Garante que o role da app (aumigao_app) existe — non-owner, sem
      BYPASSRLS — espelho exato do role de produção.
   4. Expõe fixtures de sessão SQL via psycopg2 puro (sem ORM), que é o
@@ -91,12 +98,132 @@ def _app_kwargs() -> dict:
 # Session-scoped: aplica migrations + cria role da app UMA VEZ por sessão.
 # ---------------------------------------------------------------------------
 
+def _apply_rls_policies(sa_engine) -> None:
+    """
+    Aplica TODAS as policies RLS do projeto usando SQL idempotente.
+
+    Chamado após create_all + stamp head, repõe o que as migrations de
+    RLS (0043-0046, 0049, 0051, 0073-0077, 0080, 0081) fazem. Todo
+    statement usa DROP POLICY IF EXISTS + CREATE POLICY / ALTER POLICY,
+    portanto é seguro re-executar em banco já configurado.
+
+    Recebe um SQLAlchemy engine (criado com PG_TEST_DATABASE_URL) para
+    poder usar sa.inspect() na introspecção do schema.
+
+    Não editamos as migrations antigas (padrão da casa); a lógica de
+    bootstrap fica exclusivamente neste conftest.
+    """
+    import sqlalchemy as sa
+
+    # -------------------------------------------------------------------------
+    # Políticas padrão tenant_isolation (derived from 0043→0045).
+    #
+    # USING  : permite ler linhas sem tenant (anônimas/globais) + escopo tenant.
+    # WITH CHECK : apenas sessões '*' podem gravar NULL (fecha buraco de escrita).
+    # Exceções: upload_files e audit_logs mantêm WITH CHECK permissivo (pendência
+    # de correção de app — idêntico ao estado atual das migrations 0045).
+    # -------------------------------------------------------------------------
+    _USING_PERMISSIVE = (
+        "current_setting('app.current_tenant', true) = '*' "
+        "OR tenant_id IS NULL "
+        "OR tenant_id::text = current_setting('app.current_tenant', true)"
+    )
+    _WITH_CHECK_STRICT = (
+        "current_setting('app.current_tenant', true) = '*' "
+        "OR tenant_id::text = current_setting('app.current_tenant', true)"
+    )
+    _TABLES_PERMISSIVE_CHECK = {"upload_files", "audit_logs"}
+
+    # execution_options deve ser aplicado no engine antes de abrir conexão (SA 2.x).
+    ac_engine = sa_engine.execution_options(isolation_level="AUTOCOMMIT")
+    with ac_engine.connect() as conn:
+        insp = sa.inspect(sa_engine)
+        all_tables = set(insp.get_table_names())
+
+        # Tabelas com coluna tenant_id (recebem a policy padrão).
+        for table in all_tables:
+            if table == "alembic_version":
+                continue
+            cols = {c["name"] for c in insp.get_columns(table)}
+            if "tenant_id" not in cols:
+                continue
+
+            with_check = (
+                _USING_PERMISSIVE
+                if table in _TABLES_PERMISSIVE_CHECK
+                else _WITH_CHECK_STRICT
+            )
+            conn.execute(sa.text(f'ALTER TABLE "{table}" ENABLE ROW LEVEL SECURITY'))
+            conn.execute(sa.text(f'DROP POLICY IF EXISTS tenant_isolation ON "{table}"'))
+            conn.execute(sa.text(
+                f'CREATE POLICY tenant_isolation ON "{table}" '
+                f"USING ({_USING_PERMISSIVE}) "
+                f"WITH CHECK ({with_check})"
+            ))
+
+        # -------------------------------------------------------------------------
+        # walks: USING estendido com walker-self (migration 0049).
+        # WITH CHECK permanece estrita (tenant-scope).
+        # -------------------------------------------------------------------------
+        if "walks" in all_tables:
+            _WALKS_USING = """(
+  current_setting('app.current_tenant', true) = '*'
+  OR tenant_id::text = current_setting('app.current_tenant', true)
+  OR (
+    current_setting('app.current_user_id', true) NOT IN ('-', '')
+    AND (
+      walker_id::text = current_setting('app.current_user_id', true)
+      OR assigned_walker_id::text = current_setting('app.current_user_id', true)
+    )
+  )
+)"""
+            _WALKS_WITH_CHECK = """(
+  current_setting('app.current_tenant', true) = '*'
+  OR tenant_id::text = current_setting('app.current_tenant', true)
+)"""
+            conn.execute(sa.text(
+                f"ALTER POLICY tenant_isolation ON walks "
+                f"USING {_WALKS_USING} "
+                f"WITH CHECK {_WALKS_WITH_CHECK}"
+            ))
+
+        # -------------------------------------------------------------------------
+        # webhook_events: sem tenant_id — acesso apenas por escopo global '*'
+        # (migration 0080).
+        # -------------------------------------------------------------------------
+        if "webhook_events" in all_tables:
+            _WEBHOOK_POLICY = "current_setting('app.current_tenant', true) = '*'"
+            conn.execute(sa.text('ALTER TABLE "webhook_events" ENABLE ROW LEVEL SECURITY'))
+            conn.execute(sa.text('DROP POLICY IF EXISTS tenant_isolation ON "webhook_events"'))
+            conn.execute(sa.text(
+                'CREATE POLICY tenant_isolation ON "webhook_events" '
+                f"USING ({_WEBHOOK_POLICY}) WITH CHECK ({_WEBHOOK_POLICY})"
+            ))
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _pg_setup():
     """
-    Aplica Alembic upgrade head no banco de teste (schema + RLS policies).
+    Prepara o banco de teste (schema + RLS policies) para a suíte.
     Cria o role aumigao_app se não existir.
     Garante GRANT de uso nas tabelas para o role da app.
+
+    Estratégia de bootstrap (banco vazio):
+      1. Base.metadata.create_all — cria TODAS as tabelas a partir dos modelos
+         SQLAlchemy (estado final, sem depender da cadeia de migrations).
+      2. alembic stamp head — registra o banco como já atualizado; evita que o
+         Alembic tente re-aplicar migrations cujo DDL já foi executado pelo
+         create_all.  Sem este stamp o próximo `alembic upgrade head` do CI
+         tentaria re-criar tabelas e falharia.
+      3. _apply_rls_policies — aplica as policies RLS via SQL idempotente,
+         repondo o que as migrations 0043-0081 fariam.
+
+    Por que NÃO usar `alembic upgrade head` direto num banco vazio:
+      A migration 0001_baseline é intencionalmente NO-OP (schema já pré-existia
+      em produção quando o Alembic foi introduzido).  A 0002 tenta ADD COLUMN em
+      "payments", que não existe num banco novo → psycopg2.errors.UndefinedTable.
+      Editando migrations antigas violaria o padrão da casa; a correção fica
+      exclusivamente neste conftest.
 
     Roda UMA VEZ para a sessão inteira (session scope).
     Pula silenciosamente se PG_TEST_DATABASE_URL não estiver definida.
@@ -106,23 +233,50 @@ def _pg_setup():
         return
 
     import psycopg2  # importado apenas quando PG está disponível
+    import sqlalchemy as sa
 
-    # 1) Aplicar migrations via Alembic (DATABASE_URL apontando pro PG de teste).
     env = os.environ.copy()
     env["DATABASE_URL"] = PG_TEST_DATABASE_URL
+
+    # 1) Criar schema completo a partir dos modelos SQLAlchemy.
+    #    Importamos app.models para garantir que TODOS os modelos estejam
+    #    registrados em Base.metadata antes de chamar create_all.
+    import app.models  # noqa: F401 — registra todos os modelos em Base.metadata
+    from app.core.database import Base
+    engine = sa.create_engine(PG_TEST_DATABASE_URL, poolclass=sa.pool.NullPool)
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as exc:
+        engine.dispose()
+        pytest.fail(f"Base.metadata.create_all falhou: {exc}")
+
+    # 2) Stampar o Alembic em head para que futuras execuções de `alembic upgrade
+    #    head` no CI não tentem re-aplicar migrations sobre schema já criado.
     result = subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        [sys.executable, "-m", "alembic", "stamp", "head"],
         cwd=str(_ROOT),
         env=env,
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
+        engine.dispose()
         pytest.fail(
-            f"alembic upgrade head falhou:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+            f"alembic stamp head falhou:\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
         )
 
-    # 2) Criar role da app + configurar permissões.
+    # 3) Aplicar políticas RLS via SQL idempotente (substitui o que as migrations
+    #    0043-0081 fazem em produção). Reutilizamos o engine criado acima para
+    #    poder usar sa.inspect() na introspecção do schema.
+    try:
+        _apply_rls_policies(engine)
+    except Exception as exc:
+        engine.dispose()
+        pytest.fail(f"_apply_rls_policies falhou: {exc}")
+    finally:
+        engine.dispose()
+
+    # 4) Criar role da app + configurar permissões.
     with psycopg2.connect(**_owner_kwargs()) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
@@ -233,13 +387,17 @@ def make_uid() -> str:
 
 
 def setup_tenants(cur) -> tuple[str, str]:
-    """Insere dois tenants distintos e retorna (tenant_a_id, tenant_b_id)."""
+    """Insere dois tenants distintos e retorna (tenant_a_id, tenant_b_id).
+
+    Alinhado ao modelo Tenant atual: usa 'status' (não 'active'), sem coluna
+    active (removida em refactor que adicionou status).
+    """
     ta, tb = make_uid(), make_uid()
     for tid in (ta, tb):
         cur.execute(
             """
-            INSERT INTO tenants (id, slug, name, plan, active, created_at, updated_at)
-            VALUES (%s, %s, %s, 'pro', true, NOW(), NOW())
+            INSERT INTO tenants (id, slug, name, plan, status, created_at, updated_at)
+            VALUES (%s, %s, %s, 'pro', 'active', NOW(), NOW())
             """,
             (tid, f"slug-{tid[:8]}", f"Tenant {tid[:8]}"),
         )
@@ -247,13 +405,17 @@ def setup_tenants(cur) -> tuple[str, str]:
 
 
 def setup_user(cur, tenant_id: str) -> str:
-    """Insere um usuário pertencente ao tenant e retorna o user_id."""
+    """Insere um usuário pertencente ao tenant e retorna o user_id.
+
+    Alinhado ao modelo User atual: password_hash (não hashed_password),
+    full_name (não name), is_active (não active), sem cpf_encrypted.
+    """
     uid = make_uid()
     cur.execute(
         """
-        INSERT INTO users (id, tenant_id, email, hashed_password, name,
-                           cpf_encrypted, role, active, created_at, updated_at)
-        VALUES (%s, %s, %s, 'hash', 'Test User', 'enc', 'tutor', true, NOW(), NOW())
+        INSERT INTO users (id, tenant_id, email, password_hash, full_name,
+                           role, is_active, created_at)
+        VALUES (%s, %s, %s, 'hash', 'Test User', 'tutor', true, NOW())
         """,
         (uid, tenant_id, f"user-{uid[:8]}@test.com"),
     )
@@ -261,13 +423,23 @@ def setup_user(cur, tenant_id: str) -> str:
 
 
 def setup_pet(cur, tenant_id: str, user_id: str) -> str:
-    """Insere um pet pertencente ao tenant e retorna o pet_id."""
+    """Insere um pet pertencente ao tenant e retorna o pet_id.
+
+    Alinhado ao modelo Pet atual: tutor_id (não tutor_user_id), weight
+    (não weight_kg), sem active, sem updated_at.
+    """
     pid = make_uid()
     cur.execute(
         """
-        INSERT INTO pets (id, tenant_id, tutor_user_id, name, species,
-                          breed, weight_kg, active, created_at, updated_at)
-        VALUES (%s, %s, %s, 'Rex', 'dog', 'SRD', 5.0, true, NOW(), NOW())
+        INSERT INTO pets (id, tenant_id, tutor_id, name, species,
+                          sex, breed, size, behavior_notes,
+                          is_social, afraid_of_noise, pulls_leash,
+                          can_walk_with_other_pets, is_neutered,
+                          allergies, medications, restrictions,
+                          health_notes, weight, created_at)
+        VALUES (%s, %s, %s, 'Rex', 'dog', 'M', 'SRD', 'M', '',
+                true, false, false, false, false,
+                '', '', '', '', 5.0, NOW())
         """,
         (pid, tenant_id, user_id),
     )

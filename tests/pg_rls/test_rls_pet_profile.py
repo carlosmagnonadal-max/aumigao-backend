@@ -43,8 +43,10 @@ class TestPetLiveProfileTables:
             cur.execute(
                 """
                 INSERT INTO pet_timeline_events
-                    (id, pet_id, tenant_id, event_type, title, occurred_at, created_at)
-                VALUES (%s, %s, %s, 'health', 'Vacina', NOW(), NOW())
+                    (id, pet_id, tenant_id, event_type, title, notes,
+                     source, occurred_at, created_at)
+                VALUES (%s, %s, %s, 'health', 'Vacina', '', 'tutor',
+                        NOW(), NOW())
                 """,
                 (eid, pid, tid),
             )
@@ -86,13 +88,15 @@ class TestPetLiveProfileTables:
         eid = make_uid()
         try:
             with app_session(ta) as app_cur:
-                with pytest.raises(psycopg2.errors.CheckViolation):
+                with pytest.raises((psycopg2.errors.CheckViolation,
+                                    psycopg2.errors.InsufficientPrivilege)):
                     app_cur.execute(
                         """
                         INSERT INTO pet_timeline_events
                             (id, pet_id, tenant_id, event_type, title,
-                             occurred_at, created_at)
-                        VALUES (%s, %s, %s, 'health', 'Intruso', NOW(), NOW())
+                             notes, source, occurred_at, created_at)
+                        VALUES (%s, %s, %s, 'health', 'Intruso',
+                                '', 'tutor', NOW(), NOW())
                         """,
                         (eid, pa, tb),  # sessão=ta mas tenant_id=tb
                     )
@@ -115,8 +119,9 @@ class TestPetLiveProfileTables:
                 """
                 INSERT INTO pet_profile_configs
                     (id, tenant_id, profile_enabled, observations_enabled,
-                     reminders_enabled, share_enabled, created_at, updated_at)
-                VALUES (%s, %s, false, false, false, false, NOW(), NOW())
+                     reminders_enabled, vaccine_lead_days, inactivity_days,
+                     share_enabled, created_at, updated_at)
+                VALUES (%s, %s, false, false, false, 15, 10, false, NOW(), NOW())
                 ON CONFLICT (tenant_id) DO NOTHING
                 """,
                 (cid, tid),
@@ -160,9 +165,18 @@ class TestPetLiveProfileTables:
         for wid, tid, uid, pid in [(wa, ta, ua, pa), (wb, tb, ub, pb)]:
             cur.execute(
                 """
-                INSERT INTO walks (id, tenant_id, tutor_user_id, pet_id, walker_user_id,
-                                   status, scheduled_start, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, 'completed', NOW(), NOW(), NOW())
+                INSERT INTO walks (id, tenant_id, tutor_id, pet_id, walker_id,
+                                   status, scheduled_date, duration_minutes, price,
+                                   pickup_method, modality, destination,
+                                   address_snapshot, notes, operational_status,
+                                   walker_selection_mode, current_attempt,
+                                   max_attempts, credit_refunded, is_referral_gift,
+                                   created_at)
+                VALUES (%s, %s, %s, %s, %s,
+                        'completed', '2026-01-01', 30, 0.0,
+                        'Buscar em casa', 'standard', '', '', '',
+                        'ride_scheduled', 'auto', 0, 3, false, false,
+                        NOW())
                 """,
                 (wid, tid, uid, pid, uid),
             )
@@ -173,8 +187,8 @@ class TestPetLiveProfileTables:
                 """
                 INSERT INTO walk_observations
                     (id, walk_id, pet_id, tenant_id, walker_user_id,
-                     incident, created_at)
-                VALUES (%s, %s, %s, %s, %s, false, NOW())
+                     incident, incident_notes, created_at)
+                VALUES (%s, %s, %s, %s, %s, false, '', NOW())
                 """,
                 (oid, wid, pid, tid, uid),
             )

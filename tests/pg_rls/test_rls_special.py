@@ -33,8 +33,10 @@ class TestSpecialBehaviors:
         cur.execute(
             """
             INSERT INTO pet_timeline_events
-                (id, pet_id, tenant_id, event_type, title, occurred_at, created_at)
-            VALUES (%s, %s, NULL, 'system', 'Evento Global', NOW(), NOW())
+                (id, pet_id, tenant_id, event_type, title, notes,
+                 source, occurred_at, created_at)
+            VALUES (%s, %s, NULL, 'system', 'Evento Global', '',
+                    'system', NOW(), NOW())
             """,
             (eid, pa),
         )
@@ -68,8 +70,10 @@ class TestSpecialBehaviors:
         cur.execute(
             """
             INSERT INTO pet_timeline_events
-                (id, pet_id, tenant_id, event_type, title, occurred_at, created_at)
-            VALUES (%s, %s, NULL, 'system', 'Evento Global', NOW(), NOW())
+                (id, pet_id, tenant_id, event_type, title, notes,
+                 source, occurred_at, created_at)
+            VALUES (%s, %s, NULL, 'system', 'Evento Global', '',
+                    'system', NOW(), NOW())
             """,
             (eid, pa),
         )

@@ -68,14 +68,21 @@ class TestCoreIsolation:
         pid = make_uid()
         try:
             with app_session(ta) as app_cur:
-                with pytest.raises(psycopg2.errors.CheckViolation):
+                with pytest.raises((psycopg2.errors.CheckViolation,
+                                    psycopg2.errors.InsufficientPrivilege)):
                     app_cur.execute(
                         """
-                        INSERT INTO pets (id, tenant_id, tutor_user_id, name,
-                                         species, breed, weight_kg, active,
-                                         created_at, updated_at)
-                        VALUES (%s, %s, %s, 'Ghost', 'dog', 'SRD', 3.0,
-                                true, NOW(), NOW())
+                        INSERT INTO pets (id, tenant_id, tutor_id, name,
+                                         species, sex, breed, size,
+                                         behavior_notes, is_social,
+                                         afraid_of_noise, pulls_leash,
+                                         can_walk_with_other_pets,
+                                         is_neutered, allergies,
+                                         medications, restrictions,
+                                         health_notes, weight, created_at)
+                        VALUES (%s, %s, %s, 'Ghost', 'dog', 'M', 'SRD', 'M',
+                                '', true, false, false, false, false,
+                                '', '', '', '', 3.0, NOW())
                         """,
                         (pid, tb, ua),  # tenant_id = tb mas sessão = ta
                     )

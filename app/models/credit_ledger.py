@@ -38,6 +38,7 @@ def _uuid() -> str:
 LEDGER_LIABILITY_CREATED = "liability_created"      # venda do plano → passivo criado
 LEDGER_REVENUE_RECOGNIZED = "revenue_recognized"    # consumo de crédito (passeio coberto) → receita
 LEDGER_BREAKAGE_RECOGNIZED = "breakage_recognized"  # crédito expirado/cancelado → receita de breakage
+LEDGER_LIABILITY_REVERSED = "liability_reversed"    # estorno da compra do crédito → passivo revertido (total_value<0)
 
 
 class CreditLedgerEntry(Base):

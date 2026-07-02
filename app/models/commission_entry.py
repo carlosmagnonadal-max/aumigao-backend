@@ -4,10 +4,11 @@ Uma entrada por passeio finalizado de passeador PRÓPRIO do tenant. Snapshot da
 taxa resolvida no momento da finalização (variável: par/tenant/plano). Passeio de
 REDE não gera entrada aqui (margem capturada no preço do crédito — Fase 2).
 """
-from sqlalchemy import Boolean, Column, Float, String, DateTime, Index
+from sqlalchemy import Boolean, Column, Numeric, String, DateTime, Index
 from sqlalchemy.sql import func
 
 from app.core.database import Base
+from app.models.types import Money
 
 # status do ciclo de cobrança
 COMM_ACCRUED = "accrued"   # passeio medido, ainda não faturado
@@ -24,9 +25,9 @@ class CommissionEntry(Base):
     walk_id = Column(String, nullable=False, unique=True)  # idempotência: 1 entrada por passeio
     period = Column(String, nullable=False, index=True)     # "YYYY-MM" da finalização
 
-    walk_price = Column(Float, nullable=False)              # base medida (catálogo)
-    commission_percent = Column(Float, nullable=False)      # taxa RESOLVIDA (snapshot)
-    amount = Column(Float, nullable=False)                  # walk_price * commission_percent/100
+    walk_price = Column(Money, nullable=False)              # base medida (catálogo)
+    commission_percent = Column(Numeric(5, 2, asdecimal=False), nullable=False)  # taxa RESOLVIDA (snapshot)
+    amount = Column(Money, nullable=False)                  # walk_price * commission_percent/100 (pode ser negativo: ajuste de void)
     is_network = Column(Boolean, nullable=False, default=False)
 
     status = Column(String, nullable=False, default=COMM_ACCRUED, index=True)

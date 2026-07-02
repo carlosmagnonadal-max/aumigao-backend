@@ -1,9 +1,10 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+from app.models.types import Money
 
 
 class TipIntegrityFlag(Base):
@@ -13,7 +14,7 @@ class TipIntegrityFlag(Base):
     walker_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), index=True)
     tutor_id: Mapped[str | None] = mapped_column(String, ForeignKey("users.id"), nullable=True, index=True)
     walk_id: Mapped[str | None] = mapped_column(String, ForeignKey("walks.id"), nullable=True, index=True)
-    tip_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    tip_amount: Mapped[float] = mapped_column(Money, default=0.0)
     flag_type: Mapped[str] = mapped_column(String, index=True)
     severity: Mapped[str] = mapped_column(String, default="low", index=True)
     status: Mapped[str] = mapped_column(String, default="open", index=True)

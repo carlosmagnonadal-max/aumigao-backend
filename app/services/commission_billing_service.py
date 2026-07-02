@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from app.core.money import q2, to_float, to_money
 from app.models.commission_entry import (
     CommissionEntry, COMM_ACCRUED, COMM_BILLED, COMM_PAID, COMM_VOID,
 )
@@ -73,7 +74,7 @@ def accrue_commission_for_walk(
     existing = db.query(CommissionEntry).filter(CommissionEntry.walk_id == walk.id).first()
     if existing:
         return existing
-    amount = round(float(split.get("platform_amount", 0.0)), 2)
+    amount = to_float(q2(split.get("platform_amount", 0.0)))
     entry = CommissionEntry(
         id=str(uuid4()),
         tenant_id=walk.tenant_id,
@@ -146,7 +147,7 @@ def reverse_commission_for_walk(db: Session, walk_id: str, *, reason: str) -> "C
         period=_next_period(entry.period),
         walk_price=0.0,
         commission_percent=0.0,
-        amount=round(-float(entry.amount or 0), 2),  # crédito (negativo)
+        amount=to_float(q2(-to_money(entry.amount or 0))),  # crédito (negativo)
         is_network=False,
         status=COMM_ACCRUED,
     )
@@ -206,7 +207,8 @@ def bill_tenant_commission(
     )
     if not rows:
         return None
-    total = round(sum(float(r.amount) for r in rows), 2)
+    total_d = q2(sum((to_money(r.amount) for r in rows), to_money(0)))
+    total = to_float(total_d)
     if total <= 0:
         return None
     tenant = db.get(Tenant, tenant_id)

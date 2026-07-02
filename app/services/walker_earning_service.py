@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from app.core.money import q2, to_float, to_money
 from app.models.walker_earning import WalkerEarning, WE_ACCRUED, WE_VOID
 
 
@@ -58,8 +59,8 @@ def accrue_walker_earning(db: Session, walk, split: dict) -> "WalkerEarning | No
         tenant_id=walk.tenant_id,
         walk_id=walk.id,
         gross=price,
-        platform_amount=round(float(split.get("platform_amount", 0.0)), 2),
-        amount=round(float(split.get("walker_amount", 0.0)), 2),
+        platform_amount=to_float(q2(split.get("platform_amount", 0.0))),
+        amount=to_float(q2(split.get("walker_amount", 0.0))),
         status=WE_ACCRUED,
         payable_at=compute_payable_at(comp),
     )
@@ -83,12 +84,16 @@ def network_earnings_by_tenant(db: Session, walker_id: str, now: datetime | None
     )
     out: dict = {}
     for r in rows:
-        b = out.setdefault(r.tenant_id, {"available": 0.0, "areceber": 0.0})
+        b = out.setdefault(r.tenant_id, {"available": to_money(0), "areceber": to_money(0)})
         pa = r.payable_at
         if pa is not None and pa.tzinfo is None:
             pa = pa.replace(tzinfo=timezone.utc)
         if pa is not None and pa <= now:
-            b["available"] += float(r.amount or 0)
+            b["available"] += to_money(r.amount or 0)
         else:
-            b["areceber"] += float(r.amount or 0)
-    return out
+            b["areceber"] += to_money(r.amount or 0)
+    # Borda: soma em Decimal, entrega float (contrato dos consumidores/endpoints).
+    return {
+        tid: {"available": to_float(q2(v["available"])), "areceber": to_float(q2(v["areceber"]))}
+        for tid, v in out.items()
+    }

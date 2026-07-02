@@ -14,6 +14,7 @@ from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, Text, Uniqu
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.models.types import Money
 
 INCENTIVES_FEATURE_KEY = "incentives"
 
@@ -54,7 +55,7 @@ class IncentiveRule(Base):
     threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     reward_type: Mapped[str] = mapped_column(String, nullable=False, default=REWARD_RECOGNITION)
     # monetary: bonus em R$ (apenas REGISTRA amount; nao integra payout).
-    reward_value: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    reward_value: Mapped[float] = mapped_column(Money, nullable=False, default=0.0)
     visibility_effect: Mapped[str] = mapped_column(String, nullable=False, default="none")
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

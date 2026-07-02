@@ -10,10 +10,11 @@ Gated pela feature flag por tenant `recurring_plans` (ver tenant_plan_service).
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.models.types import Money
 
 
 def _uuid() -> str:
@@ -41,7 +42,7 @@ class RecurringPlan(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Preço mensal do plano (na moeda do tenant).
-    price: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    price: Mapped[float] = mapped_column(Money, nullable=False, default=0.0)
     # Quantidade de passeios incluídos por ciclo (mês/semestre/ano conforme interval).
     walks_per_cycle: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     interval: Mapped[str] = mapped_column(String, nullable=False, default="monthly")
@@ -61,7 +62,7 @@ class TutorSubscription(Base):
     tutor_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default=SUBSCRIPTION_ACTIVE)
     # Snapshots do plano no momento da assinatura (preço/quantidade podem mudar depois).
-    price: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    price: Mapped[float] = mapped_column(Money, nullable=False, default=0.0)
     walks_per_cycle: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     credits_remaining: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     current_period_start: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

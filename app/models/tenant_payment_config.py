@@ -41,6 +41,8 @@ PLAN_COMMISSION_FALLBACK = 10.0
 # Planos canônicos.
 TENANT_PLAN_PRO = "pro"
 TENANT_PLAN_ENTERPRISE_V2 = "enterprise"
+# Plano gratuito de captação ("Começar"): comissão própria 20%, rede desligada.
+TENANT_PLAN_FREE = "free"
 
 # Mapeamento de chaves legadas → canônicas v2.
 _LEGACY_PLAN_MAP: dict[str, str] = {
@@ -49,16 +51,23 @@ _LEGACY_PLAN_MAP: dict[str, str] = {
     "enterprise": TENANT_PLAN_ENTERPRISE_V2,
     # Chave canônica já é v2 → passa direto.
     "pro": TENANT_PLAN_PRO,
+    # free é um plano canônico próprio (não mapeia para pro): comissão/gating distintos.
+    "free": TENANT_PLAN_FREE,
 }
 
 # Take-rate PRÓPRIO por plano v2 (tenant põe a mão de obra).
+# free = 20% (nenhuma dimensão do free melhor que a do Pro: 20 > 10).
 PLAN_COMMISSION_DEFAULTS_V2: dict[str, float] = {
+    TENANT_PLAN_FREE: 20.0,
     TENANT_PLAN_PRO: 10.0,
     TENANT_PLAN_ENTERPRISE_V2: 5.0,
 }
 
 # Take-rate de REDE por plano v2 (Rede Aumigão fornece o passeador).
+# free NÃO acessa a rede — take de rede N/A (0.0). O acesso é bloqueado na fronteira
+# do pool de matching (walker_network_matching_service); este 0.0 é só coerência.
 PLAN_NETWORK_COMMISSION_V2: dict[str, float] = {
+    TENANT_PLAN_FREE: 0.0,
     TENANT_PLAN_PRO: 18.0,
     TENANT_PLAN_ENTERPRISE_V2: 10.0,
 }

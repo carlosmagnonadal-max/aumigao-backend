@@ -1096,6 +1096,18 @@ def _handle_subscription_webhook(db, event: str, payment_data: dict) -> bool:
         grant_credits_on_payment(db, sub)
         reset_credits_if_renewal(db, sub)
 
+    # P2 — void-de-rede AUTOMÁTICO no estorno da COMPRA DO CRÉDITO.
+    # O Payment da compra de crédito NÃO tem walk_id (o void de passeio AVULSO no
+    # ramo regular só cobre Payment.walk_id). Aqui o refund recai sobre a assinatura
+    # (externalReference `sub:`): revertemos o que é SEGURO (créditos não usados +
+    # reversão do passivo no ledger) e ALERTAMOS os admins quando há passeios de
+    # rede já consumidos (não fazemos clawback automático do ganho do passeador).
+    elif event in _PAYMENT_REFUND_EVENTS:
+        from app.services.credit_refund_service import reverse_credit_purchase
+        reverse_credit_purchase(
+            db, sub, reason=f"asaas:{event}", payment_id=provider_payment_id,
+        )
+
     # Inadimplência (P1): PAYMENT_OVERDUE marca a assinatura do tutor como OVERDUE,
     # o que bloqueia consume_credit_if_available (exige status ACTIVE). Sem isso o
     # tutor inadimplente continuava gastando créditos. Só rebaixa quem está ACTIVE

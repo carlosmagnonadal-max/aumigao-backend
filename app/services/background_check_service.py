@@ -16,6 +16,15 @@ Status agregado (background_check_status em walker_profiles):
 - "verified":  PF E TJ ambas "validated".
 - "flagged":   qualquer obrigatoria "rejected".
 
+Modos de operacao (background_check_mode, configuravel por tenant via limit_value):
+- "selo" (DEFAULT): verificacao e OPCIONAL — aprovacao nunca e bloqueada;
+  passeador verificado ganha apenas o selo `antecedentes_verificados` no matching.
+- "gate": comportamento original — aprovacao bloqueada se nao verificado
+  (override+justificativa ainda disponiveis para o admin).
+
+O modo mora em TenantFeature.limit_value da linha feature_key="background_checks".
+NULL/vazio/qualquer valor desconhecido = "selo".
+
 Spec: docs/plano-background-check-fase0-2026-06-16.md
 """
 from __future__ import annotations
@@ -136,3 +145,48 @@ def official_validation_url(cert_type: str | None, uf: str | None = None, number
         # Aceita tanto "TRF1".."TRF6" quanto fallback nacional.
         return _TRF_VALIDATION_URLS.get(uf_key, _TRF_FALLBACK_URL)
     return _TJ_FALLBACK_URL
+
+
+# --------------------------------------------------------------------------- modo
+# Valores validos de TenantFeature.limit_value para background_checks.
+BG_MODE_GATE = "gate"
+BG_MODE_SELO = "selo"
+
+# Valores que mapeiam para "gate" (exige limit_value exatamente "gate").
+# Qualquer outro valor (incluindo None, "", "selo" ou desconhecido) resulta em "selo".
+_GATE_VALUES = frozenset({"gate"})
+
+
+def background_check_mode(db, tenant_id: str | None) -> str:
+    """Retorna o modo de operacao do background check para o tenant.
+
+    "selo" (DEFAULT): verificacao e opcional; aprovacao nunca bloqueada.
+    "gate": verificacao obrigatoria; aprovacao bloqueada sem override+justificativa.
+
+    A flag deve estar ON antes de chamar este helper — quem chama ja gateou
+    via is_tenant_feature_enabled. Flag OFF => modo irrelevante (nao chega aqui).
+
+    Leitura: TenantFeature.limit_value da linha feature_key="background_checks"
+    do tenant. NULL / vazio / qualquer outro valor => "selo".
+    """
+    if not tenant_id:
+        return BG_MODE_SELO
+
+    # Import local para evitar dependencia circular (service -> models ok, mas
+    # nao importar de routes/services que ja importam daqui).
+    from sqlalchemy.orm import Session as _Session  # noqa: F401
+    from app.models.tenant import TenantFeature as _TenantFeature
+
+    row = (
+        db.query(_TenantFeature)
+        .filter(
+            _TenantFeature.tenant_id == tenant_id,
+            _TenantFeature.feature_key == "background_checks",
+        )
+        .first()
+    )
+    if row is None:
+        return BG_MODE_SELO
+
+    raw = (row.limit_value or "").strip().lower()
+    return BG_MODE_GATE if raw in _GATE_VALUES else BG_MODE_SELO

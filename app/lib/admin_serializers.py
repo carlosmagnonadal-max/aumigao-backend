@@ -32,6 +32,7 @@ from app.services.background_check_service import (
     BACKGROUND_CHECK_DISCLAIMER,
     compute_background_status,
     official_validation_url as background_official_validation_url,
+    background_check_mode,
 )
 from app.constants import PAID_PAYMENT_STATUSES
 from app.enums import canonical_application_status as _canonical_application_status_impl
@@ -471,6 +472,12 @@ def _serialize_walker_profile(
     payload["background_verified_at"] = profile.background_verified_at
     payload["background_consent_at"] = profile.background_consent_at
     payload["background_consent_version"] = profile.background_consent_version
+    # Modo de operacao do background check para o tenant do walker (configuravel via
+    # TenantFeature.limit_value). "selo" = padrao (verificacao opcional, so ganha selo);
+    # "gate" = aprovacao bloqueada sem verificacao. Exposto para o admin-web exibir o
+    # comportamento atual e orientar a acao correta.
+    _bg_walker_tenant_id = getattr(user, "tenant_id", None) if user else None
+    payload["background_check_mode"] = background_check_mode(db, _bg_walker_tenant_id)
     # BG-6 — veredito minimizado da checagem de sancoes (CEIS/CNEP). So visivel ao
     # admin, junto do disclaimer. Nunca exposto ao tutor nem ao proprio walker.
     payload["sanctions_check_status"] = getattr(profile, "sanctions_check_status", "none")

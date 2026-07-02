@@ -160,9 +160,11 @@ class TestPetLiveProfileTables:
         for wid, tid, uid, pid in [(wa, ta, ua, pa), (wb, tb, ub, pb)]:
             cur.execute(
                 """
-                INSERT INTO walks (id, tenant_id, tutor_user_id, pet_id, walker_user_id,
-                                   status, scheduled_start, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, 'completed', NOW(), NOW(), NOW())
+                INSERT INTO walks (id, tenant_id, tutor_id, pet_id, walker_id,
+                                   status, scheduled_date, duration_minutes, price,
+                                   created_at)
+                VALUES (%s, %s, %s, %s, %s, 'completed', '2026-01-01', 30, 0.0,
+                        NOW())
                 """,
                 (wid, tid, uid, pid, uid),
             )

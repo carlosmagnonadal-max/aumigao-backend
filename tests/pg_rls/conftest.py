@@ -387,13 +387,17 @@ def make_uid() -> str:
 
 
 def setup_tenants(cur) -> tuple[str, str]:
-    """Insere dois tenants distintos e retorna (tenant_a_id, tenant_b_id)."""
+    """Insere dois tenants distintos e retorna (tenant_a_id, tenant_b_id).
+
+    Alinhado ao modelo Tenant atual: usa 'status' (não 'active'), sem coluna
+    active (removida em refactor que adicionou status).
+    """
     ta, tb = make_uid(), make_uid()
     for tid in (ta, tb):
         cur.execute(
             """
-            INSERT INTO tenants (id, slug, name, plan, active, created_at, updated_at)
-            VALUES (%s, %s, %s, 'pro', true, NOW(), NOW())
+            INSERT INTO tenants (id, slug, name, plan, status, created_at, updated_at)
+            VALUES (%s, %s, %s, 'pro', 'active', NOW(), NOW())
             """,
             (tid, f"slug-{tid[:8]}", f"Tenant {tid[:8]}"),
         )
@@ -401,13 +405,17 @@ def setup_tenants(cur) -> tuple[str, str]:
 
 
 def setup_user(cur, tenant_id: str) -> str:
-    """Insere um usuário pertencente ao tenant e retorna o user_id."""
+    """Insere um usuário pertencente ao tenant e retorna o user_id.
+
+    Alinhado ao modelo User atual: password_hash (não hashed_password),
+    full_name (não name), is_active (não active), sem cpf_encrypted.
+    """
     uid = make_uid()
     cur.execute(
         """
-        INSERT INTO users (id, tenant_id, email, hashed_password, name,
-                           cpf_encrypted, role, active, created_at, updated_at)
-        VALUES (%s, %s, %s, 'hash', 'Test User', 'enc', 'tutor', true, NOW(), NOW())
+        INSERT INTO users (id, tenant_id, email, password_hash, full_name,
+                           role, is_active, created_at)
+        VALUES (%s, %s, %s, 'hash', 'Test User', 'tutor', true, NOW())
         """,
         (uid, tenant_id, f"user-{uid[:8]}@test.com"),
     )
@@ -415,13 +423,17 @@ def setup_user(cur, tenant_id: str) -> str:
 
 
 def setup_pet(cur, tenant_id: str, user_id: str) -> str:
-    """Insere um pet pertencente ao tenant e retorna o pet_id."""
+    """Insere um pet pertencente ao tenant e retorna o pet_id.
+
+    Alinhado ao modelo Pet atual: tutor_id (não tutor_user_id), weight
+    (não weight_kg), sem active, sem updated_at.
+    """
     pid = make_uid()
     cur.execute(
         """
-        INSERT INTO pets (id, tenant_id, tutor_user_id, name, species,
-                          breed, weight_kg, active, created_at, updated_at)
-        VALUES (%s, %s, %s, 'Rex', 'dog', 'SRD', 5.0, true, NOW(), NOW())
+        INSERT INTO pets (id, tenant_id, tutor_id, name, species,
+                          breed, weight, created_at)
+        VALUES (%s, %s, %s, 'Rex', 'dog', 'SRD', 5.0, NOW())
         """,
         (pid, tenant_id, user_id),
     )

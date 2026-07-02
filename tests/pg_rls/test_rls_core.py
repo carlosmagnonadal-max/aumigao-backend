@@ -71,11 +71,9 @@ class TestCoreIsolation:
                 with pytest.raises(psycopg2.errors.CheckViolation):
                     app_cur.execute(
                         """
-                        INSERT INTO pets (id, tenant_id, tutor_user_id, name,
-                                         species, breed, weight_kg, active,
-                                         created_at, updated_at)
-                        VALUES (%s, %s, %s, 'Ghost', 'dog', 'SRD', 3.0,
-                                true, NOW(), NOW())
+                        INSERT INTO pets (id, tenant_id, tutor_id, name,
+                                         species, breed, weight, created_at)
+                        VALUES (%s, %s, %s, 'Ghost', 'dog', 'SRD', 3.0, NOW())
                         """,
                         (pid, tb, ua),  # tenant_id = tb mas sessão = ta
                     )

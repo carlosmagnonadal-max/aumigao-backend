@@ -61,9 +61,9 @@ def boost_response_payload(profile: WalkerProfile, db: Session) -> dict:
     }
 
 
-@admin_router.get("/debug", response_model=MatchingDebugResponse)
-@api_admin_router.get("/debug", response_model=MatchingDebugResponse)
-def matching_debug(
+@admin_router.get("/diagnostics", response_model=MatchingDebugResponse)
+@api_admin_router.get("/diagnostics", response_model=MatchingDebugResponse)
+def matching_diagnostics(
     city: str | None = Query(None),
     neighborhood: str | None = Query(None),
     scheduled_at: str | None = Query(None),

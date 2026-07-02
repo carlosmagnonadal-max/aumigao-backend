@@ -5,7 +5,7 @@ Padrao do projeto: FastAPI minimo + SQLite StaticPool + overrides.
 Cobre:
 - Tutor do tenant A NAO ve walker do tenant B (isolamento cross-tenant via HTTP)
 - Sem auth → 401
-- GET /admin/matching/debug sem permissao matching.read → 403
+- GET /admin/matching/diagnostics sem permissao matching.read → 403
 """
 from datetime import datetime
 
@@ -134,21 +134,21 @@ def test_match_walkers_requires_auth_returns_401():
     assert r.status_code == 401
 
 
-def test_matching_debug_requires_matching_read_permission_403():
-    """GET /admin/matching/debug sem permissao matching.read deve retornar 403."""
+def test_matching_diagnostics_requires_matching_read_permission_403():
+    """GET /admin/matching/diagnostics sem permissao matching.read deve retornar 403."""
     test_app, db = build_multitenant()
     # Autentica como tutor comum (sem permissao matching.read)
     test_app.dependency_overrides[get_current_user] = lambda: db.get(User, TUTOR_A)
     client = TestClient(test_app)
 
-    r = client.get("/admin/matching/debug")
+    r = client.get("/admin/matching/diagnostics")
 
     assert r.status_code == 403
     assert "permiss" in r.json()["detail"].lower()
 
 
-def test_matching_debug_allowed_for_super_admin():
-    """GET /admin/matching/debug com super_admin (tem matching.read) deve retornar 200."""
+def test_matching_diagnostics_allowed_for_super_admin():
+    """GET /admin/matching/diagnostics com super_admin (tem matching.read) deve retornar 200."""
     test_app, db = build_multitenant()
     # Adiciona super_admin
     db.add(User(id="super-admin", email="superadmin@test.com", password_hash="x",
@@ -157,7 +157,7 @@ def test_matching_debug_allowed_for_super_admin():
     test_app.dependency_overrides[get_current_user] = lambda: db.get(User, "super-admin")
     client = TestClient(test_app)
 
-    r = client.get("/admin/matching/debug")
+    r = client.get("/admin/matching/diagnostics")
 
     assert r.status_code == 200, r.text
     assert "items" in r.json()

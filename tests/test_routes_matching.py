@@ -7,7 +7,7 @@ overrides de get_db / get_current_user. NAO importa app.main (que conecta no Neo
 Cobre:
 - POST /matching/walkers (happy path: estrutura MatchingResponse; sem passeadores;
   401 sem auth).
-- GET /admin/matching/debug (estrutura MatchingDebugResponse; RBAC 403 para usuario
+- GET /admin/matching/diagnostics (estrutura MatchingDebugResponse; RBAC 403 para usuario
   comum, 200 para super_admin).
 - GET /admin/matching/boosts (lista + total; RBAC).
 - PATCH /admin/matching/boosts/{walker_id} (cria/atualiza boost; elegibilidade).
@@ -136,11 +136,11 @@ def test_match_walkers_requires_auth_401():
     assert r.status_code == 401
 
 
-# ------------------------------------------------- GET /admin/matching/debug ---
+# ------------------------------------------------- GET /admin/matching/diagnostics ---
 def test_debug_forbidden_for_regular_user_403():
     client, db = build()  # usuario autenticado = cliente comum
     add_walker(db, user_id="walker-a")
-    r = client.get("/admin/matching/debug")
+    r = client.get("/admin/matching/diagnostics")
     assert r.status_code == 403
     assert "permiss" in r.json()["detail"].lower()
 
@@ -148,7 +148,7 @@ def test_debug_forbidden_for_regular_user_403():
 def test_debug_returns_scored_items_for_admin():
     client, db = build(role="super_admin")
     add_walker(db, user_id="walker-a", city="salvador")
-    r = client.get("/admin/matching/debug", params={"city": "salvador"})
+    r = client.get("/admin/matching/diagnostics", params={"city": "salvador"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["total_found"] == 1

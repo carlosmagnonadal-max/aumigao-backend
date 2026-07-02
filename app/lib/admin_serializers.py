@@ -471,6 +471,10 @@ def _serialize_walker_profile(
     payload["background_verified_at"] = profile.background_verified_at
     payload["background_consent_at"] = profile.background_consent_at
     payload["background_consent_version"] = profile.background_consent_version
+    # BG-6 — veredito minimizado da checagem de sancoes (CEIS/CNEP). So visivel ao
+    # admin, junto do disclaimer. Nunca exposto ao tutor nem ao proprio walker.
+    payload["sanctions_check_status"] = getattr(profile, "sanctions_check_status", "none")
+    payload["sanctions_checked_at"] = getattr(profile, "sanctions_checked_at", None)
     # Disclaimer de isencao incluso em todo payload que carrega dados de background (BG-disclaimer).
     payload["background_disclaimer"] = BACKGROUND_CHECK_DISCLAIMER
     payload["background_certificates"] = [

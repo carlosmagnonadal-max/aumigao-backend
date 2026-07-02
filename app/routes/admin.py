@@ -1372,6 +1372,12 @@ def update_background_certificate(
         .all()
     )
     aggregate = compute_background_status(profile, certificates)
+    # BG-6 — ao validar, dispara a checagem automatica de sancoes (Portal da
+    # Transparencia). Dormente sem TRANSPARENCIA_API_KEY; fail-open (nao bloqueia).
+    if new_status == "validated":
+        from app.services.background.sanctions_service import run_sanctions_check
+        _bg_cert_user = db.get(User, profile.user_id)
+        run_sanctions_check(db, profile, getattr(_bg_cert_user, "tenant_id", None) if _bg_cert_user else None)
     record_admin_operational_event(
         db,
         event_type="background_cert_validated" if new_status == "validated" else "background_cert_rejected",

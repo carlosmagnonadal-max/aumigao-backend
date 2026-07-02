@@ -1119,8 +1119,15 @@ def submit_background_certificate(
     db: Session = Depends(get_db),
 ):
     profile = _walker_profile_for_user(user, db)
-    provider = get_background_provider(db, getattr(user, "tenant_id", None))
-    return provider.submit_certificate(profile, payload, db)
+    tenant_id = getattr(user, "tenant_id", None)
+    provider = get_background_provider(db, tenant_id)
+    result = provider.submit_certificate(profile, payload, db)
+    # BG-6 — checagem automatica de sancoes (Portal da Transparencia). Dormente sem
+    # TRANSPARENCIA_API_KEY; fail-open (nunca bloqueia o envio da certidao).
+    from app.services.background.sanctions_service import run_sanctions_check
+    run_sanctions_check(db, profile, tenant_id)
+    db.commit()
+    return result
 
 
 @router.get("/background")

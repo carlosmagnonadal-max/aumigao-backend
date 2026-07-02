@@ -113,6 +113,8 @@ from app.services.background_check_service import (
     compute_background_status,
     official_validation_url as background_official_validation_url,
     DEFAULT_CERT_VALIDITY_DAYS,
+    background_check_mode,
+    BG_MODE_GATE,
 )
 from app.services.tenant_feature_runtime_service import is_tenant_feature_enabled
 
@@ -1372,6 +1374,12 @@ def update_background_certificate(
         .all()
     )
     aggregate = compute_background_status(profile, certificates)
+    # BG-6 — ao validar, dispara a checagem automatica de sancoes (Portal da
+    # Transparencia). Dormente sem TRANSPARENCIA_API_KEY; fail-open (nao bloqueia).
+    if new_status == "validated":
+        from app.services.background.sanctions_service import run_sanctions_check
+        _bg_cert_user = db.get(User, profile.user_id)
+        run_sanctions_check(db, profile, getattr(_bg_cert_user, "tenant_id", None) if _bg_cert_user else None)
     record_admin_operational_event(
         db,
         event_type="background_cert_validated" if new_status == "validated" else "background_cert_rejected",
@@ -1483,9 +1491,15 @@ def approve_walker(walker_id: str, request: Request, payload: dict | None = None
         _walker_scope_user = db.get(User, profile.user_id)
         if not _walker_scope_user or _walker_scope_user.tenant_id != scope.tenant_id:
             raise HTTPException(status_code=404, detail="Passeador nao encontrado")
-    # GATE Background Check (Fase 0) — dormente: so age quando a flag de tenant
+    # GATE / SELO Background Check (Fase 0) — dormente: so age quando a flag de tenant
     # `background_checks` esta LIGADA. Flag OFF (default) => comportamento IDENTICO ao
     # anterior (zero regressao).
+    #
+    # Modos (configuravel via TenantFeature.limit_value):
+    #   "gate" (comportamento original): bloqueia aprovacao se nao verificado; permite
+    #          override+justificativa. Equivale ao gate anterior.
+    #   "selo" (NOVO DEFAULT): aprovacao NUNCA bloqueada; passeador verificado so ganha
+    #          o selo no matching. Registra o status no evento de aprovacao (auditoria).
     payload = payload or {}
     _bg_user = db.get(User, profile.user_id)
     _bg_tenant_id = getattr(_bg_user, "tenant_id", None) if _bg_user else None
@@ -1496,7 +1510,9 @@ def approve_walker(walker_id: str, request: Request, payload: dict | None = None
             .all()
         )
         aggregate = compute_background_status(profile, certificates)
-        if aggregate != "verified":
+        _bg_mode = background_check_mode(db, _bg_tenant_id)
+        if _bg_mode == BG_MODE_GATE and aggregate != "verified":
+            # Modo gate: bloqueia a aprovacao; admin pode contornar com override.
             override = bool(payload.get("override"))
             justification = (payload.get("override_justification") or payload.get("justification") or "").strip()
             if not (override and justification):
@@ -1518,6 +1534,26 @@ def approve_walker(walker_id: str, request: Request, payload: dict | None = None
                     "candidate_id": profile.id,
                     "background_check_status": aggregate,
                     "justification": justification,
+                },
+                request=request,
+            )
+        else:
+            # Modo selo (ou gate com status verified): registra o status no evento
+            # de aprovacao para rastreabilidade de auditoria — sem bloquear.
+            record_admin_operational_event(
+                db,
+                event_type="walker_approved_bg_status",
+                entity_type="walker",
+                entity_id=profile.user_id,
+                severity="info",
+                title="Aprovacao registrada com status de antecedentes",
+                description=f"Modo: {_bg_mode}. Status de antecedentes no momento da aprovacao: {aggregate}.",
+                actor=admin,
+                source="admin.walker.approve.bg_status",
+                metadata={
+                    "candidate_id": profile.id,
+                    "background_check_status": aggregate,
+                    "background_check_mode": _bg_mode,
                 },
                 request=request,
             )

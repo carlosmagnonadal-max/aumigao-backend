@@ -17,6 +17,7 @@ from fastapi import HTTPException
 
 from app.services.background.base import BackgroundCheckProvider
 from app.services.background_check_service import (
+    BACKGROUND_CHECK_DISCLAIMER,
     compute_background_status,
     official_validation_url as background_check_official_url,
 )
@@ -142,6 +143,8 @@ class ManualProvider(BackgroundCheckProvider):
         return {
             "certificate": _serialize_cert(cert),
             "background_check_status": aggregate,
+            # Disclaimer de isencao incluso em toda resposta de background (BG-disclaimer).
+            "disclaimer": BACKGROUND_CHECK_DISCLAIMER,
         }
 
     def get_background_status(
@@ -156,4 +159,6 @@ class ManualProvider(BackgroundCheckProvider):
             "consent_at": profile.background_consent_at,
             "consent_version": profile.background_consent_version,
             "certificates": [_serialize_cert(c) for c in certificates],
+            # Disclaimer de isencao incluso em toda resposta de background (BG-disclaimer).
+            "disclaimer": BACKGROUND_CHECK_DISCLAIMER,
         }

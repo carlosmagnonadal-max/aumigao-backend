@@ -40,6 +40,9 @@ class PublicMatchedWalker(BaseModel):
     display_reason: str
     can_select: bool = True
     trust: WalkerTrustResponse | None = None
+    # BG-7: booleano de antecedentes verificados exposto ao tutor.
+    # True apenas quando flag background_checks esta ON E status == "verified".
+    antecedentes_verificados: bool = False
 
 
 class MatchingResponse(BaseModel):

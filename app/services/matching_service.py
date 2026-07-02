@@ -19,6 +19,7 @@ from app.services.boost_service import boost_score_for_walker
 from app.services.reputation_service import DEFAULT_WALKER_PHOTO, calculate_hybrid_reputation_score, get_walker_identity, reputation_summary
 from app.services.walker_availability_service import _covers
 from app.services.walker_trust_service import compute_walker_trust
+from app.services.tenant_feature_runtime_service import is_tenant_feature_enabled
 
 NEARBY_NEIGHBORHOODS = {
     "pituba": {"itaigara", "caminho das arvores", "costa azul", "amaralina"},
@@ -253,7 +254,7 @@ def get_eligible_walkers(request: MatchingWalkerRequest, db: Session, tenant_id:
     return eligible
 
 
-def matched_walker_payload(profile: WalkerProfile, request: MatchingWalkerRequest, db: Session) -> dict:
+def matched_walker_payload(profile: WalkerProfile, request: MatchingWalkerRequest, db: Session, bg_flag_on: bool | None = None) -> dict:
     summary = reputation_summary(profile.user_id, db)
     proximity_score, distance_km = calculate_proximity_score(profile, request)
     rating_score = calculate_rating_score(summary)
@@ -270,6 +271,17 @@ def matched_walker_payload(profile: WalkerProfile, request: MatchingWalkerReques
     # Gating de EXIBICAO e responsabilidade do front (decisao da spec), nao aqui.
     trust = compute_walker_trust(db, profile.user_id)
 
+    # BG-7: selo antecedentes_verificados exposto ao tutor (somente o booleano — sem
+    # vazar dados das certidoes). True apenas quando AMBAS as condicoes sao atendidas:
+    # (a) flag 'background_checks' do tenant esta ON, E (b) status do perfil == "verified".
+    # `bg_flag_on` vem do rank_walkers ja resolvido com o tenant AUTENTICADO da rota
+    # (1x por ranking); o fallback via request.tenant_id atende chamadas diretas/testes.
+    if bg_flag_on is None:
+        _tenant_id: str | None = getattr(request, "tenant_id", None)
+        bg_flag_on = is_tenant_feature_enabled(db, "background_checks", tenant_id=_tenant_id)
+    _bg_status = getattr(profile, "background_check_status", "none") or "none"
+    antecedentes_verificados = bool(bg_flag_on) and _bg_status == "verified"
+
     return {
         "walker_id": profile.user_id,
         "name": identity["name"],
@@ -279,6 +291,8 @@ def matched_walker_payload(profile: WalkerProfile, request: MatchingWalkerReques
         "total_walks": summary["total_walks"],
         "level": summary["level"],
         "trust": trust,
+        # Selo de antecedentes verificados (BG-7): booleano gateado por flag de tenant.
+        "antecedentes_verificados": antecedentes_verificados,
         "distance_km": distance_km,
         "estimated_arrival_minutes": int((distance_km or 4) * 5) + 4,
         "can_select": True,
@@ -395,7 +409,11 @@ def rank_walkers(request: MatchingWalkerRequest, db: Session, debug: bool = Fals
             return {"items": [], "total_found": 0, "matching_context": context}
         return {"top_recommended": [], "other_options": [], "total_found": 0, "matching_context": context}
 
-    items = [matched_walker_payload(profile, request, db) for profile in profiles]
+    # BG-7: flag resolvida 1x por ranking com o tenant AUTENTICADO da rota — o
+    # tenant_id do body e controlado pelo cliente e nao decide a flag sozinho.
+    _bg_tenant = tenant_id if tenant_id is not None else getattr(request, "tenant_id", None)
+    _bg_flag_on = is_tenant_feature_enabled(db, "background_checks", tenant_id=_bg_tenant)
+    items = [matched_walker_payload(profile, request, db, bg_flag_on=_bg_flag_on) for profile in profiles]
     best_rating = max((item["rating_average"] for item in items), default=0)
     most_walks = max((item["total_walks"] for item in items), default=0)
     items.sort(
@@ -437,6 +455,8 @@ def rank_walkers(request: MatchingWalkerRequest, db: Session, debug: bool = Fals
             "display_reason": item["display_reason"],
             "can_select": item["can_select"],
             "trust": item["trust"],
+            # BG-7: booleano gateado por flag de tenant — sem dados sensiveis de certidoes.
+            "antecedentes_verificados": item["antecedentes_verificados"],
         }
         for item in items
     ]

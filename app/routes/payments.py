@@ -1493,6 +1493,23 @@ def credit_expiry_sweep(request: Request, db: Session = Depends(get_global_db)):
     return result
 
 
+@router.post("/internal/background-reverification/sweep")
+def background_reverification_sweep(request: Request, db: Session = Depends(get_global_db)):
+    """Expira certidoes de antecedentes validadas ha mais de N dias (reverificacao).
+
+    Protegido por INTERNAL_SWEEP_TOKEN. Chamado pelo Cloud Scheduler (recomendado:
+    diario). Idempotente — so age em tenants com a flag `background_checks` ON e so
+    notifica na transicao validated->expired. Cron interno = fail-closed normal.
+    """
+    import os, secrets
+    from app.services.background_reverification_service import sweep_stale_certificates
+    expected = os.getenv("INTERNAL_SWEEP_TOKEN")
+    got = request.headers.get("x-internal-token")
+    if not expected or not got or not secrets.compare_digest(got, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return sweep_stale_certificates(db)
+
+
 def _is_tip_payment(db, provider_payment_id: str, external_ref: str) -> bool:
     """Verifica se um provider_payment_id pertence a uma WalkTip (fallback sem externalReference)."""
     from app.models.walk_tip import WalkTip

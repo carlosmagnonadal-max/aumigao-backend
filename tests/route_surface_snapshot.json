@@ -483,6 +483,7 @@
   "POST /notifications/push-test",
   "POST /notifications/push-token",
   "POST /payments/create",
+  "POST /payments/internal/background-reverification/sweep",
   "POST /payments/internal/commission-billing/run",
   "POST /payments/internal/credit-expiry/sweep",
   "POST /payments/internal/saas-billing/sweep",

@@ -32,6 +32,16 @@ class Pet(Base):
     vet_name: Mapped[str | None] = mapped_column(String, nullable=True)
     vet_phone: Mapped[str | None] = mapped_column(String, nullable=True)
     emergency_contact: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Ficha rica (Perfil Vivo 2.0 — Fase A). microchip é distinto do chip_number
+    # legado (0073): campo canônico da ficha rica. Dieta estruturada abaixo.
+    microchip: Mapped[str | None] = mapped_column(String, nullable=True)
+    diet_type: Mapped[str | None] = mapped_column(String, nullable=True)  # seca|umida|natural|mista|outro
+    diet_brand: Mapped[str | None] = mapped_column(String, nullable=True)
+    diet_line: Mapped[str | None] = mapped_column(String, nullable=True)
+    diet_grams_per_meal: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    diet_meals_per_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    diet_meal_times: Mapped[str | None] = mapped_column(String, nullable=True)  # JSON simples (lista de horários)
+    diet_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     tutor = relationship("User", back_populates="pets")

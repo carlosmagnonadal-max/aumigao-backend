@@ -105,6 +105,9 @@ class TimelineEventCreate(BaseModel):
         return v
 
 
+_DIET_TYPES = {"seca", "umida", "natural", "mista", "outro"}
+
+
 class PetHealthUpdate(BaseModel):
     birth_date: date | None = None
     chip_number: str | None = None
@@ -114,7 +117,35 @@ class PetHealthUpdate(BaseModel):
     weight: float | None = None
     allergies: str | None = None
     medications: str | None = None
+    restrictions: str | None = None
     health_notes: str | None = None
+    behavior_notes: str | None = None
+    # Ficha rica (Fase A) — aditivos.
+    microchip: str | None = None
+    diet_type: str | None = None
+    diet_brand: str | None = None
+    diet_line: str | None = None
+    diet_grams_per_meal: int | None = Field(None, ge=0)
+    diet_meals_per_day: int | None = Field(None, ge=0)
+    diet_meal_times: str | None = None
+    diet_notes: str | None = None
+
+    @field_validator("diet_type")
+    @classmethod
+    def _diet_type(cls, v: str | None) -> str | None:
+        if v is not None and v != "" and v not in _DIET_TYPES:
+            raise ValueError(f"diet_type inválido: {v!r}. Válidos: {sorted(_DIET_TYPES)}")
+        return v
+
+
+# Campos da ficha rica cuja alteração gera evento na timeline (padrão fase 1).
+# NÃO inclui valores sensíveis no payload — só a lista de chaves alteradas.
+_HEALTH_TIMELINE_FIELDS = {
+    "allergies", "medications", "restrictions", "health_notes",
+    "microchip", "chip_number", "vet_name", "vet_phone", "emergency_contact",
+    "diet_type", "diet_brand", "diet_line", "diet_grams_per_meal",
+    "diet_meals_per_day", "diet_meal_times", "diet_notes",
+}
 
 
 def _event_dict(e: PetTimelineEvent) -> dict:
@@ -179,8 +210,24 @@ def update_health(pet_id: str, payload: PetHealthUpdate,
                   user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active(db, user)
     pet = _get_owned_pet(db, pet_id, user)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    fields = payload.model_dump(exclude_unset=True)
+    # Coleta quais campos da ficha REALMENTE mudaram (para o evento da timeline).
+    changed_health: list[str] = []
+    for field, value in fields.items():
+        if field in _HEALTH_TIMELINE_FIELDS and getattr(pet, field, None) != value:
+            changed_health.append(field)
         setattr(pet, field, value)
+    # Evento na timeline (padrão fase 1) — SEM valores sensíveis, só as chaves alteradas.
+    if changed_health:
+        svc.record_timeline_event(
+            db, pet,
+            event_type="health_note",
+            title="Ficha de saúde atualizada",
+            occurred_at=datetime.utcnow(),
+            source="tutor",
+            created_by_user_id=user.id,
+            payload_json=json.dumps({"changed_fields": sorted(changed_health)}),
+        )
     db.commit()
     db.refresh(pet)
     return {"ok": True}

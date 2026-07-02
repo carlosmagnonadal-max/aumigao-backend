@@ -392,6 +392,42 @@ def _serialize_admin_pet(pet: Pet, db: Session) -> dict:
         "restrictions": pet.restrictions,
         "owner_name": (tutor.full_name if tutor else None) or (tutor.email if tutor else None) or "",
         "created_at": pet.created_at,
+        # Ficha rica + carteira de saúde (Perfil Vivo 2.0 — Fase A). Campos aditivos:
+        # visão de negócio do tenant. Serializado sempre (o gating é de escrita/rotas,
+        # não afeta o payload do admin do próprio tenant).
+        "allergies": pet.allergies,
+        "medications": pet.medications,
+        "microchip": pet.microchip,
+        "chip_number": pet.chip_number,
+        "vet_name": pet.vet_name,
+        "vet_phone": pet.vet_phone,
+        "emergency_contact": pet.emergency_contact,
+        "birth_date": pet.birth_date.isoformat() if pet.birth_date else None,
+        "diet": {
+            "type": pet.diet_type,
+            "brand": pet.diet_brand,
+            "line": pet.diet_line,
+            "grams_per_meal": pet.diet_grams_per_meal,
+            "meals_per_day": pet.diet_meals_per_day,
+            "meal_times": pet.diet_meal_times,
+            "notes": pet.diet_notes,
+        },
+        "health_card": _admin_pet_health_card(pet, db),
+    }
+
+
+def _admin_pet_health_card(pet: Pet, db: Session) -> dict:
+    """Contadores por kind + registros da carteira, para o serializer admin.
+
+    Import local para não criar dependência de carga entre libs (o serviço
+    importa modelos do domínio pet).
+    """
+    from app.services.pet_health_service import aggregate_by_kind, list_health_records, record_dict
+
+    records = list_health_records(db, pet.id)
+    return {
+        "counters": aggregate_by_kind(records),
+        "records": [record_dict(r) for r in records],
     }
 
 

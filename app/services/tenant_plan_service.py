@@ -283,7 +283,14 @@ def tenant_tem_rede(tenant: Tenant, db: Session) -> bool:  # noqa: ARG001
     if override is not None:
         return bool(override)
 
-    plan = (tenant.plan or "").strip().lower()
+    # Plano free ("Começar"): REDE DESLIGADA por decisão de plano. Usa o plano
+    # EFETIVO (trial-aware): durante o reverse trial de 21d o plano efetivo é
+    # "pro" → rede liberada. Pro/enterprise nunca entram neste ramo.
+    from app.services.tenant_free_plan_service import effective_tenant_plan, is_free_plan
+
+    plan = effective_tenant_plan(tenant)
+    if is_free_plan(plan):
+        return False
     if plan == TENANT_PLAN_ENTERPRISE:
         return True
     # Pricing v2: plano canônico Pro inclui acesso à Rede (capability
@@ -298,6 +305,14 @@ def tenant_tem_rede(tenant: Tenant, db: Session) -> bool:  # noqa: ARG001
 
 def enforce_network_access_allowed(tenant: Tenant, db: Session) -> None:
     if not tenant_tem_rede(tenant, db):
+        from app.services.tenant_free_plan_service import effective_tenant_plan, is_free_plan
+
+        if is_free_plan(effective_tenant_plan(tenant)):
+            # Mensagem de upgrade clara pro tenant free (rede como teaser).
+            raise HTTPException(
+                status_code=403,
+                detail="Rede de passeadores disponível a partir do plano Pro.",
+            )
         raise HTTPException(status_code=403, detail="Acesso à Rede Aumigão indisponível para o plano atual.")
 
 

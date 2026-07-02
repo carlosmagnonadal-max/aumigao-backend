@@ -371,6 +371,16 @@ def create_walk(payload: WalkCreate, request: Request, user: User = Depends(get_
             if not is_tutor_eligible_for_tenant(db, tenant_id, user.id):
                 raise HTTPException(status_code=403, detail="tutor_not_linked_to_tenant")
 
+        # Plano free: cap mensal de passeios (default 40, env FREE_PLAN_WALK_CAP).
+        # Conta passeios CRIADOS no mês corrente (BRT), excluindo cancelados.
+        # No-op para pro/enterprise e durante o reverse trial (plano efetivo = pro).
+        if tenant_id:
+            from app.services.tenant_free_plan_service import enforce_free_plan_walk_cap
+
+            _tenant_cap_check = db.get(Tenant, tenant_id)
+            if _tenant_cap_check is not None:
+                enforce_free_plan_walk_cap(db, _tenant_cap_check)
+
         # Gate home_pickup: se a flag estiver OFF, bloqueia pickup_method que indique busca em casa.
         _pickup_method = data.get("pickup_method", "")
         _home_pickup_values = {"Buscar em casa", "home_pickup", "buscar_em_casa", "buscar em casa"}

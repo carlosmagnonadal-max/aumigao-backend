@@ -18,7 +18,11 @@ sem espalhar lógica de trial por vários módulos.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+# BRT fixo (UTC-3): o Brasil aboliu o horário de verão em 2019 — mesmo padrão do
+# faturamento mensal de comissão (payments.py). Evita depender de tzdata no container.
+_BRT = timezone(timedelta(hours=-3))
 
 # Chave canônica do plano gratuito.
 TENANT_PLAN_FREE = "free"
@@ -82,3 +86,69 @@ def compute_trial_ends_at(created_at: datetime | None = None) -> datetime:
     """Fim do reverse trial = criação + FREE_PLAN_TRIAL_DAYS dias."""
     base = created_at or datetime.utcnow()
     return base + timedelta(days=FREE_PLAN_TRIAL_DAYS)
+
+
+# ── Cap mensal de passeios (plano free) ─────────────────────────────────────
+
+def current_month_window_utc(now: datetime | None = None) -> tuple[datetime, str]:
+    """Início do mês corrente em BRT, convertido para UTC NAIVE + rótulo 'YYYY-MM'.
+
+    Walk.created_at é armazenado naive-UTC (datetime.utcnow), então o corte do
+    mês BRT precisa virar um bound naive-UTC para a query.
+    """
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    now_brt = reference.astimezone(_BRT)
+    month_start_brt = now_brt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    start_utc_naive = month_start_brt.astimezone(timezone.utc).replace(tzinfo=None)
+    return start_utc_naive, f"{now_brt.year:04d}-{now_brt.month:02d}"
+
+
+def count_tenant_walks_current_month(db, tenant_id: str, *, now: datetime | None = None) -> int:
+    """Passeios do tenant CRIADOS no mês corrente (BRT), excluindo cancelados.
+
+    Regra de contagem (decisão documentada nos testes):
+      - conta por created_at (criação/agendamento é a fronteira anti-abuso);
+      - EXCLUI status 'cancelado' (case-insensitive — valor canônico 'Cancelado'):
+        passeio cancelado devolve a vaga do cap;
+      - inclui aguardando_pagamento/agendado/concluído (criados não-cancelados).
+    """
+    from sqlalchemy import func
+
+    from app.models.walk import Walk
+
+    start_utc, _ = current_month_window_utc(now)
+    return (
+        db.query(func.count(Walk.id))
+        .filter(
+            Walk.tenant_id == tenant_id,
+            Walk.created_at >= start_utc,
+            func.lower(func.coalesce(Walk.status, "")) != "cancelado",
+        )
+        .scalar()
+        or 0
+    )
+
+
+def enforce_free_plan_walk_cap(db, tenant, *, now: datetime | None = None) -> None:
+    """Trava de criação de passeio no plano free: cap mensal (default 40).
+
+    Só se aplica ao plano EFETIVO free (reverse trial em curso → sem cap, é Pro).
+    Ao atingir o cap → 403 com mensagem clara de upgrade. Pro/enterprise: no-op.
+    """
+    from fastapi import HTTPException
+
+    if tenant is None or not is_free_plan(effective_tenant_plan(tenant, now=now)):
+        return
+    cap = free_plan_walk_cap()
+    used = count_tenant_walks_current_month(db, tenant.id, now=now)
+    if used >= cap:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Limite de {cap} passeios/mês do plano gratuito atingido "
+                f"({used}/{cap}). Faça upgrade para o plano Pro e tenha passeios "
+                "ilimitados, rede de passeadores e recorrência."
+            ),
+        )

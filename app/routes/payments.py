@@ -1382,6 +1382,10 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                 if event in _WALKER_EARNING_VOID_EVENTS and payment.walk_id:
                     from app.services.walker_payout_service import void_walker_earning
                     void_walker_earning(db, payment.walk_id, reason=f"asaas:{event}", source="webhook")
+                    # FIX 13: estorno também reverte a COMISSÃO do tenant (COMM_VOID).
+                    # Se a entrada já foi faturada, gera ajuste de crédito no mês seguinte.
+                    from app.services.commission_billing_service import reverse_commission_for_walk
+                    reverse_commission_for_walk(db, payment.walk_id, reason=f"asaas:{event}")
 
                 db.commit()
 

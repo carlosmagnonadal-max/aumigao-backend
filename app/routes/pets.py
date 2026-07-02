@@ -152,6 +152,15 @@ def create_pet(payload: PetCreate, user: User = Depends(get_current_user), db: S
     data = payload.model_dump()
     data["photo_url"] = _normalize_pet_photo_url(data.get("photo_url"))
     tenant_id = _current_tenant_id(user, db)
+    # Plano free: máx N pets por tutor (default 2, env FREE_PLAN_PETS_PER_TUTOR).
+    # Só bloqueia pet NOVO — excedentes de antes do downgrade permanecem.
+    if tenant_id:
+        from app.models.tenant import Tenant
+        from app.services.tenant_free_plan_service import enforce_free_plan_pet_limit
+
+        _tenant_pet_check = db.get(Tenant, tenant_id)
+        if _tenant_pet_check is not None:
+            enforce_free_plan_pet_limit(db, _tenant_pet_check, user.id)
     pet = Pet(id=str(uuid4()), tutor_id=user.id, tenant_id=tenant_id, **data)
     db.add(pet)
     db.commit()

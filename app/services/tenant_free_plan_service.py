@@ -36,6 +36,33 @@ FREE_PLAN_TRIAL_DAYS = 21
 # Cap default de passeios PRÓPRIOS por mês no plano free. Configurável via env.
 _DEFAULT_WALK_CAP = 40
 
+# Máximo de pets por TUTOR no plano free. Configurável via env.
+_DEFAULT_PETS_PER_TUTOR = 2
+
+# ── Features BLOQUEADAS por PLANO no free (independente dos toggles por tenant) ──
+# Multiplicadores de receita + "Evolução do Pet" pro-only (mapa do Carlos 2026-07-02).
+# O bloqueio é aplicado NOS CHOKE POINTS de tenant_plan_service (tenant_feature_enabled/
+# tenant_has_feature), POR CIMA dos gates existentes (3 camadas do pet_live_profile,
+# TenantFeature etc.) — sem tocá-los. Trial 21d libera tudo (plano efetivo = pro).
+#
+# LIBERADO no free (NÃO listar aqui): pet_live_profile (cadastro/ficha do pet),
+# walk_observations_form (observação do passeador no relatório do passeio),
+# background_checks (captação de confiança), tips, reviews, live_gps,
+# push_notifications, protected_chat, weekly_missions, tutor_gamification etc.
+FREE_PLAN_BLOCKED_FEATURE_KEYS: frozenset[str] = frozenset({
+    # Multiplicadores de receita
+    "recurring_plans",     # planos recorrentes / créditos
+    "coupons",             # cupons de desconto
+    "client_referrals",    # referral do tutor
+    "walker_referrals",    # referral do passeador
+    "walker_boosts",       # boosts de passeador
+    "shared_walks",        # passeios compartilhados (modalidade Pro+)
+    "pet_tour",            # Pet Tour (modalidade Pro+)
+    # Evolução do Pet — pro-only por chave inteira
+    "pet_alerts",          # alertas/lembretes (sweep não gera pra tenant free)
+    "pet_share",           # share público do perfil do pet
+})
+
 
 def free_plan_walk_cap() -> int:
     """Cap mensal de passeios próprios do plano free (env FREE_PLAN_WALK_CAP, default 40).
@@ -86,6 +113,94 @@ def compute_trial_ends_at(created_at: datetime | None = None) -> datetime:
     """Fim do reverse trial = criação + FREE_PLAN_TRIAL_DAYS dias."""
     base = created_at or datetime.utcnow()
     return base + timedelta(days=FREE_PLAN_TRIAL_DAYS)
+
+
+def plan_blocks_feature(tenant, key: str, *, now: datetime | None = None) -> bool:
+    """True se o PLANO EFETIVO do tenant bloqueia a feature (só acontece no free).
+
+    Free em trial ativo → plano efetivo "pro" → nada bloqueado.
+    Pro/enterprise → nunca bloqueiam aqui → zero-regressão.
+    """
+    normalized = (key or "").strip()
+    if normalized not in FREE_PLAN_BLOCKED_FEATURE_KEYS:
+        return False
+    return is_free_plan(effective_tenant_plan(tenant, now=now))
+
+
+def free_plan_upgrade_exception(feature: str, label: str):
+    """403 com shape de TEASER documentado (contrato pro admin-web/app).
+
+    Body: {"detail": {"code": "plan_upgrade_required", "required_plan": "pro",
+                       "feature": "<chave>", "message": "<label> disponível a
+                       partir do plano Pro."}}
+    O cliente usa `code` para renderizar o CTA de upgrade em vez de erro genérico.
+    """
+    from fastapi import HTTPException
+
+    return HTTPException(
+        status_code=403,
+        detail={
+            "code": "plan_upgrade_required",
+            "required_plan": "pro",
+            "feature": feature,
+            "message": f"{label} disponível a partir do plano Pro.",
+        },
+    )
+
+
+def free_plan_pets_per_tutor() -> int:
+    """Máximo de pets por tutor no plano free (env FREE_PLAN_PETS_PER_TUTOR, default 2).
+
+    Valor inválido/não-positivo cai no default (não desliga o limite por engano).
+    """
+    raw = os.getenv("FREE_PLAN_PETS_PER_TUTOR", str(_DEFAULT_PETS_PER_TUTOR))
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_PETS_PER_TUTOR
+    return value if value > 0 else _DEFAULT_PETS_PER_TUTOR
+
+
+def enforce_free_plan_pet_limit(db, tenant, tutor_id: str) -> None:
+    """Trava de criação de pet NOVO no plano free: máx N pets por tutor (default 2).
+
+    Só bloqueia CRIAÇÃO — downgrade do trial NÃO remove pets excedentes (o tutor
+    mantém os que já tem; apenas não cria novos acima do limite). Trial 21d isento
+    (plano efetivo = pro). Pro/enterprise: no-op.
+    """
+    from fastapi import HTTPException
+
+    if tenant is None or not is_free_plan(effective_tenant_plan(tenant)):
+        return
+    from app.models.pet import Pet
+
+    limit = free_plan_pets_per_tutor()
+    current = db.query(Pet).filter(Pet.tutor_id == tutor_id).count()
+    if current >= limit:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "plan_upgrade_required",
+                "required_plan": "pro",
+                "feature": "pets_per_tutor",
+                "message": (
+                    f"Limite de {limit} pets por tutor no plano gratuito atingido. "
+                    "Faça upgrade para o plano Pro para cadastrar mais pets."
+                ),
+            },
+        )
+
+
+def enforce_pet_evolution_allowed(tenant, *, feature: str, label: str) -> None:
+    """Gate por PLANO das rotas pro-only da Evolução do Pet (timeline/stats).
+
+    Aplicado POR CIMA dos gates 3-camadas existentes (que continuam decidindo 404
+    quando a feature está dormente). A chave `pet_live_profile` NÃO é bloqueada por
+    chave inteira porque o cadastro/ficha do pet (PATCH profile) fica LIBERADO no
+    free — só timeline/histórico/stats são pro-only, daí o gate por rota.
+    """
+    if tenant is not None and is_free_plan(effective_tenant_plan(tenant)):
+        raise free_plan_upgrade_exception(feature, label)
 
 
 # ── Cap mensal de passeios (plano free) ─────────────────────────────────────

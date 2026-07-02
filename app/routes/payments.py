@@ -1493,6 +1493,44 @@ def credit_expiry_sweep(request: Request, db: Session = Depends(get_global_db)):
     return result
 
 
+@router.post("/internal/free-trial/sweep")
+def free_trial_sweep(request: Request, db: Session = Depends(get_global_db)):
+    """Carimba downgrades de reverse trial expirados + notifica admins (plano free).
+
+    OPCIONAL: o enforcement econômico do fim do trial é STATELESS (plano efetivo
+    resolvido a cada request) — este sweep só garante a NOTIFICAÇÃO de downgrade
+    mesmo que o admin não abra o painel. Protegido por INTERNAL_SWEEP_TOKEN
+    (mesmo padrão dos demais sweeps). Idempotente (carimbo trial_downgraded_at).
+    """
+    import os, secrets
+    from datetime import datetime as _dt
+
+    from app.models.tenant import Tenant as _Tenant
+    from app.services.tenant_free_plan_service import maybe_downgrade_expired_trial
+
+    expected = os.getenv("INTERNAL_SWEEP_TOKEN")
+    got = request.headers.get("x-internal-token")
+    if not expected or not got or not secrets.compare_digest(got, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    candidates = (
+        db.query(_Tenant)
+        .filter(
+            _Tenant.plan == "free",
+            _Tenant.trial_ends_at.isnot(None),
+            _Tenant.trial_ends_at < _dt.utcnow(),
+            _Tenant.trial_downgraded_at.is_(None),
+        )
+        .all()
+    )
+    n = 0
+    for tenant in candidates:
+        if maybe_downgrade_expired_trial(db, tenant):
+            n += 1
+    if n:
+        db.commit()
+    return {"downgraded": n}
+
+
 def _is_tip_payment(db, provider_payment_id: str, external_ref: str) -> bool:
     """Verifica se um provider_payment_id pertence a uma WalkTip (fallback sem externalReference)."""
     from app.models.walk_tip import WalkTip

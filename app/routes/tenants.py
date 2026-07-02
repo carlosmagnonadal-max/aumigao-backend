@@ -325,6 +325,26 @@ def get_tenant_capabilities_endpoint(tenant_id: str, admin: User = Depends(get_c
     }
 
 
+@router.get("/{tenant_id}/plan-usage")
+@api_router.get("/{tenant_id}/plan-usage")
+def get_tenant_plan_usage(tenant_id: str, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Nudge de upgrade (admin-web): uso do plano no mês corrente.
+
+    Shape JSON documentado em tenant_free_plan_service.build_plan_usage (contrato
+    estável: plan/effective_plan/trial/period/walks/limits/commission/pro_projection/
+    upgrade_recommended). Também dispara o enforcement LAZY do fim do reverse trial
+    (carimbo + notificação ao admin) quando o trial expirou.
+    """
+    from app.services.tenant_free_plan_service import build_plan_usage, maybe_downgrade_expired_trial
+
+    _scope_or_404(admin, tenant_id, db)
+    tenant = _tenant_or_404(tenant_id, db)
+    # Enforcement lazy do downgrade do trial (idempotente; commit só se carimbou).
+    if maybe_downgrade_expired_trial(db, tenant):
+        db.commit()
+    return build_plan_usage(db, tenant)
+
+
 @router.patch("/{tenant_id}/onboarding", response_model=TenantOnboardingResponse)
 @api_router.patch("/{tenant_id}/onboarding", response_model=TenantOnboardingResponse)
 def update_tenant_onboarding(tenant_id: str, payload: TenantOnboardingUpdate, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):

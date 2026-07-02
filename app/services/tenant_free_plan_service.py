@@ -203,6 +203,128 @@ def enforce_pet_evolution_allowed(tenant, *, feature: str, label: str) -> None:
         raise free_plan_upgrade_exception(feature, label)
 
 
+# ── Nudge de upgrade: uso do plano (contrato pro admin-web) ─────────────────
+
+# Mensalidade do Pro para a projeção do nudge (fonte: tenant_saas_pricing).
+_PRO_MONTHLY_FEE = 129.90
+_PRO_COMMISSION_PERCENT = 10.0
+
+
+def build_plan_usage(db, tenant, *, now: datetime | None = None) -> dict:
+    """Payload do nudge de upgrade (GET /admin/tenants/{id}/plan-usage).
+
+    SHAPE JSON (contrato pro admin-web — manter estável):
+    {
+      "tenant_id": str,
+      "plan": str,                    # plano REAL ("free"/"pro"/"enterprise"/legado)
+      "effective_plan": str,          # plano efetivo (trial-aware)
+      "trial": {
+        "active": bool,
+        "ends_at": str|null,          # ISO-8601
+        "days_left": int|null,        # dias restantes (>=0); null sem trial
+        "downgraded_at": str|null     # ISO-8601 do carimbo de downgrade
+      },
+      "period": "YYYY-MM",            # mês corrente em BRT
+      "walks": {
+        "used": int,                  # criados não-cancelados no mês (BRT)
+        "cap": int|null,              # null = ilimitado (pro/enterprise/trial)
+        "remaining": int|null
+      },
+      "limits": {"pets_per_tutor": int|null},   # null = sem limite
+      "commission": {
+        "percent": float,             # % vigente (trial-aware, respeita custom)
+        "month_total": float,         # comissão medida no mês (R$)
+        "gmv_month": float            # GMV medido no mês (R$, base da comissão)
+      },
+      "pro_projection": {             # quanto custaria no Pro este mês
+        "monthly_fee": 129.90,
+        "commission_percent": 10.0,
+        "commission_month": float,    # 10% × gmv_month
+        "total_month": float,         # 129.90 + commission_month
+        "savings_month": float        # comissão atual − total Pro (>0 = Pro compensa)
+      },
+      "upgrade_recommended": bool     # savings>0 OU cap atingido (só p/ free)
+    }
+    """
+    from sqlalchemy import func as _func
+
+    from app.core.money import q2, to_float, to_money
+    from app.models.commission_entry import COMM_VOID, CommissionEntry
+    from app.services.payment_split_service import get_commission_percent
+
+    reference = now or datetime.now(timezone.utc)
+    _, period = current_month_window_utc(reference)
+    plan = (getattr(tenant, "plan", None) or "").strip().lower()
+    eff_plan = effective_tenant_plan(tenant, now=reference.replace(tzinfo=None))
+    on_free = is_free_plan(eff_plan)
+
+    # Trial
+    ends_at = getattr(tenant, "trial_ends_at", None)
+    trial_active = trial_is_active(tenant, now=reference.replace(tzinfo=None))
+    days_left = None
+    if ends_at is not None:
+        remaining_s = (ends_at - reference.replace(tzinfo=None)).total_seconds()
+        days_left = max(0, int(remaining_s // 86400))
+    downgraded_at = getattr(tenant, "trial_downgraded_at", None)
+
+    # Passeios do mês (mesma regra do cap: criados não-cancelados, BRT)
+    used = count_tenant_walks_current_month(db, tenant.id, now=reference)
+    cap = free_plan_walk_cap() if on_free else None
+    remaining = max(0, cap - used) if cap is not None else None
+
+    # Comissão medida no mês (Decimal; exclui entradas VOID)
+    rows = (
+        db.query(
+            _func.coalesce(_func.sum(CommissionEntry.amount), 0),
+            _func.coalesce(_func.sum(CommissionEntry.walk_price), 0),
+        )
+        .filter(
+            CommissionEntry.tenant_id == tenant.id,
+            CommissionEntry.period == period,
+            CommissionEntry.status != COMM_VOID,
+        )
+        .first()
+    )
+    month_total = q2(to_money(rows[0] if rows else 0))
+    gmv_month = q2(to_money(rows[1] if rows else 0))
+    commission_percent = get_commission_percent(db, tenant.id)
+
+    # Projeção Pro: 129,90 + 10% × GMV (Decimal até a borda)
+    pro_commission = q2(gmv_month * to_money(_PRO_COMMISSION_PERCENT) / to_money(100))
+    pro_total = q2(to_money(_PRO_MONTHLY_FEE) + pro_commission)
+    savings = q2(month_total - pro_total)
+
+    return {
+        "tenant_id": tenant.id,
+        "plan": plan,
+        "effective_plan": eff_plan,
+        "trial": {
+            "active": trial_active,
+            "ends_at": ends_at.isoformat() if ends_at else None,
+            "days_left": days_left,
+            "downgraded_at": downgraded_at.isoformat() if downgraded_at else None,
+        },
+        "period": period,
+        "walks": {"used": used, "cap": cap, "remaining": remaining},
+        "limits": {"pets_per_tutor": free_plan_pets_per_tutor() if on_free else None},
+        "commission": {
+            "percent": commission_percent,
+            "month_total": to_float(month_total),
+            "gmv_month": to_float(gmv_month),
+        },
+        "pro_projection": {
+            "monthly_fee": _PRO_MONTHLY_FEE,
+            "commission_percent": _PRO_COMMISSION_PERCENT,
+            "commission_month": to_float(pro_commission),
+            "total_month": to_float(pro_total),
+            "savings_month": to_float(savings),
+        },
+        "upgrade_recommended": bool(
+            on_free and (savings > 0 or (cap is not None and used >= cap))
+        ),
+    }
+
+
 # ── Reverse trial: downgrade lazy + notificação ─────────────────────────────
 
 def maybe_downgrade_expired_trial(db, tenant, *, now: datetime | None = None) -> bool:

@@ -29,6 +29,7 @@ from app.services.walker_operational_score_service import (
 from app.services.operational_matching_service import serialize_operational_walk
 from app.models.walker_background_certificate import WalkerBackgroundCertificate
 from app.services.background_check_service import (
+    BACKGROUND_CHECK_DISCLAIMER,
     compute_background_status,
     official_validation_url as background_official_validation_url,
 )
@@ -470,6 +471,8 @@ def _serialize_walker_profile(
     payload["background_verified_at"] = profile.background_verified_at
     payload["background_consent_at"] = profile.background_consent_at
     payload["background_consent_version"] = profile.background_consent_version
+    # Disclaimer de isencao incluso em todo payload que carrega dados de background (BG-disclaimer).
+    payload["background_disclaimer"] = BACKGROUND_CHECK_DISCLAIMER
     payload["background_certificates"] = [
         {
             "id": cert.id,

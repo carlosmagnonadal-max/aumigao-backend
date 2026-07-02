@@ -17,19 +17,25 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
 from app.models.complaint import Complaint
+from app.models.tenant import Tenant, TenantFeature
 from app.models.user import User
 from app.models.walk import Walk
 from app.models.walker_profile import WalkerProfile
 from app.models.walker_review import WalkerReview
 from app.schemas.matching import MatchingWalkerRequest
 from app.services import matching_service as svc
+from app.services.tenant_seed_service import DEFAULT_TENANT_SLUG
 
 
 def _db():
     engine = create_engine("sqlite:///:memory:")
+    # Inclui Tenant + TenantFeature: matched_walker_payload chama is_tenant_feature_enabled
+    # (BG-7) que consulta essas tabelas para determinar antecedentes_verificados.
     Base.metadata.create_all(
         engine,
         tables=[
+            Tenant.__table__,
+            TenantFeature.__table__,
             WalkerProfile.__table__,
             Walk.__table__,
             WalkerReview.__table__,
@@ -37,7 +43,11 @@ def _db():
             User.__table__,
         ],
     )
-    return sessionmaker(bind=engine)()
+    db = sessionmaker(bind=engine)()
+    # Seed do tenant padrao (background_checks OFF por default -> antecedentes_verificados=False).
+    db.add(Tenant(id="t-trust", name="Aumigao", slug=DEFAULT_TENANT_SLUG, status="active", plan="business"))
+    db.commit()
+    return db
 
 
 def _seed_walker(db, *, user_id="walker-1"):

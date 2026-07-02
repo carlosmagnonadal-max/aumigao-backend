@@ -22,6 +22,20 @@ from __future__ import annotations
 
 from datetime import datetime
 
+# ---------------------------------------------------------------------------
+# Disclaimer de isencao de responsabilidade (BG-disclaimer).
+# Incluido em TODA resposta de API que carrega dados de background check.
+# Texto aprovado pelo Carlos (decisao de produto — nao alterar sem alinhamento).
+# ---------------------------------------------------------------------------
+BACKGROUND_CHECK_DISCLAIMER = (
+    "A verificacao de antecedentes da plataforma e uma ferramenta de apoio, "
+    "baseada em certidoes publicas emitidas pelos orgaos oficiais e conferidas "
+    "de forma semiautomatica. Ela nao substitui a verificacao propria e "
+    "independente que cada negocio deve realizar sobre seus prestadores, nao "
+    "constitui atestado de idoneidade e nao transfere a plataforma a "
+    "responsabilidade pela selecao, contratacao ou supervisao do prestador."
+)
+
 # Certidoes obrigatorias para o status "verified".
 REQUIRED_CERT_TYPES = ("pf", "tj")
 # Todas as certidoes aceitas (obrigatorias + complementares).

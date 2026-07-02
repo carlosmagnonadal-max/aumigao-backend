@@ -78,6 +78,63 @@ jobs:
           fi
           echo "OK: exatamente 1 alembic head."
 
+  rls-pg:
+    name: "Isolamento RLS cross-tenant (Postgres real)"
+    runs-on: ubuntu-latest
+
+    # Service container Postgres — espelho do role de produção.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: aumigao_test
+          POSTGRES_USER: aumigao_owner
+          POSTGRES_PASSWORD: aumigao_owner_pw
+        ports:
+          - 5432:5432
+        # Aguarda o Postgres aceitar conexões antes de prosseguir.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # URL de conexão como owner (SUPERUSER) para aplicar migrations + criar role.
+      PG_TEST_DATABASE_URL: "postgresql://aumigao_owner:aumigao_owner_pw@localhost:5432/aumigao_test"
+      # Variáveis mínimas do app para importação sem .env de produção.
+      JWT_SECRET: "ci-secret-key-with-more-than-32-bytes-xyz"
+      DATABASE_URL: "postgresql://aumigao_owner:aumigao_owner_pw@localhost:5432/aumigao_test"
+      RUN_STARTUP_SCHEMA_ENSURE: "false"
+      RUN_STARTUP_ADMIN_SEED: "false"
+      RUN_LEGACY_ID_COMPAT: "false"
+      ENVIRONMENT: "ci"
+      LOG_LEVEL: "WARNING"
+      PII_ENCRYPTION_KEY: "sI9VJYXwVrM29Mykh649L9MzxjbneiYu3dI9X6k29ws="
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.13"
+
+      - name: Cache pip
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-rls-${{ hashFiles('requirements-dev.txt', 'requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-rls-
+            ${{ runner.os }}-pip-
+
+      - name: Instalar dependências
+        run: pip install -r requirements-dev.txt
+
+      - name: Rodar suíte cross-tenant RLS em Postgres real
+        run: python -m pytest tests/pg_rls/ -v --tb=short
+
   pip-audit:
     runs-on: ubuntu-latest
 

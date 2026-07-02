@@ -46,10 +46,14 @@ def test_0077_chains_on_0076():
     assert rev.down_revision == DOWN_REVISION
 
 
-def test_head_is_0077():
+def test_single_head_and_0077_in_chain():
+    # Não fixa a revisão do head (migrations novas movem o head adiante).
+    # O que importa: existe UM head só, e a 0077 está integrada na cadeia dele.
     script = _script()
     heads = list(script.get_heads())
-    assert heads == [REVISION], heads
+    assert len(heads) == 1, heads
+    chain = {rev.revision for rev in script.iterate_revisions(heads[0], "base")}
+    assert REVISION in chain, f"{REVISION} fora da cadeia de {heads[0]}"
 
 
 def test_upgrade_enables_rls_on_all_three_tables():

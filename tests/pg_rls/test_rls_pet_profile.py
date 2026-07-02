@@ -20,6 +20,7 @@ import pytest
 from tests.pg_rls.conftest import (
     app_session,
     make_uid,
+    setup_health_record,
     setup_pet,
     setup_tenants,
     setup_user,
@@ -340,6 +341,59 @@ class TestPetLiveProfileTables:
             cur2 = owner_tx.cursor()
             cur2.execute(
                 "DELETE FROM pet_share_links WHERE id IN (%s, %s, %s)", (la, lb, lpub)
+            )
+            cur2.execute("DELETE FROM pets WHERE tenant_id IN (%s, %s)", (ta, tb))
+            cur2.execute("DELETE FROM users WHERE tenant_id IN (%s, %s)", (ta, tb))
+            cur2.execute("DELETE FROM tenants WHERE id IN (%s, %s)", (ta, tb))
+            owner_tx.commit()
+
+    def test_T20_pet_health_records_isolated(self, owner_tx):
+        """pet_health_records (0086): tenant A não enxerga registros do tenant B."""
+        cur = owner_tx.cursor()
+        ta, tb = setup_tenants(cur)
+        ua = setup_user(cur, ta)
+        ub = setup_user(cur, tb)
+        pa = setup_pet(cur, ta, ua)
+        pb = setup_pet(cur, tb, ub)
+
+        ra = setup_health_record(cur, ta, pa)
+        rb = setup_health_record(cur, tb, pb)
+        owner_tx.commit()
+
+        try:
+            with app_session(ta) as app_cur:
+                app_cur.execute(
+                    "SELECT id FROM pet_health_records WHERE id = %s", (rb,)
+                )
+                assert app_cur.fetchone() is None, (
+                    "Tenant A enxerga registro de saúde do tenant B"
+                )
+            with app_session(ta) as app_cur:
+                app_cur.execute(
+                    "SELECT id FROM pet_health_records WHERE id = %s", (ra,)
+                )
+                assert app_cur.fetchone() is not None, (
+                    "Tenant A não enxerga seu próprio registro de saúde"
+                )
+            # WITH CHECK: INSERT com tenant errado é rejeitado.
+            intruder = make_uid()
+            with app_session(ta) as app_cur:
+                with pytest.raises((psycopg2.errors.CheckViolation,
+                                    psycopg2.errors.InsufficientPrivilege)):
+                    app_cur.execute(
+                        """
+                        INSERT INTO pet_health_records
+                            (id, pet_id, tenant_id, kind, name, applied_at,
+                             notes, created_by_role, created_at, updated_at)
+                        VALUES (%s, %s, %s, 'vaccine', 'Intruso', CURRENT_DATE,
+                                '', 'tutor', NOW(), NOW())
+                        """,
+                        (intruder, pa, tb),  # sessão=ta mas tenant_id=tb
+                    )
+        finally:
+            cur2 = owner_tx.cursor()
+            cur2.execute(
+                "DELETE FROM pet_health_records WHERE id IN (%s, %s)", (ra, rb)
             )
             cur2.execute("DELETE FROM pets WHERE tenant_id IN (%s, %s)", (ta, tb))
             cur2.execute("DELETE FROM users WHERE tenant_id IN (%s, %s)", (ta, tb))

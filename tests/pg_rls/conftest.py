@@ -103,9 +103,13 @@ def _apply_rls_policies(sa_engine) -> None:
     Aplica TODAS as policies RLS do projeto usando SQL idempotente.
 
     Chamado após create_all + stamp head, repõe o que as migrations de
-    RLS (0043-0046, 0049, 0051, 0073-0077, 0080, 0081) fazem. Todo
+    RLS (0043-0046, 0049, 0051, 0073-0077, 0080, 0081, 0086) fazem. Todo
     statement usa DROP POLICY IF EXISTS + CREATE POLICY / ALTER POLICY,
     portanto é seguro re-executar em banco já configurado.
+
+    Tabelas com coluna tenant_id recebem a policy padrão AUTOMATICAMENTE no
+    loop abaixo (introspecção via sa.inspect) — inclui pet_health_records
+    (0086, padrão tenant + NULL allowance). Sem casos especiais para ela.
 
     Recebe um SQLAlchemy engine (criado com PG_TEST_DATABASE_URL) para
     poder usar sa.inspect() na introspecção do schema.
@@ -446,6 +450,22 @@ def setup_pet(cur, tenant_id: str, user_id: str) -> str:
     return pid
 
 
+def setup_health_record(cur, tenant_id: str, pet_id: str) -> str:
+    """Insere um registro da carteira de saúde (0086) e retorna o record_id."""
+    rid = make_uid()
+    cur.execute(
+        """
+        INSERT INTO pet_health_records
+            (id, pet_id, tenant_id, kind, name, applied_at, valid_until,
+             notes, created_by_role, created_at, updated_at)
+        VALUES (%s, %s, %s, 'vaccine', 'Antirrábica', CURRENT_DATE,
+                CURRENT_DATE + 365, '', 'tutor', NOW(), NOW())
+        """,
+        (rid, pet_id, tenant_id),
+    )
+    return rid
+
+
 __all__ = [
     "app_session",
     "APP_ROLE",
@@ -454,4 +474,5 @@ __all__ = [
     "setup_tenants",
     "setup_user",
     "setup_pet",
+    "setup_health_record",
 ]

@@ -58,6 +58,13 @@ class WalkerProfile(Base):
     # Consentimento LGPD (base legal p/ dado sensivel) — data + versao do texto aceito.
     background_consent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     background_consent_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    # BG-6 — veredito MINIMIZADO da checagem automatica de sancoes (Portal da
+    # Transparencia CEIS/CNEP). Guarda so o resultado, nunca o dossie (LGPD).
+    # none|clear|hit|error. Default "none" => ZERO efeito ate configurar a chave.
+    sanctions_check_status: Mapped[str] = mapped_column(
+        String, default="none", server_default="none", nullable=False
+    )
+    sanctions_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Trilha de devido processo para status restritivos (blocked/rejected durante atividade).
     # Populadas sempre que a API transiciona para um estado restritivo.

@@ -46,12 +46,30 @@ def _commission_fallback_for_tenant(db: Session, tenant_id: str | None) -> float
     if tenant_id:
         try:
             from app.models.tenant import Tenant
+            from app.services.tenant_free_plan_service import effective_tenant_plan
 
             tenant = db.get(Tenant, tenant_id)
-            plan = tenant.plan if tenant else None
+            # Plano EFETIVO (reverse trial do free → "pro"). STATELESS: a comissão
+            # certa vale mesmo antes do carimbo de downgrade rodar. Pro/enterprise
+            # não têm trial → idêntico a tenant.plan (zero-regressão).
+            plan = effective_tenant_plan(tenant) if tenant else None
         except Exception:
             plan = None
     return commission_default_for_plan(plan)
+
+
+def _free_tenant_in_trial(db: Session, tenant_id: str | None) -> bool:
+    """True se o tenant é plano free com reverse trial ATIVO (defensivo)."""
+    if not tenant_id:
+        return False
+    try:
+        from app.models.tenant import Tenant
+        from app.services.tenant_free_plan_service import is_free_plan, trial_is_active
+
+        tenant = db.get(Tenant, tenant_id)
+        return tenant is not None and is_free_plan(tenant.plan) and trial_is_active(tenant)
+    except Exception:
+        return False
 
 
 def get_commission_percent(
@@ -98,6 +116,11 @@ def get_commission_percent(
             .first()
         )
         if config and config.commission_percent is not None:
+            # Reverse trial do free: a config nasce com 20% (default do plano),
+            # mas durante o trial o tenant roda como PRO → cobra a comissão Pro
+            # (10%). Override negociado (commission_is_custom) prevalece sempre.
+            if not bool(getattr(config, "commission_is_custom", False)) and _free_tenant_in_trial(db, tenant_id):
+                return commission_default_for_plan("pro")
             return float(config.commission_percent)
 
     # Nível 3: fallback por plano.
@@ -107,13 +130,19 @@ def get_commission_percent(
 # ── Pricing v2: take-rate de REDE ───────────────────────────────────────────
 
 def _tenant_plan(db: Session, tenant_id: str | None) -> str | None:
-    """Retorna o plano do tenant de forma defensiva (None se não encontrado)."""
+    """Retorna o plano EFETIVO do tenant de forma defensiva (None se não encontrado).
+
+    Trial-aware: free em reverse trial resolve como "pro" — um passeio de REDE
+    durante o trial cobra o take de rede do Pro (18%), não o N/A do free.
+    Pro/enterprise: idêntico a tenant.plan (zero-regressão).
+    """
     if not tenant_id:
         return None
     try:
         from app.models.tenant import Tenant
+        from app.services.tenant_free_plan_service import effective_tenant_plan
         tenant = db.get(Tenant, tenant_id)
-        return tenant.plan if tenant else None
+        return effective_tenant_plan(tenant) if tenant else None
     except Exception:
         return None
 

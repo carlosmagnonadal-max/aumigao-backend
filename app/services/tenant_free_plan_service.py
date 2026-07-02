@@ -203,6 +203,77 @@ def enforce_pet_evolution_allowed(tenant, *, feature: str, label: str) -> None:
         raise free_plan_upgrade_exception(feature, label)
 
 
+# ── Reverse trial: downgrade lazy + notificação ─────────────────────────────
+
+def maybe_downgrade_expired_trial(db, tenant, *, now: datetime | None = None) -> bool:
+    """Carimba (idempotente) o downgrade do reverse trial expirado e notifica o admin.
+
+    IMPORTANTE — dinheiro NÃO depende deste carimbo: toda a resolução econômica
+    (comissão, rede, features, cap) é STATELESS via effective_tenant_plan; expirar
+    o trial já muda o comportamento no request seguinte. Este carimbo só faz o
+    bookkeeping (trial_downgraded_at) + garante a config em 20% + notificação de
+    loss-aversion aos admins do tenant, UMA única vez.
+
+    Não faz commit — o caller comita. Retorna True se carimbou agora.
+    """
+    if tenant is None or not is_free_plan(getattr(tenant, "plan", None)):
+        return False
+    ends_at = getattr(tenant, "trial_ends_at", None)
+    if not ends_at or trial_is_active(tenant, now=now):
+        return False
+    if getattr(tenant, "trial_downgraded_at", None) is not None:
+        return False  # já carimbado — notificação única
+
+    reference = now or datetime.utcnow()
+    tenant.trial_downgraded_at = reference
+    db.add(tenant)
+
+    # Garante a comissão do free (20%) na config — normalmente já está (a config
+    # nasce com o default do plano); só corrige drift, respeitando override manual.
+    try:
+        from app.services.payment_split_service import get_or_create_payment_config
+
+        cfg = get_or_create_payment_config(db, tenant.id)
+        if not cfg.commission_is_custom and float(cfg.commission_percent or 0) != FREE_PLAN_COMMISSION_PERCENT:
+            cfg.commission_percent = FREE_PLAN_COMMISSION_PERCENT
+    except Exception:  # noqa: BLE001 — bookkeeping best-effort, nunca quebra o request
+        pass
+
+    # Notifica os admins do tenant (padrão de notificação existente).
+    try:
+        from app.models.user import User
+        from app.routes.notifications import NotificationCreate, _create_notification
+
+        admins = (
+            db.query(User)
+            .filter(User.tenant_id == tenant.id, User.role == "admin", User.is_active.is_(True))
+            .all()
+        )
+        for admin in admins:
+            _create_notification(
+                db,
+                NotificationCreate(
+                    tenant_id=tenant.id,
+                    user_id=admin.id,
+                    user_role="admin",
+                    title="Seu período de teste do plano Pro terminou",
+                    message=(
+                        "Sua conta voltou ao plano gratuito. Rede de passeadores, "
+                        "planos recorrentes, cupons, boosts e a Evolução do Pet "
+                        "ficam disponíveis a partir do plano Pro (R$ 129,90/mês)."
+                    ),
+                    type="warning",
+                    related_entity_type="tenant",
+                    related_entity_id=tenant.id,
+                    metadata={"event": "free_trial_downgrade", "required_plan": "pro"},
+                ),
+            )
+    except Exception:  # noqa: BLE001 — notificação best-effort, nunca quebra o request
+        pass
+
+    return True
+
+
 # ── Cap mensal de passeios (plano free) ─────────────────────────────────────
 
 def current_month_window_utc(now: datetime | None = None) -> tuple[datetime, str]:

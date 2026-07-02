@@ -1,7 +1,8 @@
 """BG-6 — migration 0084: colunas de sancoes em walker_profiles.
 
 Valida que:
-- alembic resolve UM unico head e que ele e a 0084;
+- alembic resolve UM unico head e que a 0084 esta na cadeia (NAO fixa a 0084
+  como head — migrations novas podem encadear por cima sem quebrar este teste);
 - a revision id <= 32 chars;
 - a 0084 encadeia na 0083_money_decimal (head anterior).
 """
@@ -15,10 +16,12 @@ def _script() -> ScriptDirectory:
     return ScriptDirectory.from_config(Config("alembic.ini"))
 
 
-def test_single_head_is_current():
-    heads = list(_script().get_heads())
+def test_single_head_and_0084_in_chain():
+    script = _script()
+    heads = list(script.get_heads())
     assert len(heads) == 1, heads
-    assert heads[0] == _REV
+    chain = {rev.revision for rev in script.walk_revisions()}
+    assert _REV in chain
 
 
 def test_revision_id_within_32_chars():

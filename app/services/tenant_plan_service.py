@@ -35,11 +35,17 @@ def tenant_feature_enabled(tenant: Tenant, db: Session, key: str) -> bool:
     """Retorna se a feature esta habilitada para o tenant.
 
     Semantica:
+    - Plano free bloqueia multiplicadores/pro-only INDEPENDENTE dos toggles por
+      tenant (FREE_PLAN_BLOCKED_FEATURE_KEYS; trial 21d libera — plano efetivo pro).
     - Linha na TenantFeature presente → usa o campo `enabled`.
     - Linha ausente → True se key em DEFAULT_ON_FEATURE_KEYS, False caso contrario.
 
     Para features comerciais (plano-gated) use tenant_has_feature/enforce_tenant_feature_allowed.
     """
+    from app.services.tenant_free_plan_service import plan_blocks_feature
+
+    if plan_blocks_feature(tenant, key):
+        return False
     row: TenantFeature | None = (
         db.query(TenantFeature)
         .filter(TenantFeature.tenant_id == tenant.id, TenantFeature.feature_key == key)
@@ -55,6 +61,8 @@ TENANT_PLAN_BUSINESS = "business"
 TENANT_PLAN_ENTERPRISE = "enterprise"
 
 # ── Pricing v1 (legado — 3 planos) ──────────────────────────────────────────
+# NOTE: a entrada "free" é adicionada após a definição (fim do bloco v2) para
+# reutilizar _FREE_PLAN_CAPABILITIES — mesma tabela nos dois modos de pricing.
 TENANT_PLAN_CAPABILITIES: dict[str, dict[str, Any]] = {
     TENANT_PLAN_STARTER: {
         "max_units": 1,
@@ -108,6 +116,8 @@ TENANT_PLAN_CAPABILITIES: dict[str, dict[str, Any]] = {
 
 TENANT_PLAN_PRO_V2 = "pro"
 TENANT_PLAN_ENTERPRISE_V2 = "enterprise"
+# Plano gratuito de captação ("Começar") — capabilities mínimas, rede desligada.
+TENANT_PLAN_FREE = "free"
 
 # Mapeamento legado → canônico v2 (para resolução de capabilities).
 _LEGACY_TO_V2: dict[str, str] = {
@@ -115,9 +125,26 @@ _LEGACY_TO_V2: dict[str, str] = {
     "business": TENANT_PLAN_PRO_V2,
     "enterprise": TENANT_PLAN_ENTERPRISE_V2,
     "pro": TENANT_PLAN_PRO_V2,
+    # free é canônico próprio — NÃO mapeia para pro (capabilities/gating distintos).
+    "free": TENANT_PLAN_FREE,
+}
+
+# Capabilities do plano free (compartilhada v1/v2): 1 unidade, sem app dedicado,
+# sem rede, sem produtos custom. Nenhuma dimensão melhor que a do Pro.
+_FREE_PLAN_CAPABILITIES: dict[str, Any] = {
+    "max_units": 1,
+    "max_units_with_addon": 1,
+    "dedicated_app_allowed": False,
+    "dedicated_app_required": False,
+    "powered_by_required": True,
+    "network_access_available": False,
+    "custom_products_allowed": False,
+    "custom_projects_allowed": False,
+    "onboarding_mode": "self_service",
 }
 
 TENANT_PLAN_CAPABILITIES_V2: dict[str, dict[str, Any]] = {
+    TENANT_PLAN_FREE: dict(_FREE_PLAN_CAPABILITIES),
     TENANT_PLAN_PRO_V2: {
         "max_units": 2,
         "max_units_with_addon": 2,          # Pro sem add-on de unidades extra
@@ -142,7 +169,13 @@ TENANT_PLAN_CAPABILITIES_V2: dict[str, dict[str, Any]] = {
     },
 }
 
+# Registra "free" também na tabela v1 (mesma capability nos dois modos de pricing;
+# sem isso, com PRICING_V2 OFF o free cairia no fallback starter — idêntico, mas
+# explícito é mais seguro contra drift futuro do starter).
+TENANT_PLAN_CAPABILITIES[TENANT_PLAN_FREE] = dict(_FREE_PLAN_CAPABILITIES)
+
 # Módulos de produto gated por plano v2 (Pro = starter/business; Enterprise = enterprise).
+# `free` fica FORA das listas → módulos bloqueados (só avulso individual no free).
 PLAN_GATED_PRODUCT_FEATURES_V2: dict[str, set[str]] = {
     "recurring_plans": {TENANT_PLAN_PRO_V2, TENANT_PLAN_ENTERPRISE_V2},
     "shared_walks": {TENANT_PLAN_PRO_V2, TENANT_PLAN_ENTERPRISE_V2},
@@ -213,7 +246,11 @@ def _tenant_features(tenant: Tenant, db: Session) -> list[TenantFeature]:
 
 
 def get_tenant_capabilities(tenant: Tenant, db: Session) -> dict[str, Any]:
-    capabilities = get_plan_capabilities(tenant.plan)
+    # Plano EFETIVO (trial-aware): free em reverse trial resolve capabilities de Pro.
+    # Para pro/enterprise, effective == real → zero-regressão.
+    from app.services.tenant_free_plan_service import effective_tenant_plan
+
+    capabilities = get_plan_capabilities(effective_tenant_plan(tenant))
 
     for feature in _tenant_features(tenant, db):
         feature_key = (feature.feature_key or "").strip()
@@ -228,6 +265,12 @@ def get_tenant_capabilities(tenant: Tenant, db: Session) -> dict[str, Any]:
 
 
 def tenant_has_feature(tenant: Tenant, db: Session, feature_key: str) -> bool:
+    # Bloqueio por PLANO free (multiplicadores/pro-only) vence qualquer toggle do
+    # tenant — mesmo TenantFeature enabled=True não libera (trial 21d libera).
+    from app.services.tenant_free_plan_service import plan_blocks_feature
+
+    if plan_blocks_feature(tenant, feature_key):
+        return False
     capabilities = get_tenant_capabilities(tenant, db)
     capability_key = FEATURE_CAPABILITY_KEYS.get(feature_key, feature_key)
     return bool(capabilities.get(capability_key))
@@ -258,7 +301,10 @@ def enforce_tenant_feature_allowed(tenant: Tenant, db: Session, feature_key: str
     if normalized_key not in ENFORCED_COMMERCIAL_FEATURES:
         return
 
-    base_capabilities = get_plan_capabilities(tenant.plan)
+    # Plano EFETIVO (trial-aware): free em trial valida contra capabilities de Pro.
+    from app.services.tenant_free_plan_service import effective_tenant_plan
+
+    base_capabilities = get_plan_capabilities(effective_tenant_plan(tenant))
     capability_key = FEATURE_CAPABILITY_KEYS.get(normalized_key, normalized_key)
     if not base_capabilities.get(capability_key):
         raise HTTPException(status_code=403, detail=f"Feature {normalized_key} indisponível para o plano atual.")
@@ -283,7 +329,14 @@ def tenant_tem_rede(tenant: Tenant, db: Session) -> bool:  # noqa: ARG001
     if override is not None:
         return bool(override)
 
-    plan = (tenant.plan or "").strip().lower()
+    # Plano free ("Começar"): REDE DESLIGADA por decisão de plano. Usa o plano
+    # EFETIVO (trial-aware): durante o reverse trial de 21d o plano efetivo é
+    # "pro" → rede liberada. Pro/enterprise nunca entram neste ramo.
+    from app.services.tenant_free_plan_service import effective_tenant_plan, is_free_plan
+
+    plan = effective_tenant_plan(tenant)
+    if is_free_plan(plan):
+        return False
     if plan == TENANT_PLAN_ENTERPRISE:
         return True
     # Pricing v2: plano canônico Pro inclui acesso à Rede (capability
@@ -298,6 +351,14 @@ def tenant_tem_rede(tenant: Tenant, db: Session) -> bool:  # noqa: ARG001
 
 def enforce_network_access_allowed(tenant: Tenant, db: Session) -> None:
     if not tenant_tem_rede(tenant, db):
+        from app.services.tenant_free_plan_service import effective_tenant_plan, is_free_plan
+
+        if is_free_plan(effective_tenant_plan(tenant)):
+            # Mensagem de upgrade clara pro tenant free (rede como teaser).
+            raise HTTPException(
+                status_code=403,
+                detail="Rede de passeadores disponível a partir do plano Pro.",
+            )
         raise HTTPException(status_code=403, detail="Acesso à Rede Aumigão indisponível para o plano atual.")
 
 
@@ -306,8 +367,19 @@ def enforce_tenant_product_feature(tenant: Tenant, db: Session, feature_key: str
 
     Diferente das features comerciais (gated por plano), features de produto da
     Onda 1+ (ex.: recurring_plans) são liberadas ligando a TenantFeature do tenant.
+
+    Plano free: se o bloqueio veio do PLANO (multiplicador/pro-only), levanta o
+    403 de teaser (code=plan_upgrade_required) em vez do erro genérico — o
+    cliente renderiza o CTA de upgrade.
     """
     if not tenant_has_feature(tenant, db, feature_key):
+        from app.services.tenant_free_plan_service import (
+            free_plan_upgrade_exception,
+            plan_blocks_feature,
+        )
+
+        if plan_blocks_feature(tenant, feature_key):
+            raise free_plan_upgrade_exception(feature_key, label)
         raise HTTPException(status_code=403, detail=f"{label} não está habilitado para este tenant.")
 
 
@@ -320,18 +392,26 @@ def plan_allows_product_feature(tenant: Tenant, feature_key: str) -> bool:
               Zero-regressão: módulos liberados em business/enterprise continuam
               liberados ao mapear para pro/enterprise v2.
 
-    Módulos fora das listas de gating (ex.: coupons) ficam liberados em todos os planos.
+    Plano free: fora das listas de gating → módulos plano-gated bloqueados.
+    Usa o plano EFETIVO (trial-aware): free em reverse trial conta como pro.
+
+    Módulos fora das listas de gating (ex.: coupons) ficam liberados em todos os
+    planos POR ESTA FUNÇÃO — o bloqueio do free para esses módulos acontece em
+    tenant_feature_enabled/tenant_has_feature (FREE_PLAN_BLOCKED_FEATURE_KEYS).
     """
+    from app.services.tenant_free_plan_service import effective_tenant_plan
+
     key = (feature_key or "").strip()
+    plan = effective_tenant_plan(tenant)
     if _PRICING_V2_ENABLED:
         allowed_plans = PLAN_GATED_PRODUCT_FEATURES_V2.get(key)
         if allowed_plans is None:
             return True
-        return _canonical_v2(tenant.plan) in allowed_plans
+        return _canonical_v2(plan) in allowed_plans
     allowed_plans = PLAN_GATED_PRODUCT_FEATURES.get(key)
     if allowed_plans is None:
         return True
-    return (tenant.plan or "").strip().lower() in allowed_plans
+    return plan in allowed_plans
 
 
 def enforce_plan_allows_product_feature(
@@ -344,6 +424,14 @@ def enforce_plan_allows_product_feature(
     """
     if not plan_allows_product_feature(tenant, feature_key):
         name = label or (feature_key or "").strip()
+        from app.services.tenant_free_plan_service import effective_tenant_plan, is_free_plan
+
+        if is_free_plan(effective_tenant_plan(tenant)):
+            # Free: mensagem de upgrade apontando pro Pro (não "Business", que é legado).
+            raise HTTPException(
+                status_code=403,
+                detail=f"{name} está disponível a partir do plano Pro.",
+            )
         raise HTTPException(
             status_code=403,
             detail=f"{name} está disponível a partir do plano Business.",

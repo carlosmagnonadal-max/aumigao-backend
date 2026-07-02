@@ -76,10 +76,19 @@ def _get_tenant(db: Session, user: User) -> Optional[Tenant]:
 
 
 def _require_gates(db: Session, user: User) -> Tenant:
-    """Valida gate pet_profile_active E share_active. 404 se qualquer um OFF."""
+    """Valida gate pet_profile_active E share_active. 404 se qualquer um OFF.
+
+    Plano free: share do pet é pro-only — antes do 404 genérico, responde o 403
+    de teaser (code=plan_upgrade_required) para o cliente renderizar o CTA de
+    upgrade. A chave pet_share está em FREE_PLAN_BLOCKED_FEATURE_KEYS, então
+    share_active é False para free fora do trial (o teaser explica o porquê).
+    """
+    from app.services.tenant_free_plan_service import enforce_pet_evolution_allowed
+
     tenant = _get_tenant(db, user)
     if not tenant or not svc.pet_profile_active(tenant, db):
         raise HTTPException(status_code=404, detail="Not found")
+    enforce_pet_evolution_allowed(tenant, feature="pet_share", label="Compartilhamento do perfil do pet")
     if not svc.share_active(tenant, db):
         raise HTTPException(status_code=404, detail="Not found")
     return tenant

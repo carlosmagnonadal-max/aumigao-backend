@@ -56,6 +56,23 @@ def _require_active(db: Session, user: User) -> None:
         raise HTTPException(status_code=404, detail="Not found")
 
 
+def _require_pet_evolution_plan(db: Session, user: User, *, feature: str, label: str) -> None:
+    """Gate por PLANO das rotas pro-only da Evolução do Pet (timeline/stats).
+
+    Aplicado POR CIMA do gate 3-camadas (_require_active), sem tocá-lo: se a
+    feature está dormente continua 404; se está ativa mas o tenant é free (fora
+    do trial) → 403 teaser (code=plan_upgrade_required). O cadastro/ficha do pet
+    (PATCH /profile) fica LIBERADO no free — por isso o gate é por rota e não
+    pela chave pet_live_profile inteira.
+    """
+    from app.models.tenant import Tenant
+    from app.services.tenant_free_plan_service import enforce_pet_evolution_allowed
+
+    tid = getattr(user, "tenant_id", None)
+    tenant = db.get(Tenant, tid) if tid else None
+    enforce_pet_evolution_allowed(tenant, feature=feature, label=label)
+
+
 class TimelineEventCreate(BaseModel):
     event_type: str
     title: str = Field(..., max_length=200)
@@ -113,6 +130,7 @@ def _event_dict(e: PetTimelineEvent) -> dict:
 def get_timeline(pet_id: str, cursor: str | None = Query(None), limit: int = Query(20, ge=1, le=100),
                  user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active(db, user)
+    _require_pet_evolution_plan(db, user, feature="pet_timeline", label="Timeline do pet")
     _get_owned_pet(db, pet_id, user)
     q = db.query(PetTimelineEvent).filter(PetTimelineEvent.pet_id == pet_id)
     if cursor:
@@ -132,6 +150,7 @@ def get_timeline(pet_id: str, cursor: str | None = Query(None), limit: int = Que
 def add_event(pet_id: str, payload: TimelineEventCreate,
               user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active(db, user)
+    _require_pet_evolution_plan(db, user, feature="pet_timeline", label="Timeline do pet")
     pet = _get_owned_pet(db, pet_id, user)
     ev = svc.record_timeline_event(
         db, pet, event_type=payload.event_type, title=payload.title, notes=payload.notes,
@@ -172,6 +191,7 @@ def update_health(pet_id: str, payload: PetHealthUpdate,
 def delete_event(pet_id: str, event_id: str,
                  user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active(db, user)
+    _require_pet_evolution_plan(db, user, feature="pet_timeline", label="Timeline do pet")
     _get_owned_pet(db, pet_id, user)
     ev = db.query(PetTimelineEvent).filter(
         PetTimelineEvent.id == event_id, PetTimelineEvent.pet_id == pet_id
@@ -449,5 +469,6 @@ def get_pet_stats(
     db: Session = Depends(get_db),
 ):
     _require_active(db, user)
+    _require_pet_evolution_plan(db, user, feature="pet_stats", label="Gráficos e estatísticas do pet")
     _get_owned_pet(db, pet_id, user)
     return _pet_stats(pet_id, db)

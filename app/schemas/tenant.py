@@ -8,7 +8,9 @@ from app.schemas.common import ORMModel
 TENANT_STATUSES = {"draft", "active", "paused", "suspended", "cancelled"}
 # Pricing v2: planos canônicos = pro/enterprise. Legados (starter/business)
 # mantidos para não invalidar tenants antigos em edição/validação.
-TENANT_PLANS = {"pro", "enterprise", "starter", "business"}
+# `free` ("Começar"): plano gratuito de captação (R$0, comissão própria 20%, rede
+# desligada, sem multiplicadores, cap de passeios) — ver tenant_free_plan_service.
+TENANT_PLANS = {"free", "pro", "enterprise", "starter", "business"}
 TENANT_UNIT_STATUSES = {"active", "paused", "inactive"}
 
 

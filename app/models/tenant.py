@@ -44,6 +44,14 @@ class Tenant(Base):
     # NULL/[] = sem gate (comportamento legado). Ex.: ["Curso de primeiros socorros", "Entrevista"].
     walker_extra_requirements: Mapped[list | None] = mapped_column(sa.JSON, nullable=True)
 
+    # ── Plano free / reverse trial (migration 0084) ───────────────────────────
+    # Reverse trial: tenant criado no plano `free` roda como Pro completo (comissão
+    # Pro + rede + multiplicadores) até trial_ends_at; depois é rebaixado para free.
+    # NULL = sem trial (todos os tenants pro/enterprise existentes) → zero-regressão.
+    trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Carimbo do rebaixamento efetivo do trial → free (idempotência + notifica 1x).
+    trial_downgraded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     branding: Mapped["TenantBranding | None"] = relationship(back_populates="tenant", uselist=False, cascade="all, delete-orphan")
     settings: Mapped["TenantSettings | None"] = relationship(back_populates="tenant", uselist=False, cascade="all, delete-orphan")
     onboarding: Mapped["TenantOnboarding | None"] = relationship(back_populates="tenant", uselist=False, cascade="all, delete-orphan")

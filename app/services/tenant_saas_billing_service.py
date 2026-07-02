@@ -230,6 +230,16 @@ async def start_subscription(
         HTTPException 409: race condition (sub ativa duplicada).
         Qualquer exceção do Asaas: propagada; subscription local não persiste.
     """
+    # ── 0. Plano free: ISENTO de mensalidade — NUNCA cria assinatura/cobrança ──
+    # (R$0/mês por decisão do Carlos; o upgrade muda o plano ANTES de assinar).
+    from app.services.tenant_free_plan_service import is_free_plan
+
+    if is_free_plan(tenant.plan):
+        raise HTTPException(
+            status_code=400,
+            detail="Plano gratuito não tem mensalidade. Faça upgrade para Pro ou Enterprise para assinar.",
+        )
+
     # ── 1. Resolve preço ──────────────────────────────────────────────────────
     value = resolve_saas_price(tenant.plan, price)
 
@@ -345,8 +355,15 @@ def sweep_overdue_tenants(db: Session, now: datetime | None = None, grace_days: 
 
     Não toca tenants já suspensos/cancelados/pausados. Marca suspended_reason='billing'.
     Não commita (o caller commita). Retorna a contagem suspensa.
+
+    Plano free: NUNCA suspende por inadimplência — free não tem mensalidade
+    (start_subscription rejeita free, então normalmente nem há sub; este é o
+    cinto de segurança pro caso de downgrade pro→free com sub antiga vencida).
     """
     from datetime import timedelta
+
+    from app.services.tenant_free_plan_service import is_free_plan
+
     cutoff = (now or datetime.utcnow()) - timedelta(days=grace_days)
     overdue = (
         db.query(TenantSaasSubscription)
@@ -360,6 +377,12 @@ def sweep_overdue_tenants(db: Session, now: datetime | None = None, grace_days: 
     n = 0
     for sub in overdue:
         tenant = db.get(Tenant, sub.tenant_id)
+        if tenant and is_free_plan(tenant.plan):
+            logger.info(
+                "sweep_overdue_tenants: tenant=%s em plano free — isento de suspensão por billing",
+                tenant.id,
+            )
+            continue
         if tenant and tenant.status not in ("suspended", "cancelled", "paused"):
             tenant.status = "suspended"
             tenant.suspended_reason = "billing"

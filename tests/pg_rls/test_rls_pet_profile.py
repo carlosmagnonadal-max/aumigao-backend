@@ -43,8 +43,10 @@ class TestPetLiveProfileTables:
             cur.execute(
                 """
                 INSERT INTO pet_timeline_events
-                    (id, pet_id, tenant_id, event_type, title, occurred_at, created_at)
-                VALUES (%s, %s, %s, 'health', 'Vacina', NOW(), NOW())
+                    (id, pet_id, tenant_id, event_type, title, notes,
+                     source, occurred_at, created_at)
+                VALUES (%s, %s, %s, 'health', 'Vacina', '', 'tutor',
+                        NOW(), NOW())
                 """,
                 (eid, pid, tid),
             )
@@ -86,13 +88,15 @@ class TestPetLiveProfileTables:
         eid = make_uid()
         try:
             with app_session(ta) as app_cur:
-                with pytest.raises(psycopg2.errors.CheckViolation):
+                with pytest.raises((psycopg2.errors.CheckViolation,
+                                    psycopg2.errors.InsufficientPrivilege)):
                     app_cur.execute(
                         """
                         INSERT INTO pet_timeline_events
                             (id, pet_id, tenant_id, event_type, title,
-                             occurred_at, created_at)
-                        VALUES (%s, %s, %s, 'health', 'Intruso', NOW(), NOW())
+                             notes, source, occurred_at, created_at)
+                        VALUES (%s, %s, %s, 'health', 'Intruso',
+                                '', 'tutor', NOW(), NOW())
                         """,
                         (eid, pa, tb),  # sessão=ta mas tenant_id=tb
                     )
@@ -163,8 +167,15 @@ class TestPetLiveProfileTables:
                 """
                 INSERT INTO walks (id, tenant_id, tutor_id, pet_id, walker_id,
                                    status, scheduled_date, duration_minutes, price,
+                                   pickup_method, modality, destination,
+                                   address_snapshot, notes, operational_status,
+                                   walker_selection_mode, current_attempt,
+                                   max_attempts, credit_refunded, is_referral_gift,
                                    created_at)
-                VALUES (%s, %s, %s, %s, %s, 'completed', '2026-01-01', 30, 0.0,
+                VALUES (%s, %s, %s, %s, %s,
+                        'completed', '2026-01-01', 30, 0.0,
+                        'Buscar em casa', 'standard', '', '', '',
+                        'ride_scheduled', 'auto', 0, 3, false, false,
                         NOW())
                 """,
                 (wid, tid, uid, pid, uid),

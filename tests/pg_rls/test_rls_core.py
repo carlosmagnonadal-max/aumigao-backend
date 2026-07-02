@@ -73,8 +73,16 @@ class TestCoreIsolation:
                     app_cur.execute(
                         """
                         INSERT INTO pets (id, tenant_id, tutor_id, name,
-                                         species, sex, breed, weight, created_at)
-                        VALUES (%s, %s, %s, 'Ghost', 'dog', 'M', 'SRD', 3.0, NOW())
+                                         species, sex, breed, size,
+                                         behavior_notes, is_social,
+                                         afraid_of_noise, pulls_leash,
+                                         can_walk_with_other_pets,
+                                         is_neutered, allergies,
+                                         medications, restrictions,
+                                         health_notes, weight, created_at)
+                        VALUES (%s, %s, %s, 'Ghost', 'dog', 'M', 'SRD', 'M',
+                                '', true, false, false, false, false,
+                                '', '', '', '', 3.0, NOW())
                         """,
                         (pid, tb, ua),  # tenant_id = tb mas sessão = ta
                     )

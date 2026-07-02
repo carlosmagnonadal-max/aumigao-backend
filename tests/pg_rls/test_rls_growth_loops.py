@@ -109,10 +109,11 @@ class TestGrowthLoopsTables:
                 INSERT INTO walker_referrals
                     (id, referrer_user_id, referred_name, referred_phone,
                      referred_phone_normalized, city, neighborhood,
-                     referral_code, status, tenant_id, created_at, updated_at)
+                     referral_code, status, reward_status,
+                     completed_walks_count, tenant_id, created_at, updated_at)
                 VALUES (%s, %s, 'Indicado Teste', '71999990000',
                         '71999990000', 'Salvador', 'Centro',
-                        %s, 'pending', %s, NOW(), NOW())
+                        %s, 'pending', 'not_eligible', 0, %s, NOW(), NOW())
                 """,
                 (rid, uid, f"CODE-{rid[:6]}", tid),
             )
@@ -166,10 +167,13 @@ class TestGrowthLoopsTables:
                         INSERT INTO walker_referrals
                             (id, referrer_user_id, referred_name, referred_phone,
                              referred_phone_normalized, city, neighborhood,
-                             referral_code, status, tenant_id, created_at, updated_at)
+                             referral_code, status, reward_status,
+                             completed_walks_count, tenant_id,
+                             created_at, updated_at)
                         VALUES (%s, %s, 'Indicado Teste', '71999990001',
                                 '71999990001', 'Salvador', 'Centro',
-                                %s, 'pending', %s, NOW(), NOW())
+                                %s, 'pending', 'not_eligible', 0, %s,
+                                NOW(), NOW())
                         """,
                         (rid, ua, f"CODE-{rid[:6]}", tb),  # sessão=ta mas tenant_id=tb
                     )
@@ -193,9 +197,11 @@ class TestGrowthLoopsTables:
             cur.execute(
                 """
                 INSERT INTO coupons (id, tenant_id, code, discount_type,
-                                     discount_value, min_amount, active,
+                                     discount_value, min_amount, uses_count,
+                                     active, is_referral_gift,
                                      created_at, updated_at)
-                VALUES (%s, %s, %s, 'percent', 10, 0.0, true, NOW(), NOW())
+                VALUES (%s, %s, %s, 'percent', 10, 0.0, 0,
+                        true, false, NOW(), NOW())
                 """,
                 (cid, tid, f"COUP-{cid[:6]}"),
             )
@@ -205,8 +211,9 @@ class TestGrowthLoopsTables:
             cur.execute(
                 """
                 INSERT INTO coupon_redemptions (id, coupon_id, tenant_id, user_id,
-                                                amount_discounted, created_at)
-                VALUES (%s, %s, %s, %s, 5.0, NOW())
+                                                amount_discounted,
+                                                single_use_per_user, created_at)
+                VALUES (%s, %s, %s, %s, 5.0, true, NOW())
                 """,
                 (rid, cid, tid, uid),
             )
@@ -247,9 +254,11 @@ class TestGrowthLoopsTables:
         cur.execute(
             """
             INSERT INTO coupons (id, tenant_id, code, discount_type,
-                                 discount_value, min_amount, active,
+                                 discount_value, min_amount, uses_count,
+                                 active, is_referral_gift,
                                  created_at, updated_at)
-            VALUES (%s, %s, 'TESTCOUP', 'percent', 10, 0.0, true, NOW(), NOW())
+            VALUES (%s, %s, 'TESTCOUP', 'percent', 10, 0.0, 0,
+                    true, false, NOW(), NOW())
             """,
             (ca, ta),
         )
@@ -258,13 +267,15 @@ class TestGrowthLoopsTables:
         rid = make_uid()
         try:
             with app_session(ta) as app_cur:
-                with pytest.raises(psycopg2.errors.CheckViolation):
+                with pytest.raises((psycopg2.errors.CheckViolation,
+                                    psycopg2.errors.InsufficientPrivilege)):
                     app_cur.execute(
                         """
                         INSERT INTO coupon_redemptions (id, coupon_id, tenant_id,
                                                         user_id, amount_discounted,
+                                                        single_use_per_user,
                                                         created_at)
-                        VALUES (%s, %s, %s, %s, 5.0, NOW())
+                        VALUES (%s, %s, %s, %s, 5.0, true, NOW())
                         """,
                         (rid, ca, tb, ua),  # sessão=ta mas tenant_id=tb
                     )

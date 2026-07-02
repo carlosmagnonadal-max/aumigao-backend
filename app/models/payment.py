@@ -1,5 +1,5 @@
 ﻿from datetime import datetime
-from sqlalchemy import DateTime, Float, String
+from sqlalchemy import DateTime, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 from app.models.types import Money
@@ -19,7 +19,7 @@ class Payment(Base):
     # Persiste para exibição posterior sem nova chamada ao gateway.
     invoice_url: Mapped[str | None] = mapped_column(String, nullable=True)
     # Split de receita (Sprint 16): como o valor se divide entre plataforma e walker.
-    commission_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    commission_percent: Mapped[float | None] = mapped_column(Numeric(5, 2, asdecimal=False), nullable=True)
     platform_amount: Mapped[float | None] = mapped_column(Money, nullable=True)
     walker_amount: Mapped[float | None] = mapped_column(Money, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

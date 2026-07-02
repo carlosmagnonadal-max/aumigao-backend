@@ -19,7 +19,11 @@ Pricing v2 (2026-06-24):
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 from sqlalchemy.orm import Session
+
+from app.core.money import q2, q4, to_float, to_money
 
 from app.models.tenant_payment_config import (
     DEFAULT_COMMISSION_PERCENT,
@@ -244,16 +248,22 @@ def compute_quote(walk_price: float, plan_discount_percent: float = 0.0) -> dict
 
     Decisão Carlos (2026-06-16): SEM taxa de serviço (R$5 removida). O desconto de
     plano é um % por tenant. total = walk_price - plan_discount.
+
+    Aritmética em Decimal (sem drift de float); retorna float na borda (contrato).
     """
-    walk_price = round(float(walk_price or 0), 2)
-    plan_discount_percent = max(0.0, min(100.0, float(plan_discount_percent or 0)))
-    plan_discount = round(walk_price * plan_discount_percent / 100.0, 2)
-    total = round(walk_price - plan_discount, 2)
+    price = q2(walk_price)
+    pct = to_money(plan_discount_percent or 0)
+    if pct < Decimal("0"):
+        pct = Decimal("0")
+    elif pct > Decimal("100"):
+        pct = Decimal("100")
+    plan_discount = q2(price * pct / Decimal("100"))
+    total = q2(price - plan_discount)
     return {
-        "walk_price": walk_price,
-        "plan_discount_percent": plan_discount_percent,
-        "plan_discount": plan_discount,
-        "total": total,
+        "walk_price": to_float(price),
+        "plan_discount_percent": to_float(pct),
+        "plan_discount": to_float(plan_discount),
+        "total": to_float(total),
     }
 
 
@@ -262,21 +272,36 @@ def build_quote(db: Session, tenant_id: str | None, walk_price: float) -> dict[s
 
 
 def compute_split(amount: float, commission_percent: float, tenant_margin_percent: float = 0.0) -> dict[str, float]:
-    amount = round(float(amount or 0), 2)
-    commission_percent = max(0.0, min(100.0, float(commission_percent)))
-    tenant_margin_percent = max(0.0, float(tenant_margin_percent))
+    """Divide um valor entre plataforma, tenant e passeador.
+
+    Aritmética 100% em Decimal (sem misturar float) com ROUND_HALF_UP em centavos.
+    INVARIANTE: platform + tenant + walker == amount, EXATAMENTE (sem resíduo de
+    centavo). walker_amount é o RESÍDUO (amount − platform − tenant), então a soma
+    reconcilia por construção. Retorna float na borda para preservar o contrato.
+    """
+    amount_d = q2(amount)
+    commission_d = to_money(commission_percent)
+    if commission_d < Decimal("0"):
+        commission_d = Decimal("0")
+    elif commission_d > Decimal("100"):
+        commission_d = Decimal("100")
+    margin_d = to_money(tenant_margin_percent)
+    if margin_d < Decimal("0"):
+        margin_d = Decimal("0")
     # Validacao: plataforma + margem nao podem ultrapassar 90%
-    if commission_percent + tenant_margin_percent > 90.0:
-        tenant_margin_percent = max(0.0, 90.0 - commission_percent)
-    platform_amount = round(amount * commission_percent / 100.0, 2)
-    tenant_amount = round(amount * tenant_margin_percent / 100.0, 2)
-    walker_amount = round(amount - platform_amount - tenant_amount, 2)
+    if commission_d + margin_d > Decimal("90"):
+        margin_d = commission_d.__class__("90") - commission_d
+        if margin_d < Decimal("0"):
+            margin_d = Decimal("0")
+    platform_amount = q2(amount_d * commission_d / Decimal("100"))
+    tenant_amount = q2(amount_d * margin_d / Decimal("100"))
+    walker_amount = q2(amount_d - platform_amount - tenant_amount)
     return {
-        "commission_percent": commission_percent,
-        "tenant_margin_percent": tenant_margin_percent,
-        "platform_amount": platform_amount,
-        "tenant_amount": tenant_amount,
-        "walker_amount": walker_amount,
+        "commission_percent": to_float(commission_d),
+        "tenant_margin_percent": to_float(margin_d),
+        "platform_amount": to_float(platform_amount),
+        "tenant_amount": to_float(tenant_amount),
+        "walker_amount": to_float(walker_amount),
     }
 
 
@@ -288,11 +313,14 @@ def walker_percent_from_split(split: dict[str, float]) -> float:
     Retorna 0.0 quando o total é zero (sem divisão por zero).
     """
     total = (
-        split["platform_amount"]
-        + split.get("tenant_amount", 0.0)
-        + split["walker_amount"]
+        to_money(split["platform_amount"])
+        + to_money(split.get("tenant_amount", 0.0))
+        + to_money(split["walker_amount"])
     )
-    return round(split["walker_amount"] / total * 100.0, 4) if total > 0 else 0.0
+    if total <= Decimal("0"):
+        return 0.0
+    pct = q4(to_money(split["walker_amount"]) / total * Decimal("100"))
+    return to_float(pct)
 
 
 def build_payment_split(

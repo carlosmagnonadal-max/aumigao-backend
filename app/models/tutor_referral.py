@@ -7,6 +7,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.models.types import Money
 
 # Defaults do programa de indicação do tutor (cunha 4).
 DEFAULT_TRIGGER_N = 3
@@ -24,7 +25,7 @@ class TutorReferralConfig(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     reward_type: Mapped[str] = mapped_column(String, nullable=False, default="desconto")
     discount_kind: Mapped[str] = mapped_column(String, nullable=False, default="percent")
-    discount_value: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    discount_value: Mapped[float] = mapped_column(Money, nullable=False, default=0.0)
     free_walks_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     credit_walks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     same_reward_both_sides: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

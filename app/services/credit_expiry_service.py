@@ -28,6 +28,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from app.core.money import q2, q4, to_float, to_money
 from app.models.credit_ledger import (
     CreditLedgerEntry,
     LEDGER_BREAKAGE_RECOGNIZED,
@@ -55,7 +56,7 @@ def credit_ledger_enabled() -> bool:
 def _unit_value(subscription: TutorSubscription) -> float:
     """Calcula o valor unitário de 1 crédito com base no snapshot da assinatura."""
     if subscription.walks_per_cycle and subscription.walks_per_cycle > 0:
-        return round(float(subscription.price or 0.0) / subscription.walks_per_cycle, 4)
+        return to_float(q4(to_money(subscription.price or 0) / to_money(subscription.walks_per_cycle)))
     return 0.0
 
 
@@ -86,7 +87,7 @@ def _recognize_breakage(db: Session, subscription: TutorSubscription) -> bool:
             return False  # já reconhecido — não duplicar
 
         unit = _unit_value(subscription)
-        total = round(credits * unit, 2)
+        total = to_float(q2(to_money(credits) * to_money(unit)))
 
         entry = CreditLedgerEntry(
             tenant_id=subscription.tenant_id,

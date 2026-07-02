@@ -4,6 +4,7 @@ from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+from app.models.types import Money
 
 
 class WalkerReferral(Base):
@@ -27,7 +28,7 @@ class WalkerReferral(Base):
     invite_link: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="pending", index=True)
     reward_status: Mapped[str] = mapped_column(String, default="not_eligible", index=True)
-    reward_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reward_amount: Mapped[float | None] = mapped_column(Money, nullable=True)
     completed_walks_count: Mapped[int] = mapped_column(Integer, default=0)
     average_rating: Mapped[float | None] = mapped_column(Float, nullable=True)
     performance_status: Mapped[str | None] = mapped_column(String, default="neutral", nullable=True)

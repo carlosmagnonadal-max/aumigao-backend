@@ -1,6 +1,8 @@
 import logging
 from datetime import datetime
+from decimal import Decimal
 from sqlalchemy.orm import Session
+from app.core.money import q2, to_float, to_money
 from app.models.fiscal import (
     PaymentProvision, REVENUE_WALK_COMMISSION, REVENUE_SAAS_SUBSCRIPTION, REVENUE_TIP,
 )
@@ -32,11 +34,13 @@ def compute_and_store_provision(db: Session, tenant_id: str, payment, revenue_ty
         return existing  # idempotente + imutável
     cfg = resolve_fiscal_config(db, tenant_id)
     wg, wpct, pg, ppct = _bases(payment, revenue_type, cfg)
-    wtax = round(wg * wpct / 100.0, 2); ptax = round(pg * ppct / 100.0, 2)
+    wg_d, pg_d = to_money(wg), to_money(pg)
+    wtax_d = q2(wg_d * to_money(wpct) / Decimal("100"))
+    ptax_d = q2(pg_d * to_money(ppct) / Decimal("100"))
     prov = PaymentProvision(
         tenant_id=tenant_id, payment_id=payment.id, revenue_type=revenue_type,
-        walker_gross=wg, walker_tax=wtax, walker_net=round(wg - wtax, 2),
-        platform_gross=pg, platform_tax=ptax, platform_net=round(pg - ptax, 2),
+        walker_gross=to_float(wg_d), walker_tax=to_float(wtax_d), walker_net=to_float(q2(wg_d - wtax_d)),
+        platform_gross=to_float(pg_d), platform_tax=to_float(ptax_d), platform_net=to_float(q2(pg_d - ptax_d)),
         walker_tax_percent_applied=wpct, platform_tax_percent_applied=ppct,
     )
     db.add(prov); db.commit(); db.refresh(prov)
@@ -68,17 +72,18 @@ def financial_summary(db: Session, tenant_id: str, *, date_from: datetime | None
         q = q.filter(PaymentProvision.created_at <= date_to)
     rows = q.all()
     agg = {
-        "count": len(rows),
-        "gross_total": 0.0,
-        "platform_gross": 0.0, "platform_tax_reserved": 0.0, "platform_net": 0.0,
-        "walker_gross": 0.0, "walker_tax_reserved": 0.0, "walker_net": 0.0,
+        "platform_gross": to_money(0), "platform_tax_reserved": to_money(0), "platform_net": to_money(0),
+        "walker_gross": to_money(0), "walker_tax_reserved": to_money(0), "walker_net": to_money(0),
     }
     for r in rows:
-        agg["platform_gross"] += _f(r.platform_gross)
-        agg["platform_tax_reserved"] += _f(r.platform_tax)
-        agg["platform_net"] += _f(r.platform_net)
-        agg["walker_gross"] += _f(r.walker_gross)
-        agg["walker_tax_reserved"] += _f(r.walker_tax)
-        agg["walker_net"] += _f(r.walker_net)
-    agg["gross_total"] = round(agg["platform_gross"] + agg["walker_gross"], 2)
-    return {k: (round(v, 2) if isinstance(v, float) else v) for k, v in agg.items()}
+        agg["platform_gross"] += to_money(r.platform_gross)
+        agg["platform_tax_reserved"] += to_money(r.platform_tax)
+        agg["platform_net"] += to_money(r.platform_net)
+        agg["walker_gross"] += to_money(r.walker_gross)
+        agg["walker_tax_reserved"] += to_money(r.walker_tax)
+        agg["walker_net"] += to_money(r.walker_net)
+    # Borda: soma em Decimal, entrega float (contrato do endpoint financeiro).
+    out = {k: to_float(q2(v)) for k, v in agg.items()}
+    out["count"] = len(rows)
+    out["gross_total"] = to_float(q2(agg["platform_gross"] + agg["walker_gross"]))
+    return out

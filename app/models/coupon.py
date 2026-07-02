@@ -9,10 +9,11 @@ checkout (mobile) — aqui ficam catálogo, validação e registro.
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.models.types import Money
 
 COUPONS_FEATURE_KEY = "coupons"
 
@@ -34,8 +35,8 @@ class Coupon(Base):
     code: Mapped[str] = mapped_column(String, nullable=False, index=True)
     discount_type: Mapped[str] = mapped_column(String, nullable=False, default=DISCOUNT_PERCENT)
     # percent: 0-100; fixed: valor absoluto na moeda do tenant.
-    discount_value: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    min_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    discount_value: Mapped[float] = mapped_column(Money, nullable=False, default=0.0)
+    min_amount: Mapped[float] = mapped_column(Money, nullable=False, default=0.0)
     # null = ilimitado.
     max_uses: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_uses_per_user: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1)
@@ -58,7 +59,7 @@ class CouponRedemption(Base):
     tenant_id: Mapped[str] = mapped_column(String, ForeignKey("tenants.id"), nullable=False, index=True)
     user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     walk_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    amount_discounted: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    amount_discounted: Mapped[float] = mapped_column(Money, nullable=False, default=0.0)
     # Denormalizado do cupom no momento do resgate: alimenta o índice único parcial
     # (coupon_id, user_id) WHERE single_use_per_user, que impede double-grant do mesmo
     # usuário em cupons de uso único (max_uses_per_user == 1) sob concorrência.

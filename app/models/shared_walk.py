@@ -14,6 +14,7 @@ from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+from app.models.types import Money
 
 SHARED_WALKS_FEATURE_KEY = "shared_walks"
 
@@ -45,11 +46,11 @@ class TenantSharedWalkConfig(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     tenant_id: Mapped[str] = mapped_column(String, ForeignKey("tenants.id"), nullable=False, unique=True, index=True)
     # Preço cobrado por pet (mutável por tenant) — mantido para compatibilidade.
-    price_per_pet: Mapped[float] = mapped_column(Float, nullable=False, default=29.90)
+    price_per_pet: Mapped[float] = mapped_column(Money, nullable=False, default=29.90)
     # Preço por duração (white label, Etapa 2). Fallback = price_per_pet.
-    price_30: Mapped[float] = mapped_column(Float, nullable=False, default=29.90)
-    price_45: Mapped[float] = mapped_column(Float, nullable=False, default=39.50)
-    price_60: Mapped[float] = mapped_column(Float, nullable=False, default=49.90)
+    price_30: Mapped[float] = mapped_column(Money, nullable=False, default=29.90)
+    price_45: Mapped[float] = mapped_column(Money, nullable=False, default=39.50)
+    price_60: Mapped[float] = mapped_column(Money, nullable=False, default=49.90)
     # Limites configuráveis pelo admin do tenant.
     max_pets_same_tutor: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     max_tutors: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
@@ -73,7 +74,7 @@ class SharedWalk(Base):
     scheduled_date: Mapped[str] = mapped_column(String, default="")
     duration_minutes: Mapped[int] = mapped_column(Integer, default=45)
     # Snapshots no momento da criação (config pode mudar depois).
-    price_per_pet: Mapped[float] = mapped_column(Float, default=0.0)
+    price_per_pet: Mapped[float] = mapped_column(Money, default=0.0)
     max_tutors: Mapped[int] = mapped_column(Integer, default=2)
     # Disponível no pool (só relevante quando o tenant tem pool_enabled).
     open_to_pool: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -97,7 +98,7 @@ class SharedWalkParticipant(Base):
     # "host" = quem criou; "guest" = convidado/entrou pelo pool.
     role: Mapped[str] = mapped_column(String, default="guest")
     status: Mapped[str] = mapped_column(String, nullable=False, default=PARTICIPANT_INVITED, index=True)
-    price: Mapped[float] = mapped_column(Float, default=0.0)
+    price: Mapped[float] = mapped_column(Money, default=0.0)
     payment_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

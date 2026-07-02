@@ -19,6 +19,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
+from app.core.money import q2, q4, to_float, to_money
 from app.models.credit_ledger import (
     CreditLedgerEntry,
     LEDGER_LIABILITY_CREATED,
@@ -39,7 +40,7 @@ def _unit_value(subscription: TutorSubscription) -> float:
     passeador. Comissão é custo operacional reconhecido separadamente.
     """
     if subscription.walks_per_cycle and subscription.walks_per_cycle > 0:
-        return round(float(subscription.price or 0.0) / subscription.walks_per_cycle, 4)
+        return to_float(q4(to_money(subscription.price or 0) / to_money(subscription.walks_per_cycle)))
     return 0.0
 
 
@@ -105,7 +106,7 @@ def record_liability_safe(db: Session, subscription: TutorSubscription, payment_
             return  # já registrado para este ciclo
         credits = int(subscription.walks_per_cycle or 0)
         unit = _unit_value(subscription)
-        total = round(credits * unit, 2)
+        total = to_float(q2(to_money(credits) * to_money(unit)))
         entry = CreditLedgerEntry(
             tenant_id=subscription.tenant_id,
             subscription_id=subscription.id,

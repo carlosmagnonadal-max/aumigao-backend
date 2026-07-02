@@ -9,10 +9,11 @@ gating de matching por carro são follow-up (lado walker).
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.models.types import Money
 
 # Chave de feature flag por tenant que libera o Pet Tour.
 PET_TOUR_FEATURE_KEY = "pet_tour"
@@ -32,7 +33,7 @@ class TenantPetTourConfig(Base):
         String, ForeignKey("tenants.id"), nullable=False, unique=True, index=True
     )
     # Preço do Pet Tour definido pelo tenant (mutável por tenant).
-    base_price: Mapped[float] = mapped_column(Float, nullable=False, default=DEFAULT_PET_TOUR_PRICE)
+    base_price: Mapped[float] = mapped_column(Money, nullable=False, default=DEFAULT_PET_TOUR_PRICE)
     # Duração mínima em minutos (>60 por definição da modalidade).
     min_duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=DEFAULT_PET_TOUR_MIN_DURATION)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

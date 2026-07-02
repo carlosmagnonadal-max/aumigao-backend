@@ -23,10 +23,11 @@ uma ESTIMATIVA, não verdade fiscal.
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Column, DateTime, Float, Integer, String
+from sqlalchemy import Column, DateTime, Integer, String
 from sqlalchemy.sql import func
 
 from app.core.database import Base
+from app.models.types import Money, Money4
 
 
 def _uuid() -> str:
@@ -74,10 +75,10 @@ class CreditLedgerEntry(Base):
     # Valor unitário do crédito: subscription.price / walks_per_cycle (snapshot).
     # P3 (CPC 47 §106): base SEMPRE bruta (preço cheio do plano), sem dedução de
     # comissão ou taxa de plataforma. A comissão é custo operacional separado.
-    unit_value = Column(Float, nullable=False, default=0.0)
+    unit_value = Column(Money4, nullable=False, default=0.0)
 
     # Valor total do evento (credits_count × unit_value)
-    total_value = Column(Float, nullable=False, default=0.0)
+    total_value = Column(Money, nullable=False, default=0.0)
 
     # walk_id preenchido apenas para revenue_recognized (consumo de 1 crédito por passeio)
     walk_id = Column(String, nullable=True, index=True)

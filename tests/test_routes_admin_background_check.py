@@ -28,7 +28,7 @@ CAND_USER_ID = "candidato-user-1"
 TENANT_ID = "t-bg"
 
 
-def build(*, profile_status: str = "under_review", flag_on: bool = False, bg_status: str = "none"):
+def build(*, profile_status: str = "under_review", flag_on: bool = False, bg_status: str = "none", bg_limit_value: str | None = None):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
@@ -41,7 +41,7 @@ def build(*, profile_status: str = "under_review", flag_on: bool = False, bg_sta
         status=profile_status, background_check_status=bg_status, created_at=datetime.utcnow(),
     ))
     if flag_on:
-        db.add(TenantFeature(id=str(uuid4()), tenant_id=TENANT_ID, feature_key="background_checks", enabled=True))
+        db.add(TenantFeature(id=str(uuid4()), tenant_id=TENANT_ID, feature_key="background_checks", enabled=True, limit_value=bg_limit_value))
     db.commit()
 
     test_app = FastAPI()
@@ -131,7 +131,8 @@ def test_gate_flag_off_approve_works_zero_regression():
 
 
 def test_gate_flag_on_unverified_blocks():
-    client, db = build(flag_on=True, bg_status="none")
+    # Modo "gate" explicito: aprovacao bloqueada sem verificacao.
+    client, db = build(flag_on=True, bg_status="none", bg_limit_value="gate")
     r = client.post(f"/admin/walkers/{CAND_ID}/approve")
     assert r.status_code == 409, r.text
     # nao aprovou
@@ -139,7 +140,8 @@ def test_gate_flag_on_unverified_blocks():
 
 
 def test_gate_flag_on_override_with_justification_approves():
-    client, db = build(flag_on=True, bg_status="none")
+    # Modo "gate" explicito: override+justificativa permite aprovar.
+    client, db = build(flag_on=True, bg_status="none", bg_limit_value="gate")
     r = client.post(
         f"/admin/walkers/{CAND_ID}/approve",
         json={"override": True, "override_justification": "Documentacao conferida fora do sistema."},
@@ -149,14 +151,15 @@ def test_gate_flag_on_override_with_justification_approves():
 
 
 def test_gate_flag_on_override_without_justification_blocks():
-    client, db = build(flag_on=True, bg_status="none")
+    # Modo "gate" explicito: override sem justificativa ainda bloqueia.
+    client, db = build(flag_on=True, bg_status="none", bg_limit_value="gate")
     r = client.post(f"/admin/walkers/{CAND_ID}/approve", json={"override": True, "override_justification": "  "})
     assert r.status_code == 409, r.text
 
 
 def test_gate_flag_on_verified_approves():
-    # PF + TJ validadas -> verified -> aprova sem override.
-    client, db = build(flag_on=True)
+    # PF + TJ validadas -> verified -> aprova sem override (modo gate tambem).
+    client, db = build(flag_on=True, bg_limit_value="gate")
     _add_cert(db, "pf", "validated")
     _add_cert(db, "tj", "validated", uf="SP")
     r = client.post(f"/admin/walkers/{CAND_ID}/approve")

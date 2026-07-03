@@ -176,6 +176,10 @@ def create_self_walk(
     return sw
 
 
+# event_type usado nos eventos da timeline gerados por passeios do tutor.
+EVENT_TYPE_SELF_WALK = "self_walk"
+
+
 def _emit_timeline_event(
     db: Session, pet: Pet, sw: PetSelfWalk, *, created_by_user_id: str
 ) -> None:
@@ -193,7 +197,7 @@ def _emit_timeline_event(
     }
     record_timeline_event(
         db, pet,
-        event_type="self_walk",
+        event_type=EVENT_TYPE_SELF_WALK,
         title=timeline_title(sw.duration_seconds, distance),
         occurred_at=sw.started_at,
         payload_json=json.dumps(payload, ensure_ascii=False),
@@ -243,6 +247,3 @@ def count_in_window(
     ) or 0
 
 
-# Registra o event_type novo no vocabulário do modelo de timeline (import só para
-# efeito colateral de manter o conjunto sincronizado — ver EVENT_TYPES).
-EVENT_TYPE_SELF_WALK = "self_walk"

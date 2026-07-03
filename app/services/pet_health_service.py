@@ -10,7 +10,6 @@ persistido) — evita drift de dados.
 """
 from __future__ import annotations
 
-import json
 from datetime import date, datetime, timedelta
 from uuid import uuid4
 

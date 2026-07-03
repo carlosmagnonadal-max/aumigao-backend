@@ -15,7 +15,7 @@ from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_permission
 from app.dependencies.tenant_scope import get_admin_tenant_scope
 from app.models.pet import Pet
-from app.models.pet_timeline_event import PetTimelineEvent, EVENT_TYPES
+from app.models.pet_timeline_event import DIARY_MOODS, PetTimelineEvent, EVENT_TYPES
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.walk import Walk
@@ -75,13 +75,18 @@ def _require_pet_evolution_plan(db: Session, user: User, *, feature: str, label:
 
 class TimelineEventCreate(BaseModel):
     event_type: str
-    title: str = Field(..., max_length=200)
+    # title é opcional para o diário (derivado do texto); obrigatório nos demais.
+    title: str = Field("", max_length=200)
     notes: str = Field("", max_length=4000)
     occurred_at: datetime
     payload_json: str | None = None
     # Campo opcional (Fase 3): data-alvo de lembrete de vacina/vermífugo.
     # Só tem efeito quando event_type in ("vaccine", "medication"). Deve ser futura.
     reminder_due_date: date | None = None
+    # Campos do DIÁRIO do tutor (Fase B). Só têm efeito quando event_type=="diary";
+    # o payload_json é montado pelo servidor a partir deles (não do payload cru).
+    diary_text: str | None = Field(None, max_length=2000)
+    diary_mood: str | None = None
 
     @field_validator("event_type")
     @classmethod
@@ -103,6 +108,24 @@ class TimelineEventCreate(BaseModel):
         if v is not None and v <= date.today():
             raise ValueError("reminder_due_date deve ser uma data futura")
         return v
+
+    @field_validator("diary_mood")
+    @classmethod
+    def _diary_mood(cls, v: str | None) -> str | None:
+        if v is not None and v not in DIARY_MOODS:
+            raise ValueError(f"diary_mood inválido: {v!r}. Válidos: {sorted(DIARY_MOODS)}")
+        return v
+
+    @model_validator(mode="after")
+    def _diary_rules(self):
+        """Regras do diário: texto obrigatório; título obrigatório nos demais tipos."""
+        if self.event_type == "diary":
+            text = (self.diary_text or "").strip()
+            if not text:
+                raise ValueError("diary_text é obrigatório para event_type=diary")
+        elif not (self.title or "").strip():
+            raise ValueError("title é obrigatório")
+        return self
 
 
 _DIET_TYPES = {"seca", "umida", "natural", "mista", "outro"}
@@ -183,9 +206,19 @@ def add_event(pet_id: str, payload: TimelineEventCreate,
     _require_active(db, user)
     _require_pet_evolution_plan(db, user, feature="pet_timeline", label="Timeline do pet")
     pet = _get_owned_pet(db, pet_id, user)
+
+    # DIÁRIO (Fase B): título/payload são montados no serviço a partir dos campos
+    # já sanitizados; o payload cru do cliente é ignorado para o diário.
+    title = payload.title
+    payload_json = payload.payload_json
+    if payload.event_type == "diary":
+        title, payload_json = svc.build_diary_entry(
+            text=payload.diary_text or "", mood=payload.diary_mood, title=payload.title,
+        )
+
     ev = svc.record_timeline_event(
-        db, pet, event_type=payload.event_type, title=payload.title, notes=payload.notes,
-        occurred_at=payload.occurred_at, payload_json=payload.payload_json,
+        db, pet, event_type=payload.event_type, title=title, notes=payload.notes,
+        occurred_at=payload.occurred_at, payload_json=payload_json,
         source="tutor", created_by_user_id=user.id,
     )
     # Fiação aditiva (Fase 3): se reminder_due_date presente e event_type elegível,

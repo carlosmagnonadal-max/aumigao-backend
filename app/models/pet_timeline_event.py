@@ -6,8 +6,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
-EVENT_TYPES = {"vaccine", "weight", "health_note", "medication", "walk_observation", "birthday", "custom"}
+EVENT_TYPES = {"vaccine", "weight", "health_note", "medication", "walk_observation", "birthday", "custom", "diary"}
 EVENT_SOURCES = {"tutor", "walker", "admin", "system"}
+# Humores válidos do diário do tutor (Fase B) — armazenados no payload_json.
+DIARY_MOODS = {"bom", "neutro", "ruim"}
 
 
 class PetTimelineEvent(Base):

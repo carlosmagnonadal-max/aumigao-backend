@@ -17,6 +17,7 @@ from app.models.pet import Pet
 from app.models.pet_timeline_event import (
     DIARY_MOODS,
     EVENT_TYPES,
+    QUICK_EVENT_TYPES,
     PetTimelineEvent,
 )
 from app.models.tenant import Tenant
@@ -121,17 +122,22 @@ class TimelineEventCreate(BaseModel):
 
     @model_validator(mode="after")
     def _diary_rules(self):
-        """Regras do diário: texto obrigatório; título obrigatório nos demais tipos."""
+        """Regras de título: diário exige texto; registro rápido (P0) tem título
+        default no servidor (opcional no cliente); demais tipos exigem título."""
         if self.event_type == "diary":
             text = (self.diary_text or "").strip()
             if not text:
                 raise ValueError("diary_text é obrigatório para event_type=diary")
+        elif self.event_type in QUICK_EVENT_TYPES:
+            pass  # título opcional — servidor aplica QUICK_EVENT_TITLES quando ausente
         elif not (self.title or "").strip():
             raise ValueError("title é obrigatório")
         return self
 
 
 _DIET_TYPES = {"seca", "umida", "natural", "mista", "outro"}
+# Enums livres de comportamento (Perfil Vivo P0). "" é aceito (limpar o campo).
+_BEHAVIOR_VALUES = {"amigavel", "indiferente", "reativo", "desconhecido"}
 
 
 class PetHealthUpdate(BaseModel):
@@ -155,12 +161,30 @@ class PetHealthUpdate(BaseModel):
     diet_meals_per_day: int | None = Field(None, ge=0)
     diet_meal_times: str | None = None
     diet_notes: str | None = None
+    # Ficha expandida (Perfil Vivo P0 — 0094). Aditivos, todos opcionais.
+    supplements_json: str | None = None  # JSON: [{name,dose,frequency}]
+    food_bag_weight_kg: float | None = Field(None, ge=0)
+    food_bag_opened_at: date | None = None
+    vet_clinic: str | None = None
+    insurance_provider: str | None = None
+    insurance_policy: str | None = None
+    behavior_with_dogs: str | None = None  # amigavel|indiferente|reativo|desconhecido
+    behavior_with_children: str | None = None
+    behavior_with_cats: str | None = None
+    fear_triggers_json: str | None = None  # JSON: ["trovão","fogos",...]
 
     @field_validator("diet_type")
     @classmethod
     def _diet_type(cls, v: str | None) -> str | None:
         if v is not None and v != "" and v not in _DIET_TYPES:
             raise ValueError(f"diet_type inválido: {v!r}. Válidos: {sorted(_DIET_TYPES)}")
+        return v
+
+    @field_validator("behavior_with_dogs", "behavior_with_children", "behavior_with_cats")
+    @classmethod
+    def _behavior(cls, v: str | None) -> str | None:
+        if v is not None and v != "" and v not in _BEHAVIOR_VALUES:
+            raise ValueError(f"comportamento inválido: {v!r}. Válidos: {sorted(_BEHAVIOR_VALUES)}")
         return v
 
 
@@ -171,6 +195,11 @@ _HEALTH_TIMELINE_FIELDS = {
     "microchip", "chip_number", "vet_name", "vet_phone", "emergency_contact",
     "diet_type", "diet_brand", "diet_line", "diet_grams_per_meal",
     "diet_meals_per_day", "diet_meal_times", "diet_notes",
+    # Perfil Vivo P0 (0094) — ficha expandida.
+    "supplements_json", "food_bag_weight_kg", "food_bag_opened_at",
+    "vet_clinic", "insurance_provider", "insurance_policy",
+    "behavior_with_dogs", "behavior_with_children", "behavior_with_cats",
+    "fear_triggers_json",
 }
 
 

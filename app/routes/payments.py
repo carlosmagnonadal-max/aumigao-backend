@@ -346,14 +346,22 @@ async def create_asaas_payment(payload: PaymentCreate, user: User):
         timeout=20,
     ) as client:
         customer_id = await create_asaas_customer(client, user, is_live=is_live, tutor_cpf=tutor_cpf)
+        # Validade da cobrança:
+        # - PIX: expira no MESMO DIA (dueDate = hoje) e o Asaas cancela o registro no
+        #   vencimento (daysAfterDueDateToRegistrationCancellation: 0). Fecha a janela de
+        #   "pagou tarde demais" no próprio gateway — o corte operacional (início−45min)
+        #   ainda cancela a cobrança antes disso.
+        # - Cartão: mantém dueDate D+1 (checkout hospedado precisa de janela mínima).
         payment_payload = {
             "customer": customer_id,
             "billingType": billing_type,
             "value": payload.amount,
-            "dueDate": str(date.today() + timedelta(days=1)),
+            "dueDate": str(date.today() if billing_type == "PIX" else date.today() + timedelta(days=1)),
             "description": "Passeio Aumigao",
             "externalReference": payload.walk_id or str(uuid4()),
         }
+        if billing_type == "PIX":
+            payment_payload["daysAfterDueDateToRegistrationCancellation"] = 0
 
         # Split real ao walker (dormente — opt-in duplo: split_enabled + asaas_wallet_id + modo live)
         if is_live and split_config and split_config.get("wallet_id"):
@@ -414,6 +422,152 @@ async def create_asaas_payment(payload: PaymentCreate, user: User):
             )
 
         return payment_data, pix_data, billing_type
+
+
+# ─────────────────────── mutações de cobrança no Asaas ────────────────────────
+# Helpers reutilizados por: recriação de cobrança (item B), corte de 45min no
+# scheduler (item C) e decisão do tutor (item E). Todos best-effort — o Asaas
+# nunca deve travar o fluxo local de estado/dinheiro. Retornam bool de sucesso.
+
+def _is_asaas_provider_charge(provider: str | None, provider_payment_id: str | None) -> bool:
+    """True se a cobrança realmente existe no Asaas (provider asaas_* e id não-interno).
+
+    Cobranças com id `internal-sandbox-*` são fallback local que NÃO existe no
+    gateway — chamar DELETE/refund nelas geraria 404 desnecessário.
+    """
+    if (provider or "") not in {"asaas_live", "asaas_sandbox"}:
+        return False
+    pid = provider_payment_id or ""
+    return bool(pid) and not pid.startswith("internal-sandbox-")
+
+
+async def cancel_asaas_charge(provider: str | None, provider_payment_id: str | None) -> bool:
+    """DELETE /payments/{id} — cancela uma cobrança PENDENTE no Asaas (best-effort).
+
+    Usado ao recriar cobrança (evita duplicidade) e ao expirar/cortar um passeio
+    não pago. Nunca levanta: loga warning e devolve False em qualquer falha.
+    """
+    if not _is_asaas_provider_charge(provider, provider_payment_id):
+        return False
+    try:
+        cfg = _get_asaas_config()
+        async with httpx.AsyncClient(
+            base_url=cfg["base_url"],
+            headers=asaas_headers(cfg["api_key"], mode="live" if cfg["is_live"] else "sandbox"),
+            timeout=15,
+        ) as client:
+            resp = await client.delete(f"/payments/{provider_payment_id}")
+            if resp.status_code >= 400:
+                logger.warning(
+                    "cancel_asaas_charge: Asaas retornou status_http=%s provider_payment_id=%s",
+                    resp.status_code, provider_payment_id,
+                )
+                return False
+            logger.info("cancel_asaas_charge: cobrança cancelada provider_payment_id=%s", provider_payment_id)
+            return True
+    except Exception as exc:
+        logger.warning(
+            "cancel_asaas_charge: falha ao cancelar provider_payment_id=%s: %s",
+            provider_payment_id, exc,
+        )
+        return False
+
+
+async def refund_asaas_charge(provider: str | None, provider_payment_id: str | None) -> bool:
+    """POST /payments/{id}/refund — estorna uma cobrança CONFIRMADA no Asaas.
+
+    Usado na decisão do tutor (ação `refund`). O status final do Payment e os
+    voids são tratados pelo webhook PAYMENT_REFUNDED existente. Best-effort com
+    log; devolve False em falha para o caller sinalizar erro claro ao tutor.
+    """
+    if not _is_asaas_provider_charge(provider, provider_payment_id):
+        return False
+    try:
+        cfg = _get_asaas_config()
+        async with httpx.AsyncClient(
+            base_url=cfg["base_url"],
+            headers=asaas_headers(cfg["api_key"], mode="live" if cfg["is_live"] else "sandbox"),
+            timeout=20,
+        ) as client:
+            resp = await client.post(f"/payments/{provider_payment_id}/refund", json={})
+            if resp.status_code >= 400:
+                logger.warning(
+                    "refund_asaas_charge: Asaas retornou status_http=%s provider_payment_id=%s",
+                    resp.status_code, provider_payment_id,
+                )
+                return False
+            logger.info("refund_asaas_charge: refund solicitado provider_payment_id=%s", provider_payment_id)
+            return True
+    except Exception as exc:
+        logger.warning(
+            "refund_asaas_charge: falha ao estornar provider_payment_id=%s: %s",
+            provider_payment_id, exc,
+        )
+        return False
+
+
+def cancel_asaas_charge_sync(provider: str | None, provider_payment_id: str | None) -> bool:
+    """Wrapper síncrono de cancel_asaas_charge para contextos sem await (scheduler).
+
+    Roda a coroutine num event loop isolado em uma thread separada — seguro mesmo
+    quando já existe um loop rodando na thread atual (ciclo do scheduler). Best-effort:
+    nunca levanta; devolve False em qualquer erro.
+    """
+    if not _is_asaas_provider_charge(provider, provider_payment_id):
+        return False
+    import threading
+
+    result: dict[str, bool] = {"ok": False}
+
+    def _runner() -> None:
+        try:
+            result["ok"] = asyncio.run(cancel_asaas_charge(provider, provider_payment_id))
+        except Exception as exc:  # pragma: no cover - defensivo
+            logger.warning(
+                "cancel_asaas_charge_sync: falha provider_payment_id=%s: %s",
+                provider_payment_id, exc,
+            )
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    t.join(timeout=20)
+    return result["ok"]
+
+
+def walk_payment_cutoff_minutes() -> int:
+    """Minutos antes do INÍCIO do passeio em que o pagamento ainda é aceito para
+    promover ao matching (env WALK_PAYMENT_CUTOFF_MINUTES, default 45)."""
+    try:
+        return int(os.getenv("WALK_PAYMENT_CUTOFF_MINUTES", "45"))
+    except (TypeError, ValueError):
+        return 45
+
+
+def _parse_walk_start_naive(scheduled_date: str | None) -> datetime | None:
+    """Início do passeio (naive UTC) a partir de walk.scheduled_date (ISO). None se
+    não parseável (nesse caso o corte não se aplica no webhook — libera normal)."""
+    if not scheduled_date:
+        return None
+    raw = str(scheduled_date).strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        date_part = raw.partition("T")[0]
+        try:
+            return datetime.fromisoformat(date_part).replace(tzinfo=None)
+        except ValueError:
+            return None
+
+
+def _walk_start_past_cutoff(scheduled_date: str | None) -> bool:
+    """True se o início do passeio está a menos de WALK_PAYMENT_CUTOFF_MINUTES de
+    agora (ou já passou). False quando a data não é parseável (não bloqueia)."""
+    start = _parse_walk_start_naive(scheduled_date)
+    if start is None:
+        return False
+    return start <= datetime.utcnow() + timedelta(minutes=walk_payment_cutoff_minutes())
 
 
 PAYMENT_PENDING_STATUSES = {
@@ -510,14 +664,20 @@ async def create_payment(payload: PaymentCreate, request: Request, user: User = 
                     detail="Valor do pagamento não confere com a cotação do passeio.",
                 )
 
-    # Idempotencia: se ja existe um pagamento em aberto para este walk_id,
-    # devolve o existente sem criar novo no Asaas.
+    # Idempotencia + recriação sem duplicar (item B):
+    # - Pendente RECENTE (< 2 min): duplo-clique/retry → devolve o existente (não recria).
+    # - Pendente ANTIGO do mesmo walk (PIX que expirou no dia, nova tentativa do tutor):
+    #   cancela a cobrança pendente no Asaas (DELETE, best-effort) e marca o Payment local
+    #   como `cancelado_regenerado` (NÃO conta como pendente nem pago) ANTES de criar a nova.
+    #   Sem isso, ficariam duas cobranças pendentes para o mesmo passeio.
     if payload.walk_id:
+        _recent_cutoff = datetime.utcnow() - timedelta(minutes=2)
         existing = (
             db.query(Payment)
             .filter(
                 Payment.walk_id == payload.walk_id,
                 Payment.status.in_(PAYMENT_PENDING_STATUSES),
+                Payment.created_at >= _recent_cutoff,
             )
             .first()
         )
@@ -532,6 +692,25 @@ async def create_payment(payload: PaymentCreate, request: Request, user: User = 
                 existing,
                 method=payload.method,
                 sandbox_message="Pagamento ja existente devolvido (idempotencia). Nenhuma nova cobranca foi criada.",
+            )
+        # Regenera: cancela pendentes antigos do walk (Asaas + local) antes de criar a nova.
+        _stale_pendings = (
+            db.query(Payment)
+            .filter(
+                Payment.walk_id == payload.walk_id,
+                Payment.status.in_(PAYMENT_PENDING_STATUSES),
+            )
+            .all()
+        )
+        for _old in _stale_pendings:
+            await cancel_asaas_charge(_old.provider, _old.provider_payment_id)
+            _old.status = "cancelado_regenerado"
+            db.add(_old)
+        if _stale_pendings:
+            db.commit()
+            logger.info(
+                "create_payment.regenerado walk_id=%s cancelados=%s",
+                payload.walk_id, len(_stale_pendings),
             )
     else:
         # Pagamento avulso (walk_id=None): dedup por tutor + amount em janela de 2 min
@@ -1492,13 +1671,48 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                 # R7: pagamento liquidado libera o walk do estado de espera ('awaiting_payment')
                 # para o fluxo operacional/matching. Só age sobre walks que estavam à espera
                 # (criados com o gate REQUIRE_PAYMENT_BEFORE_MATCHING ligado) — no-op caso contrário.
+                #
+                # Defesa contra RACE (item D): se o pagamento confirma DEPOIS do corte
+                # (walk já cancelado por expiração, OU início−45min já estourou), NÃO
+                # promove para matching. O dinheiro está rastreado (payment fica
+                # confirmado); o walk vai para 'awaiting_tutor_reconfirmation' com motivo
+                # 'pagamento_apos_corte' e o tutor decide (reagendar / trocar passeador /
+                # estorno) via POST /walks/{id}/tutor-decision.
                 if new_status == _PAYMENT_CONFIRMED_STATUS and payment.walk_id:
                     walk = db.get(Walk, payment.walk_id)
-                    if walk and getattr(walk, "operational_status", None) == "awaiting_payment":
-                        walk.operational_status = "pending_walker_confirmation"
-                        walk.status = "Agendado"
-                        db.add(walk)
-                        logger.info("asaas_webhook.walk_liberado walk_id=%s payment_id=%s", walk.id, payment.id)
+                    if walk:
+                        op_status = getattr(walk, "operational_status", None)
+                        past_cutoff = _walk_start_past_cutoff(walk.scheduled_date)
+                        if op_status == "ride_cancelled" or (op_status == "awaiting_payment" and past_cutoff):
+                            walk.operational_status = "awaiting_tutor_reconfirmation"
+                            walk.status = "Aguardando confirmação do tutor"
+                            walk.no_walker_reason = "pagamento_apos_corte"
+                            walk.confirmation_expires_at = None
+                            walk.matching_finished_at = datetime.utcnow()
+                            db.add(walk)
+                            logger.info(
+                                "asaas_webhook.walk_pagamento_apos_corte walk_id=%s payment_id=%s prev_status=%s",
+                                walk.id, payment.id, op_status,
+                            )
+                            try:
+                                from app.services.operational_matching_service import notify_tutor_walk_event
+                                notify_tutor_walk_event(
+                                    db,
+                                    walk,
+                                    title="Pagamento recebido — decida o próximo passo",
+                                    message="Pagamento recebido, mas o horário passou. Você pode reagendar, trocar o passeador ou pedir estorno.",
+                                    notification_type="walk_recovery",
+                                    priority="high",
+                                    action="awaiting_tutor_reconfirmation",
+                                    metadata={"decision_reason": "pagamento_apos_corte"},
+                                )
+                            except Exception:
+                                logger.exception("falha ao notificar tutor de pagamento_apos_corte walk_id=%s", walk.id)
+                        elif op_status == "awaiting_payment":
+                            walk.operational_status = "pending_walker_confirmation"
+                            walk.status = "Agendado"
+                            db.add(walk)
+                            logger.info("asaas_webhook.walk_liberado walk_id=%s payment_id=%s", walk.id, payment.id)
 
                 # Fase 3: estorno/chargeback de um pagamento com walk_id anula o ganho do passeador.
                 # Cobre apenas passeio AVULSO (Payment.walk_id preenchido).

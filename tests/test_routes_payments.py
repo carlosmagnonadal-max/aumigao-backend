@@ -352,6 +352,35 @@ def test_get_payment_asaas_error_returns_200_without_pix_fields(monkeypatch):
     assert body.get("pix_copy_paste") is None
 
 
+def test_get_payment_live_never_returns_sandbox_message(monkeypatch):
+    """Cobranca REAL (asaas_live): o GET nao pode devolver o aviso de sandbox
+    (o app exibe sandbox_message ao tutor — em live seria falso e enganoso)."""
+
+    async def pix_fetch_noop(payment):
+        return {}
+
+    monkeypatch.setattr(payments, "_fetch_pix_data_for_payment", pix_fetch_noop)
+
+    test_app, db = build()
+    db.add(Payment(
+        id="pay-live", tenant_id=TENANT_ID, tutor_id=TUTOR_ID, amount=50.0,
+        status="aguardando_pagamento", provider="asaas_live",
+        provider_payment_id="asaas-live-id-1",
+    ))
+    db.add(Payment(
+        id="pay-sbx", tenant_id=TENANT_ID, tutor_id=TUTOR_ID, amount=50.0,
+        status="aguardando_pagamento", provider="asaas_sandbox",
+        provider_payment_id="asaas-sbx-id-1",
+    ))
+    db.commit()
+
+    client = as_user(test_app, db, TUTOR_ID)
+    live = client.get("/payments/pay-live").json()
+    assert live["sandbox_message"] is None
+    sbx = client.get("/payments/pay-sbx").json()
+    assert sbx["sandbox_message"] == "Ambiente Sandbox: nenhuma cobranca real sera realizada."
+
+
 # --------------------------------------------------------------------- quote
 def _add_walk(db, walk_id="walk-q", price=100.0, tenant_id=TENANT_ID, tutor_id=TUTOR_ID):
     pet_id = f"pet-{walk_id}"

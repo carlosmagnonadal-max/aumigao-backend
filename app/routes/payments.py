@@ -249,13 +249,18 @@ def payment_response(payment: Payment, **extra):
         "pix_qr_code": extra.get("pix_qr_code"),
         "pix_copy_paste": extra.get("pix_copy_paste"),
         "pix_expiration_date": extra.get("pix_expiration_date"),
-        # sandbox_message: usa sentinela _UNSET para distinguir None explícito (live) de ausente.
-        # Quando o caller passa sandbox_message=None (modo live), o campo fica None no JSON.
-        # Quando não passa nada (ex: get_payment), cai no default apenas se sandbox-mode.
+        # sandbox_message: quando o caller passa explicitamente (create), vale o que veio
+        # (None no live). Quando NÃO passa (ex: get_payment), o default de sandbox só se
+        # aplica a pagamento não-live — cobrança REAL nunca exibe aviso de sandbox
+        # (o app mostra esse texto ao tutor; em asaas_live seria falso e enganoso).
         "sandbox_message": (
             extra["sandbox_message"]
             if "sandbox_message" in extra
-            else "Ambiente Sandbox: nenhuma cobranca real sera realizada."
+            else (
+                None
+                if payment.provider == "asaas_live"
+                else "Ambiente Sandbox: nenhuma cobranca real sera realizada."
+            )
         ),
         "commission_percent": payment.commission_percent,
         "platform_amount": payment.platform_amount,

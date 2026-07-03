@@ -20,7 +20,7 @@ from app.models.pet_timeline_event import (
     QUICK_EVENT_TYPES,
     PetTimelineEvent,
 )
-from app.models.tenant import Tenant
+from app.models.tenant import Tenant, TenantFeature
 from app.models.user import User
 from app.models.walk import Walk
 from app.models.walk_observation import MOOD_VALUES, ENERGY_VALUES, SOCIALIZATION_VALUES, WalkObservation
@@ -255,10 +255,45 @@ class PetProfileConfigUpdate(BaseModel):
     vaccine_lead_days: int | None = Field(None, ge=0)
     inactivity_days: int | None = Field(None, ge=1)
     share_enabled: bool | None = None
+    # Novo: controla a camada 2 (TenantFeature "pet_live_profile") diretamente nesta tela.
+    # Ausente = não toca o TenantFeature (compatibilidade retroativa).
+    tenant_feature_enabled: bool | None = None
 
 
-def _config_dict(c) -> dict:
+def _get_tenant_feature_row(db: Session, tenant_id: str, feature_key: str) -> "TenantFeature | None":
+    return (
+        db.query(TenantFeature)
+        .filter(TenantFeature.tenant_id == tenant_id, TenantFeature.feature_key == feature_key)
+        .first()
+    )
+
+
+def _plan_gates_for_tenant(tenant: Tenant) -> dict:
+    """Retorna o gating por plano para as features do Perfil Vivo.
+
+    Reusa os helpers de tenant_free_plan_service sem reimplementar a regra.
+    trial ativo = plano efetivo pro → nenhuma feature bloqueada.
+    """
+    from app.services.tenant_free_plan_service import plan_blocks_feature
+
+    alerts_blocked = plan_blocks_feature(tenant, "pet_alerts")
+    share_blocked = plan_blocks_feature(tenant, "pet_share")
+    # pet_live_profile (timeline/stats) — bloqueia no free por enforce_pet_evolution_allowed.
+    # Aqui reportamos pelo mesmo critério: is_free_plan(effective_plan).
+    from app.services.tenant_free_plan_service import is_free_plan, effective_tenant_plan
+    evolution_blocked = is_free_plan(effective_tenant_plan(tenant))
+
+    plan = getattr(tenant, "plan", "")
     return {
+        "plan": plan,
+        "alerts_allowed": not alerts_blocked,
+        "share_allowed": not share_blocked,
+        "evolution_allowed": not evolution_blocked,
+    }
+
+
+def _config_dict(c, *, tenant: "Tenant | None" = None, db: "Session | None" = None) -> dict:
+    base = {
         "tenant_id": c.tenant_id,
         "profile_enabled": c.profile_enabled,
         "observations_enabled": c.observations_enabled,
@@ -267,6 +302,21 @@ def _config_dict(c) -> dict:
         "inactivity_days": c.inactivity_days,
         "share_enabled": c.share_enabled,
     }
+    if tenant is not None and db is not None:
+        from app.services.pet_profile_service import _env_on, PET_PROFILE_FEATURE_KEY
+        from app.services.tenant_plan_service import tenant_feature_enabled as _tf_enabled
+
+        platform_enabled = _env_on("PET_LIVE_PROFILE_ENABLED")
+        tf_row = _get_tenant_feature_row(db, tenant.id, PET_PROFILE_FEATURE_KEY)
+        # TenantFeature ausente → False (feature nunca habilitada explicitamente).
+        tf_enabled = bool(tf_row.enabled) if tf_row is not None else False
+        effective = platform_enabled and tf_enabled and bool(c.profile_enabled)
+
+        base["platform_enabled"] = platform_enabled
+        base["tenant_feature_enabled"] = tf_enabled
+        base["plan_gates"] = _plan_gates_for_tenant(tenant)
+        base["effective_active"] = effective
+    return base
 
 
 def _admin_tenant_id(admin: User, db: Session) -> str:
@@ -277,6 +327,23 @@ def _admin_tenant_id(admin: User, db: Session) -> str:
     if not tid:
         raise HTTPException(status_code=400, detail="tenant_id obrigatório para admin global.")
     return tid
+
+
+def _upsert_tenant_feature(db: Session, tenant_id: str, feature_key: str, enabled: bool) -> None:
+    """Cria ou atualiza a linha em TenantFeature para (tenant_id, feature_key).
+
+    Mesmo padrão do PATCH /tenants/features: get-or-create + set enabled + db.add.
+    Respeita o unique constraint (tenant_id, feature_key) via get-or-create (sem INSERT
+    duplicado). Não chama db.commit() — o caller comita junto com o restante.
+    """
+    from datetime import datetime
+
+    row = _get_tenant_feature_row(db, tenant_id, feature_key)
+    if row is None:
+        row = TenantFeature(tenant_id=tenant_id, feature_key=feature_key)
+        db.add(row)
+    row.enabled = enabled
+    row.updated_at = datetime.utcnow()
 
 
 # NB: a observação estruturada do TENANT (POST tenant_note, Fase E) e o mapa de
@@ -290,7 +357,8 @@ def get_config(admin: User = Depends(get_current_user), db: Session = Depends(ge
     tid = _admin_tenant_id(admin, db)
     cfg = svc.get_or_create_pet_profile_config(db, tid)
     db.commit()
-    return _config_dict(cfg)
+    tenant = db.get(Tenant, tid)
+    return _config_dict(cfg, tenant=tenant, db=db)
 
 
 @admin_router.patch("/config")
@@ -299,11 +367,18 @@ def patch_config(payload: PetProfileConfigUpdate,
                  admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
     tid = _admin_tenant_id(admin, db)
     cfg = svc.get_or_create_pet_profile_config(db, tid)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    # Separa os campos do config dos campos de controle de TenantFeature.
+    raw = payload.model_dump(exclude_unset=True)
+    tf_value: bool | None = raw.pop("tenant_feature_enabled", None)
+    for field, value in raw.items():
         setattr(cfg, field, value)
+    if tf_value is not None:
+        from app.services.pet_profile_service import PET_PROFILE_FEATURE_KEY
+        _upsert_tenant_feature(db, tid, PET_PROFILE_FEATURE_KEY, tf_value)
     db.commit()
     db.refresh(cfg)
-    return _config_dict(cfg)
+    tenant = db.get(Tenant, tid)
+    return _config_dict(cfg, tenant=tenant, db=db)
 
 
 # ---------------------------------------------------------------------------

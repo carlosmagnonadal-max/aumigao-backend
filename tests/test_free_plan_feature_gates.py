@@ -313,6 +313,22 @@ def test_free_pet_limit_blocks_third_pet(monkeypatch):
     assert exc.value.detail["feature"] == "pets_per_tutor"
 
 
+def test_free_pet_limit_counts_only_origin_tenant(monkeypatch):
+    """0093 "pets seguem o tutor": o cap FREE conta POR TENANT DE ORIGEM. Um pet do
+    mesmo tutor cadastrado em OUTRO tenant (que agora é visível via RLS) NÃO conta
+    para o limite deste tenant — senão bloquearia criações legítimas."""
+    from app.services.tenant_free_plan_service import enforce_free_plan_pet_limit
+    monkeypatch.delenv("FREE_PLAN_PETS_PER_TUTOR", raising=False)
+    db = _db()
+    t = _tenant(db, "t-free", "free")
+    # 1 pet no tenant de origem t-free + 1 pet noutro tenant (não conta aqui).
+    db.add(Pet(id="p1", tutor_id="u1", tenant_id="t-free", name="Rex"))
+    db.add(Pet(id="p-outro", tutor_id="u1", tenant_id="t-outro", name="Bob"))
+    db.commit()
+    # Total do tutor = 2, mas só 1 é do tenant de origem → abaixo do cap (2) → passa.
+    enforce_free_plan_pet_limit(db, t, "u1")
+
+
 def test_free_pet_limit_allows_below_and_env(monkeypatch):
     from app.services.tenant_free_plan_service import enforce_free_plan_pet_limit
     db = _db()

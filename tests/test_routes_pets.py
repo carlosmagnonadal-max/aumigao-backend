@@ -76,6 +76,33 @@ def test_list_pets_only_own():
     assert ids == {"meu"}  # nao vaza pet do outro tutor
 
 
+def test_list_pets_includes_pet_from_other_origin_tenant():
+    """0093 "pets seguem o tutor": o filtro Python por tenant foi REMOVIDO das leituras
+    do tutor — um pet do tutor cadastrado noutro tenant de ORIGEM aparece em GET /pets.
+    (Sem RLS no SQLite; o filtro por tenant_id não existe mais na rota.)"""
+    client, db = build(pets_for={"origem-a": TUTOR_ID})
+    # pet do MESMO tutor porém com tenant_id de OUTRA origem (não o tenant ativo).
+    db.add(Pet(id="origem-b", tutor_id=TUTOR_ID, tenant_id="tenant-outro", name="origem-b"))
+    db.commit()
+
+    r = client.get("/pets")
+    assert r.status_code == 200
+    ids = {p["id"] for p in r.json()}
+    assert ids == {"origem-a", "origem-b"}, (
+        "GET /pets deveria devolver pets do tutor de qualquer tenant de origem"
+    )
+
+
+def test_get_pet_from_other_origin_tenant():
+    """GET /pets/{id} do próprio tutor funciona mesmo com tenant_id de outra origem."""
+    client, db = build()
+    db.add(Pet(id="origem-b", tutor_id=TUTOR_ID, tenant_id="tenant-outro", name="origem-b"))
+    db.commit()
+    r = client.get("/pets/origem-b")
+    assert r.status_code == 200
+    assert r.json()["id"] == "origem-b"
+
+
 def test_list_pets_sets_is_neutered_default():
     client, _ = build(pets_for={"meu": TUTOR_ID})
     r = client.get("/pets")

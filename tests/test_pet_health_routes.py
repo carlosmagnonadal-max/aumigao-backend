@@ -139,6 +139,39 @@ def test_admin_of_tenant_can_register(monkeypatch):
     assert r.json()["record"]["created_by_role"] == "admin"
 
 
+def test_admin_of_linked_tenant_can_access_health(monkeypatch):
+    """0093 "pets seguem o tutor": admin cujo TENANT ATIVO (request.state.tenant_id)
+    tem vínculo ATIVO com o dono do pet acessa a saúde, mesmo que o pet seja de OUTRO
+    tenant de origem. Sem vínculo → 404."""
+    from app.core.request_context import tenant_id_var
+    from app.models.tenant_tutor_access import TenantTutorAccess
+
+    db = _ctx(active=True)  # pet p1 nasce no tenant t1 (ativo + pro)
+    # Tenant B com um admin próprio (nasceu em B).
+    db.add(Tenant(id="tB", name="TB", slug="tb", status="active", plan="pro"))
+    db.add(User(id="admB", email="admb@x.com", password_hash="x", role="admin", tenant_id="tB"))
+    db.commit()
+    admB = db.get(User, "admB")
+
+    # Sem vínculo entre o tutor (u1) e o tenant B → 404, mesmo com tenant ativo = B.
+    token = tenant_id_var.set("tB")
+    try:
+        c = _client(db, admB, env=True, monkeypatch=monkeypatch)
+        assert c.get("/api/pets/p1/health-card").status_code == 404
+
+        # Cria o vínculo ativo tutor↔tenant B → admin de B passa a acessar.
+        db.add(TenantTutorAccess(id="lnk1", tenant_id="tB", tutor_user_id="u1", status="active"))
+        db.commit()
+        assert c.get("/api/pets/p1/health-card").status_code == 200
+
+        # Vínculo revogado volta a bloquear.
+        db.get(TenantTutorAccess, "lnk1").status = "revoked"
+        db.commit()
+        assert c.get("/api/pets/p1/health-card").status_code == 404
+    finally:
+        tenant_id_var.reset(token)
+
+
 # ---------------------------------------------------------------------------
 # Briefing
 # ---------------------------------------------------------------------------

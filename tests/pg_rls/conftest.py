@@ -671,6 +671,61 @@ def setup_self_walk(cur, tenant_id: str, pet_id: str, tutor_id: str) -> str:
     return sid
 
 
+def setup_timeline_event(cur, tenant_id: str, pet_id: str, event_type: str = "health_note") -> str:
+    """Insere um evento na timeline do pet (0073) e retorna o event_id.
+
+    event_type default "health_note" (segue o tutor); passe "walk_observation" ou
+    "tenant_note" para os eventos OPERACIONAIS que NÃO seguem (0093).
+    """
+    eid = make_uid()
+    cur.execute(
+        """
+        INSERT INTO pet_timeline_events
+            (id, pet_id, tenant_id, event_type, title, notes,
+             source, occurred_at, created_at)
+        VALUES (%s, %s, %s, %s, 'Evento', '', 'tutor', NOW(), NOW())
+        """,
+        (eid, pet_id, tenant_id, event_type),
+    )
+    return eid
+
+
+def setup_walk_observation(cur, tenant_id: str, pet_id: str, walker_user_id: str) -> tuple[str, str]:
+    """Insere um walk + walk_observation (0074, operacional) e retorna (obs_id, walk_id).
+
+    walk_observations NÃO seguem o tutor (0093): ficam presas ao tenant de origem.
+    """
+    wid = make_uid()
+    cur.execute(
+        """
+        INSERT INTO walks (id, tenant_id, tutor_id, pet_id, walker_id,
+                           status, scheduled_date, duration_minutes, price,
+                           pickup_method, modality, destination,
+                           address_snapshot, notes, operational_status,
+                           walker_selection_mode, current_attempt,
+                           max_attempts, credit_refunded, is_referral_gift,
+                           created_at)
+        VALUES (%s, %s, %s, %s, %s,
+                'completed', '2026-01-01', 30, 0.0,
+                'Buscar em casa', 'standard', '', '', '',
+                'ride_scheduled', 'auto', 0, 3, false, false,
+                NOW())
+        """,
+        (wid, tenant_id, walker_user_id, pet_id, walker_user_id),
+    )
+    oid = make_uid()
+    cur.execute(
+        """
+        INSERT INTO walk_observations
+            (id, walk_id, pet_id, tenant_id, walker_user_id,
+             incident, incident_notes, created_at)
+        VALUES (%s, %s, %s, %s, %s, false, '', NOW())
+        """,
+        (oid, wid, pet_id, tenant_id, walker_user_id),
+    )
+    return oid, wid
+
+
 __all__ = [
     "app_session",
     "app_session_as",
@@ -682,6 +737,8 @@ __all__ = [
     "setup_pet",
     "setup_health_record",
     "setup_self_walk",
+    "setup_timeline_event",
+    "setup_walk_observation",
     "setup_tutor_link",
     "setup_walker_link",
 ]

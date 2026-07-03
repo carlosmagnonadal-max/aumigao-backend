@@ -980,6 +980,172 @@ def reschedule_selected_walker_walk(
     return serialize_operational_walk(walk, db, user=user)
 
 
+class TutorDecisionRequest(BaseModel):
+    """Contrato FIXO do menu de decisão do tutor (o app é feito em paralelo).
+
+    action:
+      - "reschedule": exige scheduled_date + walk_time futuros (respeitando o corte de
+        45min a partir de agora). Mantém o pagamento vinculado.
+      - "switch_walker": SÓ em modo exclusivo — abre para matching flexível.
+      - "refund": estorna o pagamento confirmado (Asaas) e cancela o passeio.
+    """
+    action: str
+    scheduled_date: str | None = None
+    walk_time: str | None = None
+
+
+def _tutor_decision_new_scheduled_date(scheduled_date: str | None, walk_time: str | None) -> str:
+    """Monta o novo scheduled_date ISO a partir de data (+hora opcional) e valida que
+    o INÍCIO respeita o corte de 45min a partir de agora."""
+    date_part = str(scheduled_date or "").strip()
+    if not date_part:
+        raise HTTPException(status_code=422, detail="Informe a nova data do passeio.")
+    time_part = str(walk_time or "").strip()
+    # Se a data já vier com hora embutida, usa-a; senão combina com walk_time.
+    if "T" in date_part:
+        combined = date_part
+    elif time_part:
+        combined = f"{date_part}T{time_part}"
+    else:
+        combined = date_part
+    start = _parse_scheduled_at(combined)
+    cutoff_minutes = _walk_payment_cutoff_minutes_local()
+    if start <= datetime.utcnow() + timedelta(minutes=cutoff_minutes):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Escolha um horário com pelo menos {cutoff_minutes} minutos de antecedência.",
+        )
+    return combined
+
+
+def _walk_payment_cutoff_minutes_local() -> int:
+    try:
+        return int(os.getenv("WALK_PAYMENT_CUTOFF_MINUTES", "45"))
+    except (TypeError, ValueError):
+        return 45
+
+
+def _confirmed_payment_for_walk(db: Session, walk_id: str) -> Payment | None:
+    return (
+        db.query(Payment)
+        .filter(Payment.walk_id == walk_id, Payment.status.in_(_PAID_PAYMENT_STATUSES))
+        .order_by(Payment.created_at.desc())
+        .first()
+    )
+
+
+@router.post("/{walk_id}/tutor-decision")
+async def tutor_decision(
+    walk_id: str,
+    payload: TutorDecisionRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Menu de decisão do tutor para passeios em 'awaiting_tutor_reconfirmation'
+    (item E). Casos: pagamento pós-corte, passeador exclusivo que não aceitou.
+
+    Auth: tutor DONO do walk (404 se não for). Estado: 409 se não em
+    awaiting_tutor_reconfirmation. Payload inválido: 422.
+    """
+    walk = db.get(Walk, walk_id)
+    if not walk or str(walk.tutor_id) != str(user.id):
+        # 404 (não 403) para não revelar existência de passeios de outros tutores.
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado.")
+
+    if walk.operational_status != "awaiting_tutor_reconfirmation":
+        raise HTTPException(status_code=409, detail="Passeio nao aguarda decisao do tutor.")
+
+    action = (payload.action or "").strip()
+    is_exclusive = (walk.walker_selection_mode or "auto") == "only_selected"
+    confirmed_payment = _confirmed_payment_for_walk(db, walk.id)
+
+    if action == "reschedule":
+        new_scheduled = _tutor_decision_new_scheduled_date(payload.scheduled_date, payload.walk_time)
+        previous = walk.scheduled_date
+        walk.scheduled_date = new_scheduled
+        walk.no_walker_reason = None
+        walk.matching_finished_at = None
+        walk.confirmation_expires_at = None
+        if confirmed_payment:
+            # Pagamento já vinculado/confirmado → volta ao fluxo de confirmação do passeador.
+            # Exclusivo mantém o passeador solicitado (start_matching reusa assigned_walker_id).
+            walk.operational_status = "pending_walker_confirmation"
+            walk.status = "Agendado"
+        else:
+            # Sem pagamento confirmado → volta a aguardar pagamento (gate R7).
+            walk.operational_status = "awaiting_payment"
+            walk.status = "aguardando_pagamento"
+        log_event(
+            db, walk.id, "tutor_decision", actor_type="tutor", actor_id=user.id,
+            metadata={
+                "action": "reschedule",
+                "previous_scheduled_date": previous,
+                "scheduled_date": new_scheduled,
+                "had_confirmed_payment": bool(confirmed_payment),
+                "is_exclusive": is_exclusive,
+            },
+        )
+        if confirmed_payment:
+            start_matching(walk, db, actor=user)
+
+    elif action == "switch_walker":
+        if not is_exclusive:
+            raise HTTPException(
+                status_code=409,
+                detail="Trocar de passeador só é possível em passeios de passeador exclusivo.",
+            )
+        # Limpa a exclusividade → matching flexível escolhe outro passeador.
+        walk.walker_selection_mode = "auto"
+        walk.walker_id = None
+        walk.assigned_walker_id = None
+        walk.no_walker_reason = None
+        walk.matching_finished_at = None
+        walk.confirmation_expires_at = None
+        if confirmed_payment:
+            walk.operational_status = "pending_walker_confirmation"
+            walk.status = "Agendado"
+        else:
+            walk.operational_status = "awaiting_payment"
+            walk.status = "aguardando_pagamento"
+        log_event(
+            db, walk.id, "tutor_decision", actor_type="tutor", actor_id=user.id,
+            metadata={"action": "switch_walker", "had_confirmed_payment": bool(confirmed_payment)},
+        )
+        if confirmed_payment:
+            start_matching(walk, db, actor=user)
+
+    elif action == "refund":
+        if not confirmed_payment:
+            raise HTTPException(
+                status_code=409,
+                detail="Não há pagamento confirmado para estornar neste passeio.",
+            )
+        from app.routes.payments import refund_asaas_charge
+        ok = await refund_asaas_charge(confirmed_payment.provider, confirmed_payment.provider_payment_id)
+        if not ok:
+            raise HTTPException(
+                status_code=502,
+                detail="Não foi possível solicitar o estorno no gateway. Tente novamente.",
+            )
+        # O webhook PAYMENT_REFUNDED existente cuida do status do payment + voids.
+        walk.operational_status = "ride_cancelled"
+        walk.status = "Cancelado"
+        walk.no_walker_reason = "Estorno solicitado pelo tutor."
+        walk.matching_finished_at = datetime.utcnow()
+        walk.confirmation_expires_at = None
+        log_event(
+            db, walk.id, "tutor_decision", actor_type="tutor", actor_id=user.id,
+            metadata={"action": "refund", "payment_id": confirmed_payment.id},
+        )
+
+    else:
+        raise HTTPException(status_code=422, detail="Ação de decisão inválida.")
+
+    db.commit()
+    db.refresh(walk)
+    return serialize_operational_walk(walk, db, user=user)
+
+
 @router.post("/{walk_id}/tip")
 async def create_walk_tip(walk_id: str, payload: WalkTipCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     # create_walk_tip_checkout é async (chama o gateway). Antes esta rota era `def`

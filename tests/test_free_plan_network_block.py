@@ -4,7 +4,7 @@ Fronteira do bloqueio: get_matching_pool_for_tenant (walker_network_matching_ser
 o ponto único por onde matching_service e operational_matching_service resolvem os
 passeadores de REDE do tenant. Pool vazio = tenant free só usa passeadores próprios.
 
-Trial 21d (reverse trial): plano efetivo "pro" → rede liberada durante o trial.
+Reverse trial ativo: plano efetivo "pro" → rede liberada durante o período de teste.
 Zero-regressão: pro/enterprise mantêm o pool intacto.
 """
 from datetime import datetime, timedelta

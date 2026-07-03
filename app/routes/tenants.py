@@ -170,9 +170,10 @@ def create_tenant(payload: TenantCreate, admin: User = Depends(get_current_user)
         contact_email=payload.contact_email,
         contact_phone=payload.contact_phone,
     )
-    # Reverse trial: tenant criado no plano free entra com 21 dias de Pro completo
-    # (comissão Pro + rede + multiplicadores). Setar ANTES do seed abaixo garante
-    # que o catálogo de planos recorrentes seja semeado (plano efetivo = pro).
+    # Reverse trial: tenant criado no plano free entra com período de teste como Pro
+    # (comissão Pro + rede + multiplicadores; duração: FREE_PLAN_TRIAL_DAYS, default 7d).
+    # Setar ANTES do seed abaixo garante que o catálogo de planos recorrentes seja
+    # semeado (plano efetivo = pro).
     from app.services.tenant_free_plan_service import compute_trial_ends_at, is_free_plan
 
     if is_free_plan(tenant.plan):

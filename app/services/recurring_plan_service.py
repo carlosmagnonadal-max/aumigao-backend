@@ -12,6 +12,7 @@ from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session
 
 from app.models.recurring_plan import (
+    CANCEL_REASON_PLAN_DOWNGRADE,
     RECURRING_PLANS_FEATURE_KEY,
     SUBSCRIPTION_ACTIVE,
     SUBSCRIPTION_CANCELLED,
@@ -144,35 +145,81 @@ def get_active_subscription(db: Session, tenant_id: str, tutor_id: str) -> Tutor
     )
 
 
-def consume_credit_if_available(db: Session, tenant: Tenant, tutor_id: str) -> TutorSubscription | None:
-    """Consome 1 crédito da assinatura ativa do tutor, de forma ATÔMICA.
+def _credit_spendable_predicate():
+    """Predicado de assinaturas cujos créditos são CONSUMÍVEIS.
 
-    Usa UPDATE ... WHERE credits_remaining > 0 (condicional no banco) para evitar
-    double-spend em requisições concorrentes — dois POST /walks simultâneos do mesmo
-    tutor não conseguem consumir o mesmo último crédito.
+    - ACTIVE: comportamento original.
+    - CANCELLED apenas com cancel_reason='plan_downgrade' (Opção B, decisão do
+      Carlos): créditos já pagos de assinatura cancelada pelo DOWNGRADE do reverse
+      trial permanecem usáveis até esgotar. Cancelamento MANUAL (reason NULL) segue
+      forfeit — mesmo que o breakage tenha falhado em zerar (flag off/erro), o
+      crédito continua não-consumível. OVERDUE segue bloqueado (inadimplência).
+    """
+    from sqlalchemy import and_, or_
+    return or_(
+        TutorSubscription.status == SUBSCRIPTION_ACTIVE,
+        and_(
+            TutorSubscription.status == SUBSCRIPTION_CANCELLED,
+            TutorSubscription.cancel_reason == CANCEL_REASON_PLAN_DOWNGRADE,
+        ),
+    )
+
+
+def consume_credit_if_available(db: Session, tenant: Tenant, tutor_id: str) -> TutorSubscription | None:
+    """Consome 1 crédito de assinatura do tutor, de forma ATÔMICA.
+
+    Elegíveis: assinatura ACTIVE ou CANCELLED-por-downgrade (Opção B — créditos já
+    pagos permanecem usáveis; ver _credit_spendable_predicate). Como o tutor pode
+    ter mais de uma elegível (ex.: cancelada-por-downgrade com saldo + ativa nova
+    após o tenant voltar ao Pro), seleciona candidatas e debita UMA via UPDATE
+    condicional POR ID (WHERE credits_remaining > 0) — mantém a garantia
+    anti-double-spend original e nunca decrementa mais de uma linha.
+
+    Ordem de consumo: primeiro os créditos de canceladas-por-downgrade (não renovam
+    — o tutor não perde o que já pagou), depois a ativa (created_at asc como
+    desempate estável).
 
     Retorna a TutorSubscription (recarregada, com credits_remaining já decrementado;
-    sem commit — o caller commita) ou None quando não há assinatura ativa com crédito.
+    sem commit — o caller commita) ou None quando não há crédito consumível.
     """
-    result = db.execute(
-        sa_update(TutorSubscription)
-        .where(
-            TutorSubscription.tenant_id == tenant.id,
-            TutorSubscription.tutor_id == tutor_id,
-            TutorSubscription.status == SUBSCRIPTION_ACTIVE,
-            TutorSubscription.credits_remaining > 0,
-        )
-        .values(
-            credits_remaining=TutorSubscription.credits_remaining - 1,
-            updated_at=datetime.utcnow(),
-        )
-        .returning(TutorSubscription.id)
+    from sqlalchemy import case
+
+    cancelled_first = case(
+        (TutorSubscription.status == SUBSCRIPTION_CANCELLED, 0), else_=1
     )
-    row = result.first()
-    if row is None:
-        return None
-    db.expire_all()
-    return db.get(TutorSubscription, row[0])
+    candidate_ids = [
+        row[0]
+        for row in (
+            db.query(TutorSubscription.id)
+            .filter(
+                TutorSubscription.tenant_id == tenant.id,
+                TutorSubscription.tutor_id == tutor_id,
+                _credit_spendable_predicate(),
+                TutorSubscription.credits_remaining > 0,
+            )
+            .order_by(cancelled_first, TutorSubscription.created_at.asc())
+            .all()
+        )
+    ]
+    for sub_id in candidate_ids:
+        result = db.execute(
+            sa_update(TutorSubscription)
+            .where(
+                TutorSubscription.id == sub_id,
+                _credit_spendable_predicate(),
+                TutorSubscription.credits_remaining > 0,
+            )
+            .values(
+                credits_remaining=TutorSubscription.credits_remaining - 1,
+                updated_at=datetime.utcnow(),
+            )
+            .returning(TutorSubscription.id)
+        )
+        row = result.first()
+        if row is not None:
+            db.expire_all()
+            return db.get(TutorSubscription, row[0])
+    return None
 
 
 def subscribe(db: Session, tenant: Tenant, tutor_id: str, plan_id: str) -> TutorSubscription:
@@ -425,6 +472,13 @@ def reset_credits_if_renewal(db: Session, subscription: TutorSubscription) -> bo
     )
     if locked is None:
         return False
+    # Assinatura CANCELADA nunca reabastece (qualquer motivo): a renovação de uma
+    # cancelada só acontece se uma subscription zumbi seguiu cobrando no gateway —
+    # o webhook já loga + alerta (rede de proteção); reabastecer normalizaria a
+    # cobrança indevida. Com a Opção B (créditos de cancelada-por-downgrade
+    # consumíveis) o refill viraria crédito gastável — barrado aqui na fonte.
+    if locked.status == SUBSCRIPTION_CANCELLED:
+        return False
     end = locked.current_period_end
     if end is None or end > now:
         return False
@@ -509,9 +563,17 @@ def refund_credit_for_walk(db: Session, walk) -> bool:
     if not getattr(walk, "subscription_id", None) or getattr(walk, "credit_refunded", False):
         return False
     sub = db.get(TutorSubscription, walk.subscription_id)
-    # Política: se a assinatura já foi cancelada, não estorna — o crédito seria
-    # inútil (consume_credit_if_available exige status ACTIVE). Sem perda de dinheiro.
-    if sub is None or sub.status != SUBSCRIPTION_ACTIVE:
+    # Política: estorna para ACTIVE e para CANCELLED-por-downgrade (Opção B — o
+    # crédito devolvido é consumível; o tutor recupera o que pagou). Cancelada
+    # MANUAL continua sem estorno: o crédito seria inútil (consumo bloqueado para
+    # reason NULL) e o breakage já reconheceu o saldo. OVERDUE também não estorna.
+    if sub is None:
+        return False
+    spendable = sub.status == SUBSCRIPTION_ACTIVE or (
+        sub.status == SUBSCRIPTION_CANCELLED
+        and getattr(sub, "cancel_reason", None) == CANCEL_REASON_PLAN_DOWNGRADE
+    )
+    if not spendable:
         return False
     period_start = sub.current_period_start
     walk_created = getattr(walk, "created_at", None)

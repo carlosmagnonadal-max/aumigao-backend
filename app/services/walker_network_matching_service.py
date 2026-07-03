@@ -105,7 +105,7 @@ def tenant_network_blocked_by_plan(db: Session, tenant_id: str) -> bool:
     """True se o PLANO do tenant proíbe acesso à Rede Aumigão de passeadores.
 
     Plano `free` ("Começar") = REDE DESLIGADA (decisão do Carlos 2026-07-02).
-    O reverse trial (21d) libera: durante o trial o plano EFETIVO é "pro", então
+    O reverse trial libera: durante o trial o plano EFETIVO é "pro", então
     NÃO bloqueia. Tenants pro/enterprise nunca bloqueiam aqui → zero-regressão.
     """
     from app.models.tenant import Tenant

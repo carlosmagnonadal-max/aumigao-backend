@@ -1085,6 +1085,63 @@ def _handle_subscription_webhook(db, event: str, payment_data: dict) -> bool:
             except Exception:
                 logger.exception("falha ao notificar tutor subscription payment tutor_id=%s", sub.tutor_id)
 
+        # REDE DE PROTEÇÃO (item 6): uma assinatura recorrente confirmada NÃO deveria
+        # existir quando o tenant está no plano free (`recurring_plans` é bloqueada por
+        # plano). Isso só acontece se alguma subscription escapou do cancelamento no
+        # downgrade do reverse trial (maybe_downgrade_expired_trial). Detecta, LOGA
+        # estruturado e dispara alerta operacional — mas AINDA concede os créditos
+        # (contrapartida do pagamento já cobrado: "nenhuma cobrança sem contrapartida").
+        try:
+            from app.models.tenant import Tenant as _Tenant
+            from app.services.tenant_free_plan_service import plan_blocks_feature
+            _tenant = db.get(_Tenant, sub.tenant_id)
+            if _tenant is not None and plan_blocks_feature(_tenant, "recurring_plans"):
+                logger.error(
+                    "subscription_payment_on_blocked_plan: assinatura recorrente cobrada "
+                    "em tenant sem recurring_plans (subscription escapou do cancelamento "
+                    "do downgrade). tenant_id=%s subscription_id=%s tutor_id=%s "
+                    "asaas_subscription_id=%s provider_payment_id=%s amount=%.2f",
+                    sub.tenant_id, sub.id, sub.tutor_id,
+                    getattr(sub, "asaas_subscription_id", None), provider_payment_id, amount,
+                )
+                try:
+                    from app.services.admin_operational_event_service import (
+                        record_admin_operational_event,
+                    )
+                    record_admin_operational_event(
+                        db,
+                        event_type="subscription_payment_on_blocked_plan",
+                        entity_type="tutor_subscription",
+                        entity_id=sub.id,
+                        title="Cobrança de assinatura em plano sem recorrência",
+                        description=(
+                            "Uma assinatura recorrente confirmou pagamento em um tenant "
+                            "cujo plano bloqueia recurring_plans (provável assinatura zumbi "
+                            "que escapou do cancelamento no fim do reverse trial). "
+                            "Cancele a assinatura no gateway."
+                        ),
+                        severity="critical",
+                        source="webhook:asaas",
+                        metadata={
+                            "tenant_id": sub.tenant_id,
+                            "subscription_id": sub.id,
+                            "tutor_id": sub.tutor_id,
+                            "asaas_subscription_id": getattr(sub, "asaas_subscription_id", None),
+                            "provider_payment_id": provider_payment_id,
+                            "amount": amount,
+                        },
+                    )
+                except Exception:
+                    logger.exception(
+                        "falha ao registrar alerta operacional de cobranca em plano bloqueado "
+                        "subscription_id=%s", sub.id,
+                    )
+        except Exception:
+            logger.exception(
+                "falha na rede de protecao de cobranca em plano bloqueado subscription_id=%s",
+                sub.id,
+            )
+
         # Projeto A: 1º pagamento concede créditos; renovações rebastecem.
         from app.services.recurring_plan_service import grant_credits_on_payment, reset_credits_if_renewal
         from app.models.recurring_plan import SUBSCRIPTION_ACTIVE, SUBSCRIPTION_OVERDUE

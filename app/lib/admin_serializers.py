@@ -413,6 +413,13 @@ def _serialize_admin_pet(pet: Pet, db: Session) -> dict:
             "notes": pet.diet_notes,
         },
         "health_card": _admin_pet_health_card(pet, db),
+        # NOTA (Fase C — Conquistas): NÃO expomos achievements_summary aqui de
+        # propósito. Este serializer roda em LOOP na lista /admin/pets; o resumo
+        # de conquistas chama compute_achievements (que consulta passeios, carteira
+        # e o índice de bem-estar por pet) → N+1 caro na lista. O resumo fica só na
+        # rota dedicada GET /api/pets/{id}/achievements (pet único, barato). Se um
+        # dia houver rota de DETALHE de 1 pet no admin, achievements_summary(db, pet)
+        # cabe lá sem custo de lista.
     }
 
 

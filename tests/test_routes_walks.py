@@ -123,6 +123,37 @@ def test_create_walk_defers_matching_to_pending_confirmation():
     assert body["walker_selection_mode"] == "auto"
 
 
+# --------------------------------------------------- create (gate ON) -------
+def test_create_walk_gate_on_born_awaiting_payment(monkeypatch):
+    # R7: com o gate ligado e sem cobertura de assinatura, o walk nasce aguardando
+    # pagamento e NÃO entra no matching até o webhook liberar.
+    monkeypatch.setenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "true")
+    monkeypatch.setattr(walks, "consume_credit_if_available", lambda db, tenant, tutor_id: None)
+    client, _ = build()
+    r = client.post("/walks", json=_walk_create_payload())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["operational_status"] == "awaiting_payment"
+    assert body["status"] == "aguardando_pagamento"
+
+
+def test_create_walk_gate_on_subscription_born_scheduled(monkeypatch):
+    # R7: passeio coberto por assinatura ativa NÃO passa pelo gate — nasce agendado.
+    monkeypatch.setenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "true")
+
+    class _FakeSub:
+        id = "sub-1"
+
+    monkeypatch.setattr(walks, "consume_credit_if_available", lambda db, tenant, tutor_id: _FakeSub())
+    # record_revenue_recognized_safe é import lazy e best-effort (try/except) — inócuo aqui.
+    client, _ = build()
+    r = client.post("/walks", json=_walk_create_payload())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["operational_status"] == "pending_walker_confirmation"
+    assert body["status"] == "Agendado"
+
+
 def test_create_walk_persists_and_appears_in_list():
     client, db = build()
     created = client.post("/walks", json=_walk_create_payload()).json()

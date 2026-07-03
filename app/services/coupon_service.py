@@ -132,11 +132,23 @@ def redeem(db: Session, tenant: Tenant, code: str, user_id: str, amount: float, 
         single_use_per_user=(coupon.max_uses_per_user == 1),
     )
     db.add(redemption)
-    if walk_id and getattr(coupon, "is_referral_gift", False):
+    if walk_id:
         from app.models.walk import Walk
         _walk = db.get(Walk, walk_id)
         if _walk is not None and _walk.tenant_id == tenant.id:   # guard cross-tenant
-            _walk.is_referral_gift = True
+            if getattr(coupon, "is_referral_gift", False):
+                _walk.is_referral_gift = True
+            # R7: cupom que cobre 100% do valor do passeio faz o papel do pagamento —
+            # promove o walk de 'awaiting_payment' para o fluxo operacional (matching),
+            # espelhando o webhook de pagamento confirmado (payments.py). Cupom PARCIAL
+            # NÃO promove: o pagamento do restante o libera via webhook.
+            # amount = preço do walk (vem da rota de redeem); discount_amount é limitado
+            # a amount em compute_discount, então >= amount só quando cobre 100%.
+            _covers_full = amount > 0 and result["discount_amount"] >= amount
+            if _covers_full and getattr(_walk, "operational_status", None) == "awaiting_payment":
+                _walk.operational_status = "pending_walker_confirmation"
+                _walk.status = "Agendado"
+                _walk.no_walker_reason = "Buscando o melhor passeador disponível."
     try:
         db.commit()
     except IntegrityError:

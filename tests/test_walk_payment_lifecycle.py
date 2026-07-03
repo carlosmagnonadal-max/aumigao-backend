@@ -5,6 +5,8 @@ e só entra no fluxo operacional quando o webhook de pagamento confirmado o libe
 Default LIGADO (fail-closed — regra do dono). Aqui testamos o gate (puro) e a
 liberação no webhook (que só age em walks à espera).
 """
+from datetime import datetime, timedelta
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -43,9 +45,14 @@ def _build():
     return test_app, db
 
 
-def _walk(db, op_status):
+def _future_iso(hours: int = 6) -> str:
+    return (datetime.utcnow() + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M")
+
+
+def _walk(db, op_status, scheduled_date=None):
+    # Default: início bem no futuro → o corte de 45min NÃO se aplica (webhook promove).
     db.add(Walk(id="walk-1", tutor_id=TUTOR_ID, tenant_id=TENANT_ID, pet_id="pet-1",
-                scheduled_date="2026-07-01", duration_minutes=30, status="aguardando_pagamento",
+                scheduled_date=scheduled_date or _future_iso(), duration_minutes=30, status="aguardando_pagamento",
                 price=100.0, operational_status=op_status))
     db.add(Payment(id="pay-1", tenant_id=TENANT_ID, tutor_id=TUTOR_ID, amount=100.0, walk_id="walk-1",
                    status="pagamento_sandbox_criado", provider="asaas_sandbox", provider_payment_id="prov-1"))
@@ -104,3 +111,36 @@ def test_webhook_overdue_does_not_release_awaiting_walk(monkeypatch):
     db.expire_all()
     # sem liquidação, o walk continua à espera (não é garantido)
     assert db.get(Walk, "walk-1").operational_status == "awaiting_payment"
+
+
+def test_webhook_race_confirmed_after_cutoff_goes_to_reconfirmation(monkeypatch):
+    """Item D: pagamento confirma DEPOIS do corte (início−45min estourado) → o walk
+    NÃO promove; vai para awaiting_tutor_reconfirmation com decision_reason
+    'pagamento_apos_corte'. Payment segue confirmado (dinheiro rastreado)."""
+    monkeypatch.setenv("ASAAS_WEBHOOK_TOKEN", "segredo")
+    test_app, db = _build()
+    # início a 10min de agora → dentro do corte de 45min → pós-corte.
+    _walk(db, op_status="awaiting_payment",
+          scheduled_date=(datetime.utcnow() + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M"))
+    r = _webhook(TestClient(test_app))
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    walk = db.get(Walk, "walk-1")
+    assert walk.operational_status == "awaiting_tutor_reconfirmation"
+    assert walk.no_walker_reason == "pagamento_apos_corte"
+    # o pagamento permanece confirmado (não estornado)
+    assert db.get(Payment, "pay-1").status == "pagamento_confirmado_sandbox"
+
+
+def test_webhook_race_confirmed_on_already_cancelled_walk(monkeypatch):
+    """Item D: se o walk já foi cancelado por expiração (ride_cancelled) e o
+    pagamento confirma depois, também vai para reconfirmação (não promove)."""
+    monkeypatch.setenv("ASAAS_WEBHOOK_TOKEN", "segredo")
+    test_app, db = _build()
+    _walk(db, op_status="ride_cancelled")
+    r = _webhook(TestClient(test_app))
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    walk = db.get(Walk, "walk-1")
+    assert walk.operational_status == "awaiting_tutor_reconfirmation"
+    assert walk.no_walker_reason == "pagamento_apos_corte"

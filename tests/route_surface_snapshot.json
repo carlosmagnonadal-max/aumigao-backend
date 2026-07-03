@@ -588,6 +588,7 @@
   "POST /walks/{walk_id}/share-link",
   "POST /walks/{walk_id}/tip",
   "POST /walks/{walk_id}/tip-checkout",
+  "POST /walks/{walk_id}/tutor-decision",
   "PUT /admin/individual-walk-pricing",
   "PUT /admin/payment-config",
   "PUT /admin/pet-tour-config",

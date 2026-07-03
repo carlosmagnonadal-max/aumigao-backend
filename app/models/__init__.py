@@ -67,4 +67,5 @@ from app.models.walk_observation import WalkObservation  # noqa: F401
 from app.models.pet_reminder import PetReminder  # noqa: F401 — Fase 3: lembretes determinísticos
 from app.models.pet_share_link import PetShareLink  # noqa: F401 — Fase 4: compartilhamento público LGPD
 from app.models.pet_health_record import PetHealthRecord  # noqa: F401 — Fase A: carteira de saúde
+from app.models.pet_self_walk import PetSelfWalk  # noqa: F401 — Fase D: passeio self-serve do tutor
 from app.models.webhook_event import WebhookEvent  # noqa: F401 — dedup de webhooks do provedor

@@ -200,21 +200,38 @@ def build_health_card(db: Session, pet: Pet, *, today: date | None = None) -> di
 # Briefing do passeio (visão do passeador/admin)
 # ---------------------------------------------------------------------------
 
+def worst_status_by_kind(records: list[PetHealthRecord], *, today: date) -> dict[str, str]:
+    """Pior status por kind — helper CANÔNICO compartilhado pelos serviços.
+
+    Ordem de severidade: atrasada (3) > vencendo (2) > sem_validade (1) > em_dia (0).
+    Semântica: em_dia é o MELHOR estado (validade ok, longe de vencer). sem_validade
+    é pior que em_dia porque há incerteza sobre quando o tratamento vence/precisará
+    ser renovado (ex.: vermífugo sem prazo anotado). A tripla wells/achieve/health
+    usa ESTA função — uma única fonte da verdade.
+    """
+    severity: dict[str, int] = {"atrasada": 3, "vencendo": 2, "sem_validade": 1, "em_dia": 0}
+    worst: dict[str, str] = {}
+    for r in records:
+        st = record_status(r.valid_until, today=today)
+        cur = worst.get(r.kind)
+        if cur is None or severity.get(st, 0) > severity.get(cur, 0):
+            worst[r.kind] = st
+    return worst
+
+
 def _health_card_status_label(records: list[PetHealthRecord], *, today: date | None = None) -> dict:
     """Rótulo agregado enxuto da carteira por kind (ex.: 'vacinas em dia').
 
     Retorna, por kind: o pior status entre os registros daquele kind
-    (atrasada > vencendo > em_dia > sem_validade) + um rótulo curto pt-BR.
+    (atrasada > vencendo > sem_validade > em_dia) + um rótulo curto pt-BR.
     Sem registros → 'sem_registro'.
+
+    NOTA: com a ordem canônica, em_dia + sem_validade → agrega como sem_validade
+    (sem_validade é pior = mais alarmante pro passeador). O briefing reflete
+    conservadoramente o pior estado observado para aquele kind.
     """
     ref = today or date.today()
-    severity = {"atrasada": 3, "vencendo": 2, "em_dia": 1, "sem_validade": 0}
-    worst_by_kind: dict[str, str] = {}
-    for r in records:
-        st = record_status(r.valid_until, today=ref)
-        cur = worst_by_kind.get(r.kind)
-        if cur is None or severity[st] > severity[cur]:
-            worst_by_kind[r.kind] = st
+    worst_by_kind = worst_status_by_kind(records, today=ref)
 
     label_map = {
         "atrasada": "atrasada", "vencendo": "vencendo",

@@ -136,3 +136,54 @@ def test_build_pet_briefing_operational_only():
     # NÃO vaza dados do tutor / endereço / valores.
     for forbidden in ("tutor_id", "address", "price", "value"):
         assert forbidden not in b
+
+
+# ---------------------------------------------------------------------------
+# worst_status_by_kind — helper canônico (regressão de ordem de severidade)
+# ---------------------------------------------------------------------------
+
+def _rec(kind: str, valid_until) -> PetHealthRecord:
+    return PetHealthRecord(id=kind, pet_id="p", kind=kind, name="X",
+                           applied_at=TODAY, valid_until=valid_until)
+
+
+def test_worst_status_by_kind_em_dia_plus_sem_validade_yields_sem_validade():
+    """em_dia + sem_validade no mesmo kind → pior = sem_validade.
+
+    Documentado: sem_validade é mais alarmante que em_dia (incerteza sobre vencimento).
+    A versão bug invertia a ordem (em_dia=1, sem_validade=0) e retornaria em_dia.
+    """
+    records = [
+        _rec("vaccine", TODAY + timedelta(days=60)),  # em_dia
+        _rec("vaccine", None),                         # sem_validade
+    ]
+    worst = health.worst_status_by_kind(records, today=TODAY)
+    assert worst["vaccine"] == "sem_validade"
+
+
+def test_worst_status_by_kind_atrasada_wins_all():
+    """atrasada sempre domina independente da ordem dos registros."""
+    records = [
+        _rec("dewormer", None),                        # sem_validade
+        _rec("dewormer", TODAY + timedelta(days=5)),   # vencendo
+        _rec("dewormer", TODAY - timedelta(days=1)),   # atrasada
+        _rec("dewormer", TODAY + timedelta(days=60)),  # em_dia
+    ]
+    worst = health.worst_status_by_kind(records, today=TODAY)
+    assert worst["dewormer"] == "atrasada"
+
+
+def test_worst_status_by_kind_empty_returns_empty():
+    """Sem registros → dict vazio (sem_registro é tratado pelo caller)."""
+    assert health.worst_status_by_kind([], today=TODAY) == {}
+
+
+def test_worst_status_by_kind_per_kind_isolation():
+    """Registro atrasado de um kind NÃO contamina outro kind."""
+    records = [
+        _rec("vaccine", TODAY - timedelta(days=1)),    # atrasada
+        _rec("dewormer", TODAY + timedelta(days=60)),  # em_dia
+    ]
+    worst = health.worst_status_by_kind(records, today=TODAY)
+    assert worst["vaccine"] == "atrasada"
+    assert worst["dewormer"] == "em_dia"

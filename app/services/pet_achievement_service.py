@@ -36,7 +36,7 @@ from app.models.pet import Pet
 from app.models.walk import Walk
 from app.models.walk_completion_review import WalkCompletionReview
 from app.services import pet_wellness_service as wellness
-from app.services.pet_health_service import list_health_records, record_status
+from app.services.pet_health_service import list_health_records, record_status, worst_status_by_kind
 
 # ---------------------------------------------------------------------------
 # Constantes de configuração (calibráveis)
@@ -134,15 +134,8 @@ def _consecutive_iso_weeks(walks: list[Walk]) -> int:
 
 
 def _worst_status_by_kind(records, *, today: date) -> dict[str, str]:
-    """Pior status por kind (atrasada > vencendo > sem_validade > em_dia)."""
-    severity = {"atrasada": 3, "vencendo": 2, "sem_validade": 1, "em_dia": 0}
-    worst: dict[str, str] = {}
-    for r in records:
-        st = record_status(r.valid_until, today=today)
-        cur = worst.get(r.kind)
-        if cur is None or severity.get(st, 0) > severity.get(cur, 0):
-            worst[r.kind] = st
-    return worst
+    """Delega para o helper canônico em pet_health_service (fonte única da verdade)."""
+    return worst_status_by_kind(records, today=today)
 
 
 def _profile_completeness(pet: Pet) -> bool:

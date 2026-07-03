@@ -30,6 +30,7 @@ class TenantProductHighlight(Base):
     title: Mapped[str] = mapped_column(String(120), nullable=False)
     description: Mapped[str | None] = mapped_column(String(500), nullable=True)
     photo_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    product_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     promo_price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

@@ -675,6 +675,7 @@ app.include_router(walk_locations.api_router)
 app.include_router(live_share.router)
 app.include_router(live_share.api_router)
 app.include_router(pet_share.public_router)
+app.include_router(pet_share.bare_router)
 app.include_router(pet_share.api_router)
 # Fase E (comportamento multi-fonte + convivência): anexa suas rotas aos routers
 # de pet_profile ANTES do include_router (que congela o conjunto de rotas).

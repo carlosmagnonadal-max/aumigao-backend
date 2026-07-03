@@ -195,3 +195,124 @@ def test_downgrade_resets_config_drift_but_respects_custom():
     maybe_downgrade_expired_trial(db, t)
     db.commit()
     assert get_or_create_payment_config(db, "t-down").commission_percent == 20.0
+
+
+# ── downgrade cancela assinaturas recorrentes ativas (dinheiro) ─────────────
+#
+# Princípio: bloqueia novo, mantém o que já foi pago; nenhuma cobrança sem
+# contrapartida. No downgrade do trial, as TutorSubscription ativas do tenant free
+# são canceladas (Asaas + local) para não virarem "zumbis" cobrando sem entregar.
+# Créditos restantes NÃO são tocados.
+
+from app.models.recurring_plan import (  # noqa: E402
+    SUBSCRIPTION_ACTIVE,
+    SUBSCRIPTION_CANCELLED,
+    SUBSCRIPTION_OVERDUE,
+    RecurringPlan,
+    TutorSubscription,
+)
+
+
+def _seed_sub(db, tenant_id, *, sub_id, tutor_id, status=SUBSCRIPTION_ACTIVE,
+              asaas_id="asaas-x", credits=5, plan_id="plan-1"):
+    if db.get(RecurringPlan, plan_id) is None:
+        db.add(RecurringPlan(id=plan_id, tenant_id=tenant_id, name="8 passeios/mês",
+                             price=99.0, walks_per_cycle=8, interval="monthly", active=True))
+    sub = TutorSubscription(
+        id=sub_id, tenant_id=tenant_id, plan_id=plan_id, tutor_id=tutor_id,
+        status=status, price=99.0, walks_per_cycle=8, credits_remaining=credits,
+        credits_granted=True, asaas_subscription_id=asaas_id,
+    )
+    db.add(sub)
+    db.commit()
+    return sub
+
+
+def _patch_asaas_cancel(monkeypatch, calls, *, fail_ids=frozenset()):
+    """Substitui cancel_asaas_subscription (async) por um mock que registra as chamadas.
+
+    Ao invés de rede real, guarda os ids cancelados em `calls`; se o id estiver em
+    `fail_ids`, levanta para simular falha de gateway (resiliência por item).
+    """
+    import app.services.asaas_subscription_service as ass
+
+    async def _fake_cancel(asaas_subscription_id):
+        calls.append(asaas_subscription_id)
+        if asaas_subscription_id in fail_ids:
+            raise RuntimeError(f"asaas down for {asaas_subscription_id}")
+
+    monkeypatch.setattr(ass, "cancel_asaas_subscription", _fake_cancel)
+
+
+def test_downgrade_cancels_active_subscriptions(monkeypatch):
+    db = _db()
+    t = _expired_tenant_with_admin(db)
+    _seed_sub(db, "t-down", sub_id="s1", tutor_id="tut-1", asaas_id="asaas-1", credits=5)
+    _seed_sub(db, "t-down", sub_id="s2", tutor_id="tut-2", asaas_id="asaas-2",
+              status=SUBSCRIPTION_OVERDUE, credits=3)
+    calls = []
+    _patch_asaas_cancel(monkeypatch, calls)
+
+    assert maybe_downgrade_expired_trial(db, t) is True
+    db.commit()
+
+    # Ambas canceladas no Asaas e localmente (inclui a que estava OVERDUE).
+    assert set(calls) == {"asaas-1", "asaas-2"}
+    s1 = db.get(TutorSubscription, "s1")
+    s2 = db.get(TutorSubscription, "s2")
+    assert s1.status == SUBSCRIPTION_CANCELLED and s1.cancelled_at is not None
+    assert s2.status == SUBSCRIPTION_CANCELLED and s2.cancelled_at is not None
+    # Créditos restantes NÃO tocados — o tutor esgota o que já pagou.
+    assert s1.credits_remaining == 5
+    assert s2.credits_remaining == 3
+    # Tutor notificado (mecanismo in-app existente).
+    tut_notes = db.query(Notification).filter(Notification.user_id == "tut-1").all()
+    assert len(tut_notes) == 1
+    assert "créditos" in tut_notes[0].message or "encerrada" in tut_notes[0].message.lower()
+
+
+def test_downgrade_subscription_cancel_is_idempotent(monkeypatch):
+    db = _db()
+    t = _expired_tenant_with_admin(db)
+    _seed_sub(db, "t-down", sub_id="s1", tutor_id="tut-1", asaas_id="asaas-1")
+    calls = []
+    _patch_asaas_cancel(monkeypatch, calls)
+
+    assert maybe_downgrade_expired_trial(db, t) is True
+    db.commit()
+    # 2ª chamada: já carimbado + assinatura já cancelada → nada acontece de novo.
+    assert maybe_downgrade_expired_trial(db, t) is False
+    db.commit()
+    assert calls == ["asaas-1"]  # cancelamento não duplicado
+    assert db.get(TutorSubscription, "s1").status == SUBSCRIPTION_CANCELLED
+
+
+def test_downgrade_one_asaas_failure_does_not_block_others(monkeypatch):
+    db = _db()
+    t = _expired_tenant_with_admin(db)
+    _seed_sub(db, "t-down", sub_id="s1", tutor_id="tut-1", asaas_id="asaas-1")
+    _seed_sub(db, "t-down", sub_id="s2", tutor_id="tut-2", asaas_id="asaas-2")
+    calls = []
+    _patch_asaas_cancel(monkeypatch, calls, fail_ids={"asaas-1"})
+
+    # Falha no Asaas de s1 não aborta o downgrade nem o cancelamento de s2.
+    assert maybe_downgrade_expired_trial(db, t) is True
+    db.commit()
+    assert set(calls) == {"asaas-1", "asaas-2"}
+    # s1 falhou no gateway → permanece ativa (não marca local sem sucesso remoto);
+    # s2 é cancelada normalmente.
+    assert db.get(TutorSubscription, "s1").status == SUBSCRIPTION_ACTIVE
+    assert db.get(TutorSubscription, "s2").status == SUBSCRIPTION_CANCELLED
+    # O carimbo do downgrade acontece de qualquer forma.
+    assert t.trial_downgraded_at is not None
+
+
+def test_downgrade_without_subscriptions_still_stamps(monkeypatch):
+    db = _db()
+    t = _expired_tenant_with_admin(db)
+    calls = []
+    _patch_asaas_cancel(monkeypatch, calls)
+    assert maybe_downgrade_expired_trial(db, t) is True
+    db.commit()
+    assert calls == []
+    assert t.trial_downgraded_at is not None

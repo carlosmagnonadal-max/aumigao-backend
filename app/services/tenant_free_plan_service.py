@@ -18,8 +18,11 @@ sem espalhar lógica de trial por vários módulos.
 """
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timedelta, timezone
+
+logger = logging.getLogger("aumigao.tenant_free_plan_service")
 
 # BRT fixo (UTC-3): o Brasil aboliu o horário de verão em 2019 — mesmo padrão do
 # faturamento mensal de comissão (payments.py). Evita depender de tzdata no container.
@@ -370,6 +373,15 @@ def maybe_downgrade_expired_trial(db, tenant, *, now: datetime | None = None) ->
     tenant.trial_downgraded_at = reference
     db.add(tenant)
 
+    # DINHEIRO — nenhuma cobrança sem contrapartida: cancela as assinaturas
+    # recorrentes ativas do tutor criadas durante o trial. Sem isso a subscription
+    # continua cobrando no Asaas na renovação, mas o tenant free bloqueia a feature
+    # `recurring_plans` — o tutor pagaria sem poder usar créditos ("zumbi").
+    # Créditos JÁ concedidos NÃO são tocados (consume_credit_if_available só exige
+    # status ACTIVE + saldo; o tutor esgota o que já pagou). Best-effort e
+    # idempotente: erro em UMA assinatura não aborta o downgrade nem as demais.
+    cancelled_subscriptions = _cancel_active_tutor_subscriptions(db, tenant)
+
     # Garante a comissão do free (20%) na config — normalmente já está (a config
     # nasce com o default do plano); só corrige drift, respeitando override manual.
     try:
@@ -407,13 +419,145 @@ def maybe_downgrade_expired_trial(db, tenant, *, now: datetime | None = None) ->
                     type="warning",
                     related_entity_type="tenant",
                     related_entity_id=tenant.id,
-                    metadata={"event": "free_trial_downgrade", "required_plan": "pro"},
+                    metadata={
+                        "event": "free_trial_downgrade",
+                        "required_plan": "pro",
+                        "cancelled_subscriptions": len(cancelled_subscriptions),
+                    },
                 ),
             )
     except Exception:  # noqa: BLE001 — notificação best-effort, nunca quebra o request
         pass
 
     return True
+
+
+def _cancel_active_tutor_subscriptions(db, tenant) -> list[str]:
+    """Cancela (Asaas + local) as assinaturas recorrentes ativas do tenant no downgrade.
+
+    Percorre as TutorSubscription com status ACTIVE/OVERDUE (não-canceladas) do tenant.
+    Para cada uma:
+      - cancela no Asaas via cancel_asaas_subscription (reuso do caminho do fluxo do
+        tutor; 404 remoto é tratado como já-cancelado);
+      - marca status local = SUBSCRIPTION_CANCELLED + cancelled_at, best-effort breakage;
+      - notifica o TUTOR (in-app, mesmo mecanismo do webhook) com mensagem honesta.
+
+    Resiliência: try/except POR ITEM — falha (rede Asaas, notificação) loga e continua
+    com as demais; o carimbo do downgrade acontece de qualquer forma. Idempotência:
+    só toca em não-canceladas (já-canceladas são puladas), então rodar de novo é no-op.
+
+    NÃO commita (o caller de maybe_downgrade_expired_trial comita). Retorna a lista de
+    IDs das assinaturas canceladas nesta execução.
+    """
+    cancelled_ids: list[str] = []
+    try:
+        from app.models.recurring_plan import (
+            SUBSCRIPTION_ACTIVE,
+            SUBSCRIPTION_CANCELLED,
+            SUBSCRIPTION_OVERDUE,
+            RecurringPlan,
+            TutorSubscription,
+        )
+    except Exception:  # noqa: BLE001 — modelo indisponível (ex.: testes minimalistas)
+        return cancelled_ids
+
+    subs = (
+        db.query(TutorSubscription)
+        .filter(
+            TutorSubscription.tenant_id == tenant.id,
+            TutorSubscription.status.in_([SUBSCRIPTION_ACTIVE, SUBSCRIPTION_OVERDUE]),
+        )
+        .all()
+    )
+    if not subs:
+        return cancelled_ids
+
+    now = datetime.utcnow()
+    for sub in subs:
+        try:
+            # 1) Cancela no gateway (idempotente — 404 remoto ignorado internamente).
+            # Reusa o service existente do fluxo do tutor; ausência de asaas_id ou de
+            # config (mock) simplesmente não faz nada remoto.
+            if getattr(sub, "asaas_subscription_id", None):
+                _run_async_cancel(sub.asaas_subscription_id)
+
+            # 2) Marca local como cancelada (vocabulário de status do modelo).
+            sub.status = SUBSCRIPTION_CANCELLED
+            sub.cancelled_at = now
+            sub.updated_at = now
+            db.add(sub)
+
+            # DELIBERADAMENTE NÃO chamamos recognize_breakage_on_cancel aqui (ao
+            # contrário do cancelamento manual): o tutor JÁ PAGOU por esses créditos.
+            # Reconhecer breakage zeraria credits_remaining. Preservamos o saldo no
+            # registro ("mantém o que já foi pago") — nenhuma conversão automática em
+            # receita neste caminho de downgrade.
+            cancelled_ids.append(sub.id)
+
+            # 3) Notifica o TUTOR (in-app — mesmo mecanismo barato do webhook). Créditos
+            # restantes seguem válidos até esgotar; a mensagem deixa isso explícito.
+            try:
+                from app.routes.notifications import NotificationCreate, _create_notification
+
+                plan = db.get(RecurringPlan, sub.plan_id) if sub.plan_id else None
+                plan_name = plan.name if plan else "seu plano recorrente"
+                _create_notification(
+                    db,
+                    NotificationCreate(
+                        tenant_id=tenant.id,
+                        user_id=sub.tutor_id,
+                        user_role="tutor",
+                        title="Sua assinatura recorrente foi encerrada",
+                        message=(
+                            f"A assinatura {plan_name} foi encerrada porque o plano do "
+                            "negócio mudou — você não será mais cobrado. Seus créditos "
+                            "restantes continuam válidos e podem ser usados normalmente."
+                        ),
+                        type="warning",
+                        related_entity_type="tutor_subscription",
+                        related_entity_id=sub.id,
+                        metadata={
+                            "event": "free_trial_downgrade_subscription_cancelled",
+                            "subscription_id": sub.id,
+                            "credits_remaining": getattr(sub, "credits_remaining", None),
+                        },
+                    ),
+                )
+            except Exception:  # noqa: BLE001 — notificação best-effort
+                pass
+        except Exception:  # noqa: BLE001 — resiliência por item: loga e continua
+            logger.exception(
+                "maybe_downgrade_expired_trial: falha ao cancelar assinatura "
+                "subscription_id=%s tenant_id=%s",
+                getattr(sub, "id", "?"), tenant.id,
+            )
+            continue
+
+    return cancelled_ids
+
+
+def _run_async_cancel(asaas_subscription_id: str) -> None:
+    """Executa o cancelamento async do Asaas a partir de contexto síncrono.
+
+    maybe_downgrade_expired_trial roda em rotas/sweeps SÍNCRONOS (sem event loop
+    ativo nesta thread), então asyncio.run() é seguro — mesmo padrão do adapter de
+    faturamento (commission_billing_service). O service subjacente é idempotente
+    (404 remoto = já cancelada). Import lazy evita ciclo com o módulo de payments.
+    """
+    import asyncio
+
+    from app.services.asaas_subscription_service import cancel_asaas_subscription
+
+    try:
+        asyncio.run(cancel_asaas_subscription(asaas_subscription_id))
+    except RuntimeError:
+        # Python ≥3.12: sem loop corrente asyncio.run pode levantar RuntimeError em
+        # certos estados — cria um loop novo explicitamente.
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(cancel_asaas_subscription(asaas_subscription_id))
+        finally:
+            loop.close()
 
 
 # ── Cap mensal de passeios (plano free) ─────────────────────────────────────

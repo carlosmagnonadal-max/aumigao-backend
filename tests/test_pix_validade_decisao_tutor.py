@@ -99,9 +99,10 @@ def _capture_client(monkeypatch):
 
     monkeypatch.setattr(payments, "PAYMENT_MODE", "asaas_sandbox")
     monkeypatch.setattr(payments.httpx, "AsyncClient", _factory)
-    # CI não tem ASAAS_SANDBOX_API_KEY (o guard de config levanta 503 sem ela);
-    # o HTTP é 100% mockado acima, então uma chave fake basta. Precedente: PR #14.
-    monkeypatch.setenv("ASAAS_SANDBOX_API_KEY", "test-sandbox-key")
+    # CI não tem ASAAS_SANDBOX_API_KEY e a constante é lida no IMPORT do módulo
+    # (payments.py:49) — setenv não adianta; patcha o atributo. O HTTP é 100%
+    # mockado acima, então uma chave fake basta. Precedente: PR #14.
+    monkeypatch.setattr(payments, "ASAAS_SANDBOX_API_KEY", "test-sandbox-key")
     return captured
 
 

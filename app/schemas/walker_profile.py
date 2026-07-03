@@ -20,6 +20,8 @@ class WalkerProfileBase(BaseModel):
     identity_document_front_url: str | None = Field(None, max_length=2000)
     identity_document_back_url: str | None = Field(None, max_length=2000)
     selfie_url: str | None = Field(None, max_length=2000)
+    # Foto opcional com o pet — separada da selfie do documento (obrigatoria).
+    pet_photo_url: str | None = Field(None, max_length=2000)
     proof_of_address_url: str | None = Field(None, max_length=2000)
     profile_photo_url: str | None = Field(None, max_length=2000)
     has_vehicle: bool = False

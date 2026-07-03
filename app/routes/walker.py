@@ -115,6 +115,7 @@ ALLOWED_UPLOAD_TYPES = {
     "identity_back",
     "address_proof",
     "selfie",
+    "pet_photo",  # foto OPCIONAL com o pet — separada da selfie do documento
     "background_certificate",  # FIX 5: tipo dedicado para certidão de antecedentes
 }
 ALLOWED_UPLOAD_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
@@ -191,7 +192,7 @@ def _public_status_label(status: str | None) -> str:
     return labels.get(_canonical_application_status(status), labels["submitted"])
 
 
-def _missing_application_fields(*, profile_photo_url: str | None, document_url: str | None, identity_document_back_url: str | None, proof_of_address_url: str | None, bio: str | None) -> list[str]:
+def _missing_application_fields(*, profile_photo_url: str | None, document_url: str | None, identity_document_back_url: str | None, proof_of_address_url: str | None, selfie_url: str | None = None, bio: str | None) -> list[str]:
     missing = []
     if not _is_persistent_upload_url(profile_photo_url):
         missing.append("Envie sua foto de perfil.")
@@ -201,6 +202,9 @@ def _missing_application_fields(*, profile_photo_url: str | None, document_url: 
         missing.append("Envie a frente do documento de identidade.")
     if not _is_persistent_upload_url(identity_document_back_url):
         missing.append("Envie o verso do documento de identidade.")
+    # Selfie segurando o documento — passa a ser OBRIGATORIA no cadastro do passeador.
+    if not _is_persistent_upload_url(selfie_url):
+        missing.append("Envie a selfie segurando o documento.")
     if not _is_persistent_upload_url(proof_of_address_url):
         missing.append("Complete os documentos para enviar sua candidatura.")
     return missing
@@ -215,12 +219,13 @@ def _is_persistent_upload_url(value: str | None) -> bool:
     return normalized.startswith(("http://", "https://", "/uploads/"))
 
 
-def _ensure_application_complete(*, profile_photo_url: str | None, document_url: str | None, identity_document_back_url: str | None, proof_of_address_url: str | None, bio: str | None):
+def _ensure_application_complete(*, profile_photo_url: str | None, document_url: str | None, identity_document_back_url: str | None, proof_of_address_url: str | None, selfie_url: str | None = None, bio: str | None):
     missing = _missing_application_fields(
         profile_photo_url=profile_photo_url,
         document_url=document_url,
         identity_document_back_url=identity_document_back_url,
         proof_of_address_url=proof_of_address_url,
+        selfie_url=selfie_url,
         bio=bio,
     )
     if missing:
@@ -967,6 +972,7 @@ def create_profile(payload: WalkerProfileCreate, user: User = Depends(get_curren
         document_url=data.get("document_url"),
         identity_document_back_url=data.get("identity_document_back_url"),
         proof_of_address_url=data.get("proof_of_address_url"),
+        selfie_url=data.get("selfie_url"),
         bio=data.get("bio") or data.get("experience"),
     )
     try:
@@ -1029,6 +1035,7 @@ def update_profile(payload: WalkerProfileUpdate, user: User = Depends(get_curren
             document_url=profile.document_url,
             identity_document_back_url=profile.identity_document_back_url,
             proof_of_address_url=profile.proof_of_address_url,
+            selfie_url=profile.selfie_url,
             bio=profile.bio,
         )
     profile.updated_at = datetime.utcnow()

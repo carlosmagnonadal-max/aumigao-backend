@@ -16,6 +16,7 @@ SENSITIVE_WALKER_DOCUMENT_PREFIXES = (
     "identity_back-",
     "address_proof-",
     "selfie-",
+    "pet_photo-",
 )
 
 

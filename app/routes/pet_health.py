@@ -24,6 +24,7 @@ from app.models.pet_health_record import HEALTH_RECORD_KINDS, HEALTH_RECORD_ROLE
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.walk import Walk
+from app.services import pet_achievement_service as achievements
 from app.services import pet_health_service as health
 from app.services import pet_profile_service as svc
 from app.services import pet_wellness_service as wellness
@@ -184,6 +185,25 @@ def get_wellness(pet_id: str,
     _require_active_and_pro(db, _tenant_of(db, pet.tenant_id),
                             feature="pet_wellness", label="Índice de Bem-estar do pet")
     return wellness.compute_wellness(db, pet.id)
+
+
+# ---------------------------------------------------------------------------
+# /achievements — Conquistas do pet (Fase C, runtime, sem persistência)
+# ---------------------------------------------------------------------------
+
+@router.get("/{pet_id}/achievements")
+@api_router.get("/{pet_id}/achievements")
+def get_achievements(pet_id: str,
+                     user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Marcos transacionais do pet (passeios/saúde/perfil) + gancho de oferta.
+
+    Mesmo gate/ownership de A/B: tutor dono OU admin do tenant do pet; feature
+    ativa + plano Pro+ (free → 403 teaser). 100% runtime, sem persistência.
+    """
+    pet, _ = _get_pet_for_health(db, pet_id, user)
+    _require_active_and_pro(db, _tenant_of(db, pet.tenant_id),
+                            feature="pet_achievements", label="Conquistas do pet")
+    return achievements.compute_achievements(db, pet)
 
 
 # ---------------------------------------------------------------------------

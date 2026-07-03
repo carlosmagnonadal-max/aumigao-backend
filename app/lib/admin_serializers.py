@@ -472,6 +472,8 @@ def _serialize_walker_profile(
         "identity_document_front_url": create_signed_upload_url(profile.document_url),
         "identity_document_back_url": create_signed_upload_url(profile.identity_document_back_url),
         "selfie_url": create_signed_upload_url(profile.selfie_url),
+        # Foto opcional com o pet — doc complementar, fora do document_count.
+        "pet_photo_url": create_signed_upload_url(profile.pet_photo_url),
         "proof_of_address_url": create_signed_upload_url(profile.proof_of_address_url),
         "documents_count": document_count,
         "profile_photo_url": profile.profile_photo_url or "",

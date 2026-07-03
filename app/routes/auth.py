@@ -223,6 +223,7 @@ def register(payload: UserCreate, request: Request, db: Session = Depends(get_db
             identity_document_back_url=profile_payload.get("identity_document_back_url") or documents.get("identityBack"),
             proof_of_address_url=profile_payload.get("proof_of_address_url") or documents.get("residence"),
             selfie_url=profile_payload.get("selfie_url") or documents.get("petPhoto"),
+            pet_photo_url=profile_payload.get("pet_photo_url") or documents.get("petPhoto2"),
             status="document_review",
             active_as_walker=False,
         ))

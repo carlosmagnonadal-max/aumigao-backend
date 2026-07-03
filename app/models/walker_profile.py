@@ -23,6 +23,11 @@ class WalkerProfile(Base):
     document_url: Mapped[str | None] = mapped_column(String, nullable=True)
     identity_document_back_url: Mapped[str | None] = mapped_column(String, nullable=True)
     selfie_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Foto OPCIONAL com o pet — separada da selfie do documento (obrigatoria).
+    # Ate o proximo build EAS, o app antigo manda a foto com o pet como "selfie"
+    # e ela cai em selfie_url (fallback legado mantido em auth.py). O app novo
+    # envia esta foto no tipo dedicado "pet_photo" -> pet_photo_url.
+    pet_photo_url: Mapped[str | None] = mapped_column(String, nullable=True)
     proof_of_address_url: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="pending")
     internal_notes: Mapped[str] = mapped_column(Text, default="")

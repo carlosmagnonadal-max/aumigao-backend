@@ -105,6 +105,8 @@ class PartnerApplicationCreate(BaseModel):
     identity_document_back_url: str | None = Field(None, max_length=2000)
     proof_of_address_url: str | None = Field(None, max_length=2000)
     selfie_url: str | None = Field(None, max_length=2000)
+    # Foto opcional com o pet — separada da selfie do documento (obrigatoria).
+    pet_photo_url: str | None = Field(None, max_length=2000)
     accepted_declaration: bool = Field(default=False)
 
 
@@ -165,6 +167,7 @@ def _serialize_partner_application(profile: WalkerProfile, db: Session, include_
         "identity_document_back_url": create_signed_upload_url(identity_back_url) or "",
         "proof_of_address_url": create_signed_upload_url(profile.proof_of_address_url) or "",
         "selfie_url": create_signed_upload_url(profile.selfie_url) or "",
+        "pet_photo_url": create_signed_upload_url(profile.pet_photo_url) or "",
         "accepted_declaration": True,
         "status": _public_status_label(profile.status),
         "raw_status": _canonical_application_status(profile.status),
@@ -201,6 +204,7 @@ def _apply_partner_application_payload(profile: WalkerProfile, payload: PartnerA
     profile.identity_document_back_url = payload.identity_document_back_url
     profile.proof_of_address_url = payload.proof_of_address_url
     profile.selfie_url = payload.selfie_url
+    profile.pet_photo_url = payload.pet_photo_url
     profile.status = "submitted"
     profile.active_as_walker = False
     profile.approved_at = None
@@ -407,6 +411,7 @@ def create_partner_application(payload: PartnerApplicationCreate, response: Resp
         document_url=identity_front_url,
         identity_document_back_url=payload.identity_document_back_url,
         proof_of_address_url=payload.proof_of_address_url,
+        selfie_url=payload.selfie_url,
         bio=presentation,
     )
 

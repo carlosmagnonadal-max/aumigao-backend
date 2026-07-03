@@ -34,10 +34,17 @@ def _setup():
     return Factory, db
 
 
-def _walk(db, wid, op_status, age_hours):
+def _future_iso(hours: int = 6) -> str:
+    return (datetime.utcnow() + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M")
+
+
+def _walk(db, wid, op_status, age_hours, scheduled_date=None):
+    # Default scheduled_date bem no futuro → o corte de 45min NÃO se aplica;
+    # só o timeout absoluto (age_hours) governa. Testes de corte passam data explícita.
     db.add(Walk(
         id=wid, tutor_id="tutor1", tenant_id="t1", pet_id="p1",
-        scheduled_date="2026-07-01", duration_minutes=30, price=50.0,
+        scheduled_date=scheduled_date or _future_iso(),
+        duration_minutes=30, price=50.0,
         status="aguardando_pagamento" if op_status == "awaiting_payment" else "Agendado",
         operational_status=op_status,
         created_at=datetime.utcnow() - timedelta(hours=age_hours),
@@ -99,3 +106,40 @@ def test_idempotent_second_run_is_noop():
     assert _run(db) == 1
     # segunda passada: já cancelado, não toca mais nada
     assert _run(db) == 0
+
+
+def test_cutoff_45min_expires_walk_near_start(monkeypatch):
+    """Corte de 45min: passeio FRESCO (dentro do timeout de 24h) mas cujo início
+    está a menos de 45min de agora é expirado — não dá mais tempo de executar."""
+    Factory, db = _setup()
+    # criado agora (2h), início a 10min → dentro do corte de 45min.
+    near_start = (datetime.utcnow() + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M")
+    _walk(db, "near", "awaiting_payment", age_hours=1, scheduled_date=near_start)
+    # início bem no futuro (6h) → NÃO deve expirar.
+    _walk(db, "far", "awaiting_payment", age_hours=1)
+
+    assert _run(db) == 1
+    db2 = Factory()
+    db2.info["rls_tenant"] = "*"
+    try:
+        assert db2.get(Walk, "near").operational_status == "ride_cancelled"
+        assert "corte" in (db2.get(Walk, "near").no_walker_reason or "").lower()
+        assert db2.get(Walk, "far").operational_status == "awaiting_payment"
+    finally:
+        db2.close()
+
+
+def test_cutoff_respects_env_override(monkeypatch):
+    """WALK_PAYMENT_CUTOFF_MINUTES configurável: com 90min, um início a 60min já
+    entra no corte (antes de 45min não entraria)."""
+    monkeypatch.setenv("WALK_PAYMENT_CUTOFF_MINUTES", "90")
+    Factory, db = _setup()
+    start_60 = (datetime.utcnow() + timedelta(minutes=60)).strftime("%Y-%m-%dT%H:%M")
+    _walk(db, "w60", "awaiting_payment", age_hours=1, scheduled_date=start_60)
+    assert _run(db) == 1
+    db2 = Factory()
+    db2.info["rls_tenant"] = "*"
+    try:
+        assert db2.get(Walk, "w60").operational_status == "ride_cancelled"
+    finally:
+        db2.close()

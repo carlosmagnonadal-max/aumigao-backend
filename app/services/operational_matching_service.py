@@ -74,6 +74,37 @@ OPERATIONAL_TO_LEGACY_STATUS = {
     RIDE_CANCELLED: "Cancelado",
 }
 
+# Motivos-máquina que exigem DECISÃO do tutor (menu reagendar/trocar/estorno) —
+# gravados em walk.no_walker_reason nos casos novos (pagamento pós-corte e passeador
+# exclusivo que não aceitou). Consumidos pela serialização (item G) e pelo endpoint
+# POST /walks/{id}/tutor-decision.
+TUTOR_DECISION_REASONS = {"pagamento_apos_corte", "exclusivo_nao_aceitou"}
+
+
+def _walk_payment_cutoff_minutes() -> int:
+    import os
+    try:
+        return int(os.getenv("WALK_PAYMENT_CUTOFF_MINUTES", "45"))
+    except (TypeError, ValueError):
+        return 45
+
+
+def _walk_start_naive(scheduled_date: str | None) -> datetime | None:
+    if not scheduled_date:
+        return None
+    raw = str(scheduled_date).strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        date_part = raw.partition("T")[0]
+        try:
+            return datetime.fromisoformat(date_part).replace(tzinfo=None)
+        except ValueError:
+            return None
+
+
 PENDING_ATTEMPT = "pending"
 ACCEPTED_ATTEMPT = "accepted"
 DECLINED_ATTEMPT = "declined"
@@ -445,6 +476,28 @@ def serialize_operational_walk(
         "matching_started_at": walk.matching_started_at,
         "matching_finished_at": walk.matching_finished_at,
         "no_walker_reason": walk.no_walker_reason,
+        # ── Contrato do app (item G) ──────────────────────────────────────────
+        # tutor_decision_required: walk em awaiting_tutor_reconfirmation por um dos
+        #   motivos NOVOS (pagamento pós-corte / exclusivo não aceitou) → app abre menu.
+        # decision_reason: token-máquina do motivo ("pagamento_apos_corte" |
+        #   "exclusivo_nao_aceitou") ou None.
+        # is_exclusive_walker: True se o passeio é de passeador exclusivo (only_selected).
+        # payment_cutoff_at: ISO do (início − 45min) enquanto awaiting_payment — o app
+        #   mostra um countdown honesto do prazo real de pagamento.
+        "tutor_decision_required": (
+            walk.operational_status == AWAITING_TUTOR_RECONFIRMATION
+            and (walk.no_walker_reason in TUTOR_DECISION_REASONS)
+        ),
+        "decision_reason": (
+            walk.no_walker_reason if walk.no_walker_reason in TUTOR_DECISION_REASONS else None
+        ),
+        "is_exclusive_walker": (walk.walker_selection_mode or "auto") == "only_selected",
+        "payment_cutoff_at": (
+            (_start - timedelta(minutes=_walk_payment_cutoff_minutes())).isoformat()
+            if walk.operational_status == "awaiting_payment"
+            and (_start := _walk_start_naive(walk.scheduled_date)) is not None
+            else None
+        ),
         "matching_attempts": [serialize_attempt(item) for item in attempts],
         "operational_logs": [serialize_log(item) for item in logs],
         "operational_events": [serialize_operational_event(item) for item in operational_events],
@@ -627,9 +680,17 @@ def _create_attempt(db: Session, walk: Walk, candidate: dict, attempt_number: in
 
 
 def _selected_walker_unavailable(walk: Walk, db: Session, reason: str) -> Walk:
+    """Passeador EXCLUSIVO (only_selected) recusou ou não aceitou a tempo.
+
+    Item F: em vez de terminar em no_walker_found/rematch impossível, o walk vai
+    para 'awaiting_tutor_reconfirmation' com motivo-máquina 'exclusivo_nao_aceitou'
+    (consumido pela serialização — item G — para `decision_reason`). O menu de
+    decisão do tutor (reagendar / trocar passeador / estorno) é servido via
+    POST /walks/{id}/tutor-decision. `reason` (humano) vai só para a notificação.
+    """
     walk.operational_status = AWAITING_TUTOR_RECONFIRMATION
     walk.status = "Aguardando confirmação do tutor"
-    walk.no_walker_reason = reason
+    walk.no_walker_reason = "exclusivo_nao_aceitou"
     walk.confirmation_expires_at = None
     walk.matching_finished_at = utcnow()
     log_event(
@@ -638,6 +699,7 @@ def _selected_walker_unavailable(walk: Walk, db: Session, reason: str) -> Walk:
         "selected_walker_unavailable",
         metadata={
             "reason": reason,
+            "decision_reason": "exclusivo_nao_aceitou",
             "walker_selection_mode": walk.walker_selection_mode or "auto",
             "walker_id": walk.assigned_walker_id or walk.walker_id,
         },
@@ -652,6 +714,7 @@ def _selected_walker_unavailable(walk: Walk, db: Session, reason: str) -> Walk:
         action=AWAITING_TUTOR_RECONFIRMATION,
         metadata={
             "reason": reason,
+            "decision_reason": "exclusivo_nao_aceitou",
             "walker_selection_mode": walk.walker_selection_mode or "auto",
             "walker_id": walk.assigned_walker_id or walk.walker_id,
         },

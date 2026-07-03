@@ -956,10 +956,37 @@ def _sql_real_tutor_filters(scope):
 
 
 def _sql_count_real_tutors(db: Session, scope) -> int:
-    """Conta tutores reais em SQL substituindo User.all() + _is_real_tutor."""
-    q = apply_tenant_filter(db.query(func.count(User.id)), User, scope)
-    q = q.filter(*_sql_real_tutor_filters(scope))
-    return q.scalar() or 0
+    """Conta tutores reais em SQL — Modelo B (white-label multi-tenant).
+
+    Semântica: tutor do tenant = nascido no tenant (User.tenant_id) OU com
+    vínculo ativo (TenantTutorAccess.status='active'). DISTINCT para não
+    duplicar tutores que tenham os dois.  Escopo global preserva comportamento
+    anterior (sem filtro de tenant).
+    """
+    real_filters = _sql_real_tutor_filters(scope)
+
+    if scope.is_global:
+        # Escopo global: sem filtro de tenant — mesmo comportamento anterior.
+        q = db.query(func.count(User.id)).filter(*real_filters)
+        return q.scalar() or 0
+
+    # Escopo de tenant: união de nascidos + vinculados (DISTINCT por user_id).
+    # Usamos subquery para COUNT(DISTINCT id) sobre a união das duas fontes.
+    born_in_tenant = (
+        db.query(User.id)
+        .filter(User.tenant_id == scope.tenant_id, *real_filters)
+    )
+    linked_to_tenant = (
+        db.query(User.id)
+        .join(TenantTutorAccess, TenantTutorAccess.tutor_user_id == User.id)
+        .filter(
+            TenantTutorAccess.tenant_id == scope.tenant_id,
+            TenantTutorAccess.status == "active",
+            *real_filters,
+        )
+    )
+    union_ids = born_in_tenant.union(linked_to_tenant).subquery()
+    return db.query(func.count()).select_from(union_ids).scalar() or 0
 
 
 def _sql_count_real_pets(db: Session, scope) -> int:
@@ -1255,11 +1282,40 @@ def tutors(
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
-    users = [
-        user
-        for user in apply_tenant_filter(db.query(User), User, get_admin_tenant_scope(admin, db)).order_by(User.created_at.desc()).all()
-        if _is_real_tutor(user)
-    ]
+    scope = get_admin_tenant_scope(admin, db)
+
+    if scope.is_global:
+        # Escopo global: todos os tutores (comportamento anterior).
+        all_users = (
+            db.query(User)
+            .order_by(User.created_at.desc())
+            .all()
+        )
+    else:
+        # Escopo de tenant — Modelo B: nascidos no tenant + vinculados via
+        # TenantTutorAccess ativo. DISTINCT para não duplicar.
+        born_q = (
+            db.query(User)
+            .filter(User.tenant_id == scope.tenant_id)
+        )
+        linked_q = (
+            db.query(User)
+            .join(TenantTutorAccess, TenantTutorAccess.tutor_user_id == User.id)
+            .filter(
+                TenantTutorAccess.tenant_id == scope.tenant_id,
+                TenantTutorAccess.status == "active",
+            )
+        )
+        # Merge e dedup em Python (resultado costuma ser pequeno; < 1k tutores/tenant).
+        seen: set[str] = set()
+        all_users = []
+        for user in born_q.all() + linked_q.all():
+            if user.id not in seen:
+                seen.add(user.id)
+                all_users.append(user)
+        all_users.sort(key=lambda u: u.created_at or datetime.min, reverse=True)
+
+    users = [u for u in all_users if _is_real_tutor(u)]
     paginated = users[offset: offset + limit]
     return [_serialize_admin_tutor(user, db) for user in paginated]
 

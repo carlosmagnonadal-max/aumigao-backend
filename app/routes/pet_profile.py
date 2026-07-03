@@ -21,6 +21,7 @@ from app.models.pet_timeline_event import (
 )
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.models.walk import Walk
 from app.models.walk_observation import MOOD_VALUES, ENERGY_VALUES, SOCIALIZATION_VALUES, WalkObservation
 from app.services import pet_profile_service as svc
 

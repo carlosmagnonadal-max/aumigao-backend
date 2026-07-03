@@ -455,6 +455,7 @@
   "POST /api/admin/recurring-plans",
   "POST /api/admin/support-tickets",
   "POST /api/admin/tenants",
+  "POST /api/admin/tenants/current/branding/upload-image",
   "POST /api/admin/tenants/{tenant_id}/saas-subscription",
   "POST /api/admin/tenants/{tenant_id}/units",
   "POST /api/admin/walk-completions/{review_id}/approve",

@@ -12,7 +12,13 @@ Cobre:
   para default quando id desconhecido).
 - PATCH admin /api/admin/tenants/current/branding: happy path (persiste, incrementa
   version), 401 (sem auth), 403 (sem permissao RBAC).
+- POST /api/admin/tenants/current/branding/upload-image: happy path (mock storage),
+  kind invalido 422, sem RBAC 403.
+- Enforcement powered_by: free com powered_by_enabled=False -> 422; pro -> aceito.
 """
+import io
+from unittest.mock import patch as mock_patch
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -206,3 +212,171 @@ def test_patch_branding_then_get_reflects_update():
     body = client.get("/tenants/current/branding-runtime").json()
     assert body["display_name"] == "Publicada"
     assert body["primary_color"] == "#aa0011"
+
+
+# ─────────────────────────────────────────────────────────── Upload de imagem ──
+
+
+# Imagem PNG minima valida (magic bytes reais: 8 bytes de assinatura PNG).
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+
+
+def _png_file(name: str = "logo.png") -> tuple[str, tuple]:
+    """Prepara o tuple multipart para o TestClient."""
+    return ("file", (name, io.BytesIO(_PNG_MAGIC), "image/png"))
+
+
+def test_upload_branding_image_happy_logo(tmp_path):
+    """Upload happy path: kind=logo, PNG valido -> 201 + url retornada."""
+    client, db = build()
+    as_admin(client, db)
+
+    # Mocka storage.save (evita IO real) e _branding_image_url (desacopla da
+    # resolucao de caminho relativo ao UPLOADS_BASE, que nao se aplica ao tmp_path).
+    with mock_patch("app.services.object_storage.save") as mock_save, \
+         mock_patch("app.routes.tenant_branding._branding_image_url",
+                    return_value="https://cdn/tenant_branding_logo-abc.png") as mock_url:
+        r = client.post(
+            "/api/admin/tenants/current/branding/upload-image?kind=logo",
+            files=[_png_file()],
+        )
+
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert "url" in body
+    assert "logo" in body["url"]
+    mock_save.assert_called_once()
+    mock_url.assert_called_once()
+
+
+def test_upload_branding_image_happy_icon():
+    """Upload happy path: kind=icon."""
+    client, db = build()
+    as_admin(client, db)
+
+    with mock_patch("app.services.object_storage.save"), \
+         mock_patch("app.routes.tenant_branding._branding_image_url",
+                    return_value="https://cdn/tenant_branding_icon-abc.png"):
+        r = client.post(
+            "/api/admin/tenants/current/branding/upload-image?kind=icon",
+            files=[_png_file("icon.png")],
+        )
+
+    assert r.status_code == 201, r.text
+    assert "icon" in r.json()["url"]
+
+
+def test_upload_branding_image_happy_splash():
+    """Upload happy path: kind=splash."""
+    client, db = build()
+    as_admin(client, db)
+
+    with mock_patch("app.services.object_storage.save"), \
+         mock_patch("app.routes.tenant_branding._branding_image_url",
+                    return_value="https://cdn/tenant_branding_splash-abc.png"):
+        r = client.post(
+            "/api/admin/tenants/current/branding/upload-image?kind=splash",
+            files=[_png_file("splash.png")],
+        )
+
+    assert r.status_code == 201, r.text
+    assert "splash" in r.json()["url"]
+
+
+def test_upload_branding_image_invalid_kind():
+    """kind invalido retorna 422."""
+    client, db = build()
+    as_admin(client, db)
+
+    r = client.post(
+        "/api/admin/tenants/current/branding/upload-image?kind=favicon",
+        files=[_png_file()],
+    )
+    assert r.status_code == 422, r.text
+    assert "kind" in r.json()["detail"].lower() or "favicon" in r.json()["detail"].lower()
+
+
+def test_upload_branding_image_no_rbac_403():
+    """Usuario sem permissao branding.update -> 403."""
+    client, db = build(admin_role="cliente")
+    as_admin(client, db)
+
+    r = client.post(
+        "/api/admin/tenants/current/branding/upload-image?kind=logo",
+        files=[_png_file()],
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_upload_branding_image_no_auth_401():
+    """Sem autenticacao -> 401."""
+    client, _ = build()
+    r = client.post(
+        "/api/admin/tenants/current/branding/upload-image?kind=logo",
+        files=[_png_file()],
+    )
+    assert r.status_code == 401, r.text
+
+
+# ──────────────────────────────────────────────── Enforcement powered_by_required ──
+
+
+def test_patch_branding_free_powered_by_false_returns_422():
+    """Plano free nao pode desligar o powered_by (plano exige o selo)."""
+    client, db = build(admin_role="super_admin")
+    # Muda o tenant para plano free.
+    tenant = db.query(Tenant).first()
+    tenant.plan = "free"
+    db.commit()
+
+    as_admin(client, db)
+    r = client.patch("/api/admin/tenants/current/branding", json={
+        "display_name": "Teste",
+        "powered_by_enabled": False,
+    })
+    assert r.status_code == 422, r.text
+    assert "powered by" in r.json()["detail"].lower() or "plano" in r.json()["detail"].lower()
+
+
+def test_patch_branding_starter_powered_by_false_returns_422():
+    """Plano starter tambem exige o selo (powered_by_required=True em v1)."""
+    client, db = build(admin_role="super_admin")
+    tenant = db.query(Tenant).first()
+    tenant.plan = "starter"
+    db.commit()
+
+    as_admin(client, db)
+    r = client.patch("/api/admin/tenants/current/branding", json={
+        "display_name": "Teste",
+        "powered_by_enabled": False,
+    })
+    assert r.status_code == 422, r.text
+
+
+def test_patch_branding_business_powered_by_false_allowed():
+    """Plano business/pro nao exige o selo — pode desligar."""
+    client, db = build(admin_role="super_admin")
+    # build() ja cria com plan="business"
+    as_admin(client, db)
+    r = client.patch("/api/admin/tenants/current/branding", json={
+        "display_name": "Pro Marca",
+        "powered_by_enabled": False,
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["powered_by_enabled"] is False
+
+
+def test_patch_branding_free_powered_by_true_allowed():
+    """Plano free pode ligar o powered_by (apenas desligar e bloqueado)."""
+    client, db = build(admin_role="super_admin")
+    tenant = db.query(Tenant).first()
+    tenant.plan = "free"
+    db.commit()
+
+    as_admin(client, db)
+    r = client.patch("/api/admin/tenants/current/branding", json={
+        "display_name": "Free Marca",
+        "powered_by_enabled": True,
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["powered_by_enabled"] is True

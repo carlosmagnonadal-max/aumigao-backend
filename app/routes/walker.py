@@ -650,6 +650,14 @@ _PENDING_PAYMENT_STATUSES: frozenset[str] = frozenset({
     "aguardando_pagamento",
     "pending",
 })
+# R7: cobranças do tutor que ainda NÃO liquidaram e, portanto, NÃO são saldo do
+# walker (nem pending). Ver _balance_by_tenant: expor isto como "pending" do walker
+# dá saldo enganoso (expectativa de cobrança alheia). O pending real do walker vem
+# de earnings de rede com liberação futura (network_earnings_by_tenant "areceber").
+_UNSETTLED_CHARGE_STATUSES: frozenset[str] = frozenset({
+    "pagamento_sandbox_criado",
+    "aguardando_pagamento",
+})
 # Status "em processamento" (análise de risco, risco de chargeback etc.):
 _PROCESSING_PAYMENT_STATUSES: frozenset[str] = frozenset({
     "em_processamento",
@@ -716,6 +724,10 @@ def _balance_by_tenant(user: User, db: Session) -> dict[str | None, dict]:
         val = float(p.walker_amount or 0)
         if p.status in _PAID_PAYMENT_STATUSES_CONST:
             b["available"] += val
+        elif p.status in _UNSETTLED_CHARGE_STATUSES:
+            # R7: cobrança do tutor ainda NÃO liquidada (sandbox/aguardando) → NÃO é
+            # saldo do walker. Não entra em nenhum bucket (evita "pending" enganoso).
+            continue
         elif p.status in _PENDING_PAYMENT_STATUSES:
             b["pending"] += val
         elif p.status in _PROCESSING_PAYMENT_STATUSES:
@@ -798,6 +810,11 @@ def _available_balance(user: User, db: Session) -> float:
 
     # Fallback per-walk: walks concluídos SEM Payment pago com split → preço cheio.
     # Captura passeios legados (pré-split) mesmo quando existem passeios de REDE.
+    # TODO(R7): com o gate REQUIRE_PAYMENT_BEFORE_MATCHING ligado, walks NOVOS só chegam
+    # a "concluído" após pagamento liquidado, então o fallback walk.price é inalcançável
+    # para eles (bom). Porém para passeios legados ele ainda pode creditar preço cheio sem
+    # Payment confirmado. Revisitar: exigir Payment confirmado também no fallback quando
+    # não houver mais volume legado relevante (não mexer agora — evitar zerar saldos legados).
     legacy_walks = [
         walk for walk in _completed_walks(user, db)
         if walk.id not in walk_ids_with_split
@@ -1173,6 +1190,9 @@ def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_
             Walk.walker_id.is_(None),
             Walk.status == "Agendado",
             Walk.tenant_id.in_(_allowed_tenant_ids),
+            # R7: defesa explícita — nunca ofertar passeio aguardando pagamento ao walker
+            # (o filtro status=="Agendado" já cobre; isto evita regressão futura).
+            Walk.operational_status != "awaiting_payment",
         )
         .all()
     )

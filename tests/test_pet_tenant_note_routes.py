@@ -29,7 +29,7 @@ from app.routes import pet_behavior_routes  # noqa: F401 — anexa rotas Fase E
 from app.routes import pet_profile as routes
 
 
-def _ctx(active=True, plan="pro", role="super_admin"):
+def _ctx(active=True, plan="enterprise", role="super_admin"):
     eng = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(eng)
     db = sessionmaker(bind=eng)()
@@ -49,6 +49,9 @@ def _client(db, user, env, monkeypatch):
         monkeypatch.setenv("PET_LIVE_PROFILE_ENABLED", "true")
     else:
         monkeypatch.delenv("PET_LIVE_PROFILE_ENABLED", raising=False)
+    # A criação de tenant_note virou ENTERPRISE-only (avaliação estruturada multi-equipe,
+    # diferencial Enterprise junto da Vitrine). PRICING_V2 ligado p/ resolução canônica.
+    monkeypatch.setenv("PRICING_V2_ENABLED", "true")
     app = FastAPI()
     app.include_router(routes.api_admin_router)
     app.dependency_overrides[get_db] = lambda: db
@@ -190,7 +193,7 @@ def test_tenant_note_pet_other_tenant_404(monkeypatch):
     assert r.status_code == 404
 
 
-def test_tenant_note_free_plan_403(monkeypatch):
+def test_tenant_note_free_plan_403_enterprise(monkeypatch):
     db = _ctx(active=True, plan="free")
     c = _client(db, db.get(User, "admin1"), True, monkeypatch)
     r = c.post("/api/admin/pet-profile/pets/p1/timeline", json={
@@ -198,6 +201,28 @@ def test_tenant_note_free_plan_403(monkeypatch):
     })
     assert r.status_code == 403
     assert r.json()["detail"]["code"] == "plan_upgrade_required"
+    assert r.json()["detail"]["required_plan"] == "enterprise"
+
+
+def test_tenant_note_pro_plan_403_enterprise(monkeypatch):
+    """Pro com toggle ligado agora recebe 403 de upgrade Enterprise (gate novo)."""
+    db = _ctx(active=True, plan="pro")
+    c = _client(db, db.get(User, "admin1"), True, monkeypatch)
+    r = c.post("/api/admin/pet-profile/pets/p1/timeline", json={
+        "context": "creche", "category": "evolucao", "text": "x",
+    })
+    assert r.status_code == 403
+    assert r.json()["detail"]["required_plan"] == "enterprise"
+
+
+def test_tenant_note_enterprise_plan_201(monkeypatch):
+    """Enterprise + feature ativa → cria normalmente (não-regressão do gate novo)."""
+    db = _ctx(active=True, plan="enterprise")
+    c = _client(db, db.get(User, "admin1"), True, monkeypatch)
+    r = c.post("/api/admin/pet-profile/pets/p1/timeline", json={
+        "context": "creche", "category": "evolucao", "text": "ok",
+    })
+    assert r.status_code == 201, r.text
 
 
 def test_tenant_note_gate_off_404(monkeypatch):

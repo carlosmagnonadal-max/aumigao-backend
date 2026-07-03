@@ -35,7 +35,7 @@ from app.routes.pet_profile import (
     router,
 )
 from app.services import pet_profile_service as svc
-from app.services.tenant_free_plan_service import enforce_pet_evolution_allowed
+from app.services.tenant_free_plan_service import enforce_enterprise_only
 
 
 # ---------------------------------------------------------------------------
@@ -90,12 +90,18 @@ def _admin_scoped_pet(db: Session, pet_id: str, admin: User) -> Pet:
 def add_tenant_note(pet_id: str, payload: TenantNoteCreate,
                     admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
     pet = _admin_scoped_pet(db, pet_id, admin)
-    # Gate 3-camadas + plano (Pro+) resolvidos pelo TENANT DO PET (não do admin):
-    # feature dormente → 404; ativa mas free → 403 teaser.
+    # Gate 3-camadas + plano ENTERPRISE-only (avaliação estruturada multi-equipe é
+    # diferencial Enterprise, junto da Vitrine) resolvidos pelo TENANT DO PET (não do
+    # admin): feature dormente → 404; ativa mas não-Enterprise → 403 teaser Enterprise.
+    # NOTA: só a CRIAÇÃO de avaliação vira Enterprise; a LEITURA das tenant_notes na
+    # timeline e o GET /companions (amiguinhos) continuam Pro+ (inalterados).
     tenant = db.get(Tenant, pet.tenant_id) if pet.tenant_id else None
     if not tenant or not svc.pet_profile_active(tenant, db):
         raise HTTPException(status_code=404, detail="Not found")
-    enforce_pet_evolution_allowed(tenant, feature="pet_tenant_note", label="Observação da equipe")
+    enforce_enterprise_only(
+        tenant, db, feature="pet_tenant_note",
+        label="Avaliação estruturada da equipe é um recurso do plano Enterprise.",
+    )
 
     # Payload montado NO SERVIDOR (padrão diary) — payload cru do cliente ignorado.
     title, payload_json = svc.build_tenant_note(

@@ -222,3 +222,14 @@ def test_gate_off_404(monkeypatch):
     c = _client(db, "u1", False, monkeypatch)
     r = c.get("/api/pets/p1/companions")
     assert r.status_code == 404
+
+
+def test_companions_stays_pro_plus_not_enterprise_only(monkeypatch):
+    """NÃO-REGRESSÃO: companions permanece Pro+ mesmo depois de tenant_note virar
+    Enterprise-only. Um tenant PRO com a feature ativa deve receber 200 (não 403)."""
+    db = _ctx(plan="pro")
+    _shared_walk(db, "sw1", "t1", SHARED_CONFIRMED, [
+        ("u1", "p1", PARTICIPANT_PAID), ("u2", "p2", PARTICIPANT_PAID),
+    ])
+    c = _client(db, "u1", True, monkeypatch)
+    assert c.get("/api/pets/p1/companions").status_code == 200

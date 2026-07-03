@@ -384,6 +384,67 @@ def _task_pet_reminder_alerts(db: Session) -> int:
     return task_pet_reminder_alerts(db)
 
 
+def _task_expire_unpaid_walks(db: Session) -> int:
+    """R7: cancela passeios que ficaram 'awaiting_payment' além do prazo do PIX.
+
+    Passeio nasce aguardando pagamento (gate REQUIRE_PAYMENT_BEFORE_MATCHING).
+    Se o pagamento não liquida em WALK_PAYMENT_TIMEOUT_HOURS (default 24 — janela do
+    PIX D+1), o walk é cancelado e o tutor é notificado. Idempotente: só toca walks
+    ainda em 'awaiting_payment'; lote limitado a 50 por ciclo.
+    """
+    from app.services.operational_matching_service import notify_tutor_walk_event
+
+    timeout_hours = _int_env("WALK_PAYMENT_TIMEOUT_HOURS", 24)
+    cutoff = _utcnow() - timedelta(hours=timeout_hours)
+    walks = (
+        db.query(Walk)
+        .filter(
+            Walk.operational_status == "awaiting_payment",
+            Walk.created_at < cutoff,
+        )
+        .order_by(Walk.created_at.asc())
+        .limit(50)
+        .all()
+    )
+    cancelled: list[tuple[str, str | None]] = []
+    for walk in walks:
+        walk.operational_status = "ride_cancelled"
+        walk.status = "Cancelado"
+        walk.no_walker_reason = "Pagamento não confirmado no prazo."
+        db.add(walk)
+        try:
+            notify_tutor_walk_event(
+                db,
+                walk,
+                title="Passeio cancelado",
+                message="Seu passeio foi cancelado porque o pagamento não foi confirmado no prazo.",
+                notification_type="walk_status",
+                priority="high",
+                action="ride_cancelled",
+                metadata={"reason": "payment_timeout"},
+            )
+        except Exception:
+            # Notificação é best-effort: nunca impede o cancelamento (estado > push).
+            pass
+        cancelled.append((walk.id, walk.tenant_id))
+
+    # Persiste o cancelamento (dinheiro/estado) ANTES da observabilidade. record_operational_log
+    # chama inspect() que, sob SQLite+StaticPool, provoca rollback implícito da conexão — o
+    # commit aqui garante que o cancelamento NUNCA seja descartado por um log best-effort.
+    if cancelled:
+        db.commit()
+    for walk_id, tenant_id in cancelled:
+        record_operational_log(
+            db,
+            event_type="unpaid_walk_expired",
+            severity="info",
+            source="scheduler.payment_expiry",
+            message="Passeio cancelado por pagamento não confirmado no prazo.",
+            context={"walk_id": walk_id, "tenant_id": tenant_id, "timeout_hours": timeout_hours},
+        )
+    return len(cancelled)
+
+
 def _run_operational_scheduler_cycle_locked(session_factory) -> dict:
     SCHEDULER_STATE["scheduler_running"] = True
     SCHEDULER_STATE["last_scheduler_cycle_at"] = _utcnow().isoformat()
@@ -399,6 +460,8 @@ def _run_operational_scheduler_cycle_locked(session_factory) -> dict:
         # Fase 3 Perfil Vivo: lembretes determinísticos (vacina/aniversário/inatividade).
         # Gated por PET_ALERTS_ENABLED (default off). Guard diário de 23h interno.
         "pet_reminder_alerts": _task_pet_reminder_alerts,
+        # R7: cancela passeios não pagos após WALK_PAYMENT_TIMEOUT_HOURS (default 24h).
+        "expire_unpaid_walks": _task_expire_unpaid_walks,
     }
     results = {name: _run_task(session_factory, name, task) for name, task in tasks.items()}
     SCHEDULER_STATE["tasks_executed"] = results

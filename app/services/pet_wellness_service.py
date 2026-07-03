@@ -5,10 +5,11 @@ três componentes com DADO REAL da operação:
 
   - Clínico (peso 40): carteira de saúde (Fase A) — status das vacinas/vermífugo/
     antipulgas via pet_health_service.record_status; vacina pesa mais.
-  - Rotina (peso 35): frequência de passeios CONCLUÍDOS nos últimos 30 dias
-    (dado transacional — Walk.status in WALK_COMPLETED_STATUSES). Como não há
-    coluna de conclusão no Walk, usa-se o proxy created_at, mesmo critério do
-    stats da Fase 5 (documentado no backlog da Fase 3).
+  - Rotina (peso 35): frequência de passeios nos últimos 30 dias — passeios PAGOS
+    concluídos (dado transacional — Walk.status in WALK_COMPLETED_STATUSES; proxy
+    created_at, mesmo critério do stats da Fase 5) MAIS os self-walks do tutor
+    (Fase D — engajamento). O detail discrimina a mistura (X com passeador, Y do
+    tutor). Self-walks NÃO contam nas conquistas da Fase C (transacionais).
   - Comportamento (peso 25): observações do passeador (WalkObservation) dos
     últimos 90 dias — base 100 com penalidades proporcionais à frequência de
     incidente/reatividade/ansiedade. Sem observações = neutro (70).
@@ -176,14 +177,18 @@ def _routine_score_for_count(count: int) -> int:
 
 
 def compute_routine(db: Session, pet_id: str, *, as_of: datetime | None = None) -> dict:
-    """Componente rotina (0-100): passeios concluídos na janela de 30d até `as_of`.
+    """Componente rotina (0-100): passeios na janela de 30d até `as_of`.
 
-    Proxy created_at (mesmo critério do stats da Fase 5 — não há coluna de
-    conclusão no Walk). Conta apenas status em WALK_COMPLETED_STATUSES.
+    Soma os passeios PAGOS concluídos (dado transacional — proxy created_at, mesmo
+    critério do stats da Fase 5) COM os self-walks do tutor (Fase D — engajamento),
+    na MESMA janela. O `detail` discrimina a mistura quando há self-walks.
+
+    Self-walks contam aqui (rotina/frequência), mas NÃO nas conquistas da Fase C
+    (que são transacionais). Ver pet_achievement_service.
     """
     reference = as_of or datetime.utcnow()
     start = reference - timedelta(days=ROUTINE_WINDOW_DAYS)
-    count = (
+    paid = (
         db.query(Walk)
         .filter(
             Walk.pet_id == pet_id,
@@ -193,14 +198,24 @@ def compute_routine(db: Session, pet_id: str, *, as_of: datetime | None = None) 
         )
         .count()
     )
+    # Import tardio evita ciclo (self_walk_service não depende do wellness).
+    from app.services.pet_self_walk_service import count_in_window
+
+    self_count = count_in_window(db, pet_id, start=start, end=reference)
+    count = paid + self_count
     score = _routine_score_for_count(count)
-    plural = "passeio concluído" if count == 1 else "passeios concluídos"
+
+    plural = "passeio" if count == 1 else "passeios"
+    detail = f"{count} {plural} nos últimos {ROUTINE_WINDOW_DAYS} dias"
+    if self_count:
+        # Discrimina a mistura (ex.: "8 passeios no mês (5 com passeador, 3 do tutor)").
+        detail += f" ({paid} com passeador, {self_count} do tutor)"
     return {
         "key": "rotina",
         "label": "Rotina",
         "score": score,
         "weight": WEIGHT_ROUTINE,
-        "detail": f"{count} {plural} nos últimos {ROUTINE_WINDOW_DAYS} dias",
+        "detail": detail,
     }
 
 

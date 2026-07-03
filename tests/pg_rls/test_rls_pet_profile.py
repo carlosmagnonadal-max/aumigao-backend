@@ -13,6 +13,8 @@ Cobertura:
   - T14  walk_observations isoladas por tenant
   - T15  pet_reminders isolados por tenant
   - T16  pet_share_links isolados por tenant (tenant_id NULL = global)
+  - T20  pet_health_records isolados por tenant + WITH CHECK (0086)
+  - T21  pet_self_walks isolados por tenant + WITH CHECK (0087)
 """
 import psycopg2
 import pytest
@@ -22,6 +24,7 @@ from tests.pg_rls.conftest import (
     make_uid,
     setup_health_record,
     setup_pet,
+    setup_self_walk,
     setup_tenants,
     setup_user,
 )
@@ -394,6 +397,64 @@ class TestPetLiveProfileTables:
             cur2 = owner_tx.cursor()
             cur2.execute(
                 "DELETE FROM pet_health_records WHERE id IN (%s, %s)", (ra, rb)
+            )
+            cur2.execute("DELETE FROM pets WHERE tenant_id IN (%s, %s)", (ta, tb))
+            cur2.execute("DELETE FROM users WHERE tenant_id IN (%s, %s)", (ta, tb))
+            cur2.execute("DELETE FROM tenants WHERE id IN (%s, %s)", (ta, tb))
+            owner_tx.commit()
+
+    def test_T21_pet_self_walks_isolated(self, owner_tx):
+        """pet_self_walks (0087): tenant A não enxerga self-walks do tenant B +
+        WITH CHECK rejeita INSERT com tenant errado."""
+        cur = owner_tx.cursor()
+        ta, tb = setup_tenants(cur)
+        ua = setup_user(cur, ta)
+        ub = setup_user(cur, tb)
+        pa = setup_pet(cur, ta, ua)
+        pb = setup_pet(cur, tb, ub)
+
+        sa = setup_self_walk(cur, ta, pa, ua)
+        sb = setup_self_walk(cur, tb, pb, ub)
+        owner_tx.commit()
+
+        try:
+            with app_session(ta) as app_cur:
+                app_cur.execute(
+                    "SELECT id FROM pet_self_walks WHERE id = %s", (sb,)
+                )
+                assert app_cur.fetchone() is None, (
+                    "Tenant A enxerga self-walk do tenant B"
+                )
+            with app_session(ta) as app_cur:
+                app_cur.execute(
+                    "SELECT id FROM pet_self_walks WHERE id = %s", (sa,)
+                )
+                assert app_cur.fetchone() is not None, (
+                    "Tenant A não enxerga seu próprio self-walk"
+                )
+            # WITH CHECK: INSERT com tenant errado é rejeitado.
+            intruder = make_uid()
+            with app_session(ta) as app_cur:
+                with pytest.raises((psycopg2.errors.CheckViolation,
+                                    psycopg2.errors.InsufficientPrivilege)):
+                    app_cur.execute(
+                        """
+                        INSERT INTO pet_self_walks
+                            (id, pet_id, tutor_id, tenant_id, started_at,
+                             duration_seconds, walk_type, intensity, had_gps,
+                             need_pee, need_poop, need_water,
+                             interacted_dogs, interacted_people, pulled_leash,
+                             showed_fear, showed_reactivity, notes, created_at)
+                        VALUES (%s, %s, %s, %s, NOW(), 1800, 'rua', 'leve', false,
+                                false, false, false, false, false, false,
+                                false, false, '', NOW())
+                        """,
+                        (intruder, pa, ua, tb),  # sessão=ta mas tenant_id=tb
+                    )
+        finally:
+            cur2 = owner_tx.cursor()
+            cur2.execute(
+                "DELETE FROM pet_self_walks WHERE id IN (%s, %s)", (sa, sb)
             )
             cur2.execute("DELETE FROM pets WHERE tenant_id IN (%s, %s)", (ta, tb))
             cur2.execute("DELETE FROM users WHERE tenant_id IN (%s, %s)", (ta, tb))

@@ -103,7 +103,7 @@ def _apply_rls_policies(sa_engine) -> None:
     Aplica TODAS as policies RLS do projeto usando SQL idempotente.
 
     Chamado após create_all + stamp head, repõe o que as migrations de
-    RLS (0043-0046, 0049, 0051, 0073-0077, 0080, 0081, 0086) fazem. Todo
+    RLS (0043-0046, 0049, 0051, 0073-0077, 0080, 0081, 0086, 0087) fazem. Todo
     statement usa DROP POLICY IF EXISTS + CREATE POLICY / ALTER POLICY,
     portanto é seguro re-executar em banco já configurado.
 
@@ -466,6 +466,28 @@ def setup_health_record(cur, tenant_id: str, pet_id: str) -> str:
     return rid
 
 
+def setup_self_walk(cur, tenant_id: str, pet_id: str, tutor_id: str) -> str:
+    """Insere um passeio self-serve do tutor (0087) e retorna o self_walk_id."""
+    sid = make_uid()
+    cur.execute(
+        """
+        INSERT INTO pet_self_walks
+            (id, pet_id, tutor_id, tenant_id, started_at, duration_seconds,
+             distance_km, walk_type, intensity, had_gps,
+             need_pee, need_poop, need_water,
+             interacted_dogs, interacted_people, pulled_leash,
+             showed_fear, showed_reactivity, notes, created_at)
+        VALUES (%s, %s, %s, %s, NOW(), 1800,
+                1.40, 'rua', 'moderado', true,
+                true, false, true,
+                false, true, false,
+                false, false, '', NOW())
+        """,
+        (sid, pet_id, tutor_id, tenant_id),
+    )
+    return sid
+
+
 __all__ = [
     "app_session",
     "APP_ROLE",
@@ -475,4 +497,5 @@ __all__ = [
     "setup_user",
     "setup_pet",
     "setup_health_record",
+    "setup_self_walk",
 ]

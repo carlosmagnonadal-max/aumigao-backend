@@ -103,7 +103,7 @@ def _apply_rls_policies(sa_engine) -> None:
     Aplica TODAS as policies RLS do projeto usando SQL idempotente.
 
     Chamado após create_all + stamp head, repõe o que as migrations de
-    RLS (0043-0046, 0049, 0051, 0073-0077, 0080, 0081, 0086, 0087, 0091, 0092) fazem. Todo
+    RLS (0043-0046, 0049, 0051, 0073-0077, 0080, 0081, 0086, 0087, 0091, 0092, 0093) fazem. Todo
     statement usa DROP POLICY IF EXISTS + CREATE POLICY / ALTER POLICY,
     portanto é seguro re-executar em banco já configurado.
 
@@ -232,6 +232,79 @@ def _apply_rls_policies(sa_engine) -> None:
                 f"ALTER POLICY tenant_isolation ON users "
                 f"USING {_USERS_PREDICATE} "
                 f"WITH CHECK {_USERS_PREDICATE}"
+            ))
+
+        # -------------------------------------------------------------------------
+        # pets + satélites de saúde + timeline: o PET SEGUE O TUTOR (migration 0093).
+        #
+        # pets: base (escopo/NULL/tenant) + ramo DONO (tutor_id == current_user_id)
+        # + ramo VÍNCULO ATIVO (EXISTS tenant_tutor_access). Satélites de saúde
+        # (pet_health_records/pet_reminders/pet_share_links/pet_self_walks): idem via
+        # JOIN com pets por pet_id. pet_timeline_events: idem, mas os ramos novos
+        # excluem os eventos operacionais do tenant (walk_observation/tenant_note),
+        # que NÃO seguem. Espelha EXATAMENTE a policy da migration 0093.
+        # walk_observations e pet_profile_configs NÃO mudam (seguem o padrão default).
+        # -------------------------------------------------------------------------
+        _BASE_0093 = (
+            "current_setting('app.current_tenant', true) = '*' "
+            "OR tenant_id IS NULL "
+            "OR tenant_id::text = current_setting('app.current_tenant', true)"
+        )
+        if "pets" in all_tables:
+            _PETS_PREDICATE = f"""(
+  {_BASE_0093}
+  OR (
+    current_setting('app.current_user_id', true) NOT IN ('-', '')
+    AND tutor_id::text = current_setting('app.current_user_id', true)
+  )
+  OR EXISTS (
+    SELECT 1 FROM tenant_tutor_access a
+    WHERE a.tutor_user_id = pets.tutor_id
+      AND a.tenant_id = current_setting('app.current_tenant', true)
+      AND a.status = 'active'
+  )
+)"""
+            conn.execute(sa.text(
+                f"ALTER POLICY tenant_isolation ON pets "
+                f"USING {_PETS_PREDICATE} WITH CHECK {_PETS_PREDICATE}"
+            ))
+
+        _OPERATIONAL = "('walk_observation', 'tenant_note')"
+
+        def _satellite_pred_0093(table: str, *, event_guard: bool = False) -> str:
+            guard = (
+                f" AND {table}.event_type NOT IN {_OPERATIONAL}" if event_guard else ""
+            )
+            return f"""(
+  {_BASE_0093}
+  OR EXISTS (
+    SELECT 1 FROM pets p
+    WHERE p.id = {table}.pet_id
+      AND current_setting('app.current_user_id', true) NOT IN ('-', '')
+      AND p.tutor_id::text = current_setting('app.current_user_id', true){guard}
+  )
+  OR EXISTS (
+    SELECT 1 FROM pets p
+    JOIN tenant_tutor_access a ON a.tutor_user_id = p.tutor_id
+    WHERE p.id = {table}.pet_id
+      AND a.tenant_id = current_setting('app.current_tenant', true)
+      AND a.status = 'active'{guard}
+  )
+)"""
+
+        for _sat in ("pet_health_records", "pet_reminders", "pet_share_links", "pet_self_walks"):
+            if _sat in all_tables:
+                _pred = _satellite_pred_0093(_sat)
+                conn.execute(sa.text(
+                    f"ALTER POLICY tenant_isolation ON {_sat} "
+                    f"USING {_pred} WITH CHECK {_pred}"
+                ))
+
+        if "pet_timeline_events" in all_tables:
+            _pred = _satellite_pred_0093("pet_timeline_events", event_guard=True)
+            conn.execute(sa.text(
+                f"ALTER POLICY tenant_isolation ON pet_timeline_events "
+                f"USING {_pred} WITH CHECK {_pred}"
             ))
 
         # -------------------------------------------------------------------------
@@ -598,6 +671,61 @@ def setup_self_walk(cur, tenant_id: str, pet_id: str, tutor_id: str) -> str:
     return sid
 
 
+def setup_timeline_event(cur, tenant_id: str, pet_id: str, event_type: str = "health_note") -> str:
+    """Insere um evento na timeline do pet (0073) e retorna o event_id.
+
+    event_type default "health_note" (segue o tutor); passe "walk_observation" ou
+    "tenant_note" para os eventos OPERACIONAIS que NÃO seguem (0093).
+    """
+    eid = make_uid()
+    cur.execute(
+        """
+        INSERT INTO pet_timeline_events
+            (id, pet_id, tenant_id, event_type, title, notes,
+             source, occurred_at, created_at)
+        VALUES (%s, %s, %s, %s, 'Evento', '', 'tutor', NOW(), NOW())
+        """,
+        (eid, pet_id, tenant_id, event_type),
+    )
+    return eid
+
+
+def setup_walk_observation(cur, tenant_id: str, pet_id: str, walker_user_id: str) -> tuple[str, str]:
+    """Insere um walk + walk_observation (0074, operacional) e retorna (obs_id, walk_id).
+
+    walk_observations NÃO seguem o tutor (0093): ficam presas ao tenant de origem.
+    """
+    wid = make_uid()
+    cur.execute(
+        """
+        INSERT INTO walks (id, tenant_id, tutor_id, pet_id, walker_id,
+                           status, scheduled_date, duration_minutes, price,
+                           pickup_method, modality, destination,
+                           address_snapshot, notes, operational_status,
+                           walker_selection_mode, current_attempt,
+                           max_attempts, credit_refunded, is_referral_gift,
+                           created_at)
+        VALUES (%s, %s, %s, %s, %s,
+                'completed', '2026-01-01', 30, 0.0,
+                'Buscar em casa', 'standard', '', '', '',
+                'ride_scheduled', 'auto', 0, 3, false, false,
+                NOW())
+        """,
+        (wid, tenant_id, walker_user_id, pet_id, walker_user_id),
+    )
+    oid = make_uid()
+    cur.execute(
+        """
+        INSERT INTO walk_observations
+            (id, walk_id, pet_id, tenant_id, walker_user_id,
+             incident, incident_notes, created_at)
+        VALUES (%s, %s, %s, %s, %s, false, '', NOW())
+        """,
+        (oid, wid, pet_id, tenant_id, walker_user_id),
+    )
+    return oid, wid
+
+
 __all__ = [
     "app_session",
     "app_session_as",
@@ -609,6 +737,8 @@ __all__ = [
     "setup_pet",
     "setup_health_record",
     "setup_self_walk",
+    "setup_timeline_event",
+    "setup_walk_observation",
     "setup_tutor_link",
     "setup_walker_link",
 ]

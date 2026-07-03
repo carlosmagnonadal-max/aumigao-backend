@@ -165,9 +165,14 @@ class TestUsersSelfIdentity:
             owner_tx.commit()
 
     def test_T21_other_users_still_isolated_under_foreign_scope(self, owner_tx):
-        """(Req 1b) Sob escopo do tenant B com current_user_id = ua, o usuário NÃO
-        enxerga OUTROS usuários — nem do próprio tenant A nem do tenant B. A ampliação
-        vale APENAS para a própria linha; o SELECT geral continua isolado."""
+        """(Req 1b) Sob escopo do tenant B com current_user_id = ua:
+        - OUTROS usuários do tenant A (origem do usuário) ficam INVISÍVEIS — a
+          ampliação da policy vale apenas para a própria linha;
+        - usuários do tenant B continuam visíveis: é o comportamento PRÉ-EXISTENTE
+          do escopo por tenant (`tenant_id = current_tenant`) e é necessário para a
+          operação (ex.: tutor lista passeadores do tenant ativo). A policy 0091 não
+          amplia nem reduz isso.
+        """
         cur = owner_tx.cursor()
         ta, tb = setup_tenants(cur)
         ua = setup_user(cur, ta)   # o "eu" (tenant A)
@@ -187,19 +192,21 @@ class TestUsersSelfIdentity:
                     "Usuário enxergou OUTRA linha do tenant A — vazamento cross-tenant"
                 )
 
-                # NÃO enxerga usuário do tenant B (escopo atual), pois não é a própria linha.
+                # Usuário do tenant B VISÍVEL sob escopo B — semântica padrão do
+                # tenant scoping, inalterada pela 0091 (não é vazamento).
                 app_cur.execute("SELECT id FROM users WHERE id = %s", (ub,))
-                assert app_cur.fetchone() is None, (
-                    "Usuário enxergou linha de OUTRO usuário do tenant B — vazamento"
+                assert app_cur.fetchone() is not None, (
+                    "Usuário do tenant B sumiu sob escopo B — a policy 0091 restringiu "
+                    "além do desenhado (regressão do tenant scoping padrão)"
                 )
 
-                # SELECT geral só retorna a própria linha (nenhuma outra).
+                # SELECT geral: própria linha + usuários do tenant do escopo; nada do A.
                 app_cur.execute(
                     "SELECT id FROM users WHERE id IN (%s, %s, %s)", (ua, ua2, ub)
                 )
                 found = {row[0] for row in app_cur.fetchall()}
-                assert found == {ua}, (
-                    f"SELECT geral vazou linhas além da própria: {found}"
+                assert found == {ua, ub}, (
+                    f"Conjunto visível divergente do esperado (própria linha + tenant do escopo): {found}"
                 )
         finally:
             cur2 = owner_tx.cursor()

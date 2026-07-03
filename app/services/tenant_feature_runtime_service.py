@@ -48,6 +48,14 @@ PRODUCT_RUNTIME_FEATURE_KEYS = (
     "recurring_plans",
     "shared_walks",
     "pet_tour",
+    # Chaves que o app tutor consulta via useTenantFeature e que ficaram FORA do
+    # payload quando nasceram (bug: o app caia no default fail-closed e escondia
+    # Perfil Vivo, cupom no checkout e indique-e-ganhe mesmo com o toggle ON no
+    # tenant). Default-OFF (nao estao em DEFAULT_ON_FEATURE_KEYS) => expor o valor
+    # real da flag e zero regressao para quem nao ligou.
+    "pet_live_profile",
+    "coupons",
+    "tutor_referrals",
 )
 
 

@@ -295,3 +295,22 @@ def test_is_feature_enabled_respects_tenant_override():
     tenant = _tenant(db, plan="enterprise")
     _feature(db, tenant.id, "custom_projects", enabled=False)
     assert svc.is_tenant_feature_enabled(db, "custom_projects", tenant=tenant) is False
+
+
+def test_app_gated_keys_present_in_runtime_payload():
+    """Regressao do bug 2026-07-03: pet_live_profile/coupons/tutor_referrals nao
+    estavam em PRODUCT_RUNTIME_FEATURE_KEYS -> o app (fail-closed) escondia Perfil
+    Vivo, cupom no checkout e indique-e-ganhe mesmo com o toggle ON no tenant.
+    Estas chaves sao consultadas via useTenantFeature no app tutor e PRECISAM
+    existir no payload do features-runtime."""
+    db = _db()
+    tenant = _tenant(db)
+    runtime = svc.get_tenant_feature_runtime(db, tenant=tenant)
+    features = runtime["features"]
+    for key in ("pet_live_profile", "coupons", "tutor_referrals"):
+        assert key in features, f"{key} ausente do payload do features-runtime"
+        assert features[key] is False  # default-OFF sem toggle
+
+    _feature(db, tenant.id, "pet_live_profile", enabled=True)
+    runtime = svc.get_tenant_feature_runtime(db, tenant=tenant)
+    assert runtime["features"]["pet_live_profile"] is True

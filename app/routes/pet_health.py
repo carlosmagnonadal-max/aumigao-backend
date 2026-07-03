@@ -26,6 +26,7 @@ from app.models.user import User
 from app.models.walk import Walk
 from app.services import pet_health_service as health
 from app.services import pet_profile_service as svc
+from app.services import pet_wellness_service as wellness
 from app.services.tenant_free_plan_service import enforce_pet_evolution_allowed
 
 api_router = APIRouter(prefix="/api/pets", tags=["pet-health"])
@@ -164,6 +165,25 @@ def get_health_card(pet_id: str,
     _require_active_and_pro(db, _tenant_of(db, pet.tenant_id),
                             feature="pet_health_card", label="Carteira de saúde do pet")
     return health.build_health_card(db, pet)
+
+
+# ---------------------------------------------------------------------------
+# /wellness — Índice de Bem-estar (Fase B, runtime, sem persistência)
+# ---------------------------------------------------------------------------
+
+@router.get("/{pet_id}/wellness")
+@api_router.get("/{pet_id}/wellness")
+def get_wellness(pet_id: str,
+                 user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Score 0-100 composto (clínico/rotina/comportamento) + tendência 30d.
+
+    Mesmo gate/ownership da carteira (Fase A): tutor dono OU admin do tenant do
+    pet; feature ativa + plano Pro+ (free → 403 teaser). 100% runtime.
+    """
+    pet, _ = _get_pet_for_health(db, pet_id, user)
+    _require_active_and_pro(db, _tenant_of(db, pet.tenant_id),
+                            feature="pet_wellness", label="Índice de Bem-estar do pet")
+    return wellness.compute_wellness(db, pet.id)
 
 
 # ---------------------------------------------------------------------------

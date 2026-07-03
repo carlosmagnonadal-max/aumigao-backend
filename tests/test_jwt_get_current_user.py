@@ -88,3 +88,48 @@ def test_token_with_foreign_audience_is_rejected(client):
     )
     resp = client.get("/me", headers=_auth(foreign))
     assert resp.status_code == 401
+
+
+def test_user_guc_is_set_before_lookup(monkeypatch):
+    """HOTFIX identidade global (migration 0091): o GUC app.current_user_id precisa
+    estar publicado ANTES do db.get(User, ...), senão o after_begin injeta o default
+    '-' e a policy self-identity da tabela `users` não casa a própria linha sob escopo
+    de outro tenant. Aqui provamos a ORDEM: set_session_user(user_id) roda antes do
+    lookup, com o user_id vindo do token.
+
+    (RLS não é enforced em SQLite; este teste blinda a ordem de chamadas, que é o que
+     torna a policy 0091 efetiva em Postgres — coberto de ponta a ponta em tests/pg_rls.)
+    """
+    import app.dependencies.auth as auth_mod
+
+    calls: list[tuple[str, str]] = []
+
+    class _FakeUser:
+        id = USER_ID
+        is_active = True
+        token_version = 0
+        role = "cliente"
+
+    class _FakeDB:
+        def get(self, model, pk):
+            calls.append(("lookup", str(pk)))
+            return _FakeUser()
+
+    def _fake_set_session_user(db, user_id):
+        calls.append(("set_user_guc", str(user_id)))
+
+    monkeypatch.setattr(auth_mod, "set_session_user", _fake_set_session_user)
+
+    token = create_access_token(USER_ID)
+    creds = type("C", (), {"credentials": token})()
+    user = auth_mod.get_current_user(credentials=creds, db=_FakeDB(), x_act_as_tenant=None)
+
+    assert user.id == USER_ID
+    # A publicação do GUC do usuário DEVE preceder o lookup da linha.
+    kinds = [c[0] for c in calls]
+    assert kinds.index("set_user_guc") < kinds.index("lookup"), (
+        f"GUC do usuário não foi setado antes do lookup: {calls}"
+    )
+    # E com o user_id correto (vindo do sub do token).
+    first_set = next(c for c in calls if c[0] == "set_user_guc")
+    assert first_set[1] == USER_ID

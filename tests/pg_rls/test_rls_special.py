@@ -12,6 +12,7 @@ Cobertura:
 """
 from tests.pg_rls.conftest import (
     app_session,
+    app_session_as,
     make_uid,
     setup_pet,
     setup_tenants,
@@ -128,6 +129,102 @@ class TestSpecialBehaviors:
         finally:
             cur2 = owner_tx.cursor()
             cur2.execute("DELETE FROM pets WHERE tenant_id IN (%s, %s)", (ta, tb))
+            cur2.execute("DELETE FROM users WHERE tenant_id IN (%s, %s)", (ta, tb))
+            cur2.execute("DELETE FROM tenants WHERE id IN (%s, %s)", (ta, tb))
+            owner_tx.commit()
+
+
+class TestUsersSelfIdentity:
+    """T20-T22: identidade GLOBAL da tabela `users` (migration 0091).
+
+    Modelo B: o usuário nasce no tenant A mas troca de tenant no app (escopo RLS B).
+    A policy self-identity deve permitir resolver a PRÓPRIA linha sob QUALQUER escopo
+    de tenant, SEM afrouxar o isolamento das demais linhas de `users`.
+    """
+
+    def test_T20_self_row_visible_under_foreign_tenant_scope(self, owner_tx):
+        """(Req 1a) Usuário do tenant A, sob escopo RLS do tenant B, RESOLVE a própria
+        linha via app.current_user_id — reproduz o get_current_user do fix."""
+        cur = owner_tx.cursor()
+        ta, tb = setup_tenants(cur)
+        ua = setup_user(cur, ta)  # usuário nasce no tenant A
+        owner_tx.commit()
+
+        try:
+            # Escopo RLS = tenant B (troca de tenant no app), current_user_id = ua.
+            with app_session_as(tb, ua) as app_cur:
+                app_cur.execute("SELECT id FROM users WHERE id = %s", (ua,))
+                assert app_cur.fetchone() is not None, (
+                    "Usuário do tenant A não foi resolvido sob escopo do tenant B — "
+                    "o fix da identidade global falhou (regressão do bug de 401)"
+                )
+        finally:
+            cur2 = owner_tx.cursor()
+            cur2.execute("DELETE FROM users WHERE tenant_id IN (%s, %s)", (ta, tb))
+            cur2.execute("DELETE FROM tenants WHERE id IN (%s, %s)", (ta, tb))
+            owner_tx.commit()
+
+    def test_T21_other_users_still_isolated_under_foreign_scope(self, owner_tx):
+        """(Req 1b) Sob escopo do tenant B com current_user_id = ua, o usuário NÃO
+        enxerga OUTROS usuários — nem do próprio tenant A nem do tenant B. A ampliação
+        vale APENAS para a própria linha; o SELECT geral continua isolado."""
+        cur = owner_tx.cursor()
+        ta, tb = setup_tenants(cur)
+        ua = setup_user(cur, ta)   # o "eu" (tenant A)
+        ua2 = setup_user(cur, ta)  # OUTRO usuário do tenant A
+        ub = setup_user(cur, tb)   # usuário do tenant B (escopo atual)
+        owner_tx.commit()
+
+        try:
+            with app_session_as(tb, ua) as app_cur:
+                # Enxerga a própria linha.
+                app_cur.execute("SELECT id FROM users WHERE id = %s", (ua,))
+                assert app_cur.fetchone() is not None
+
+                # NÃO enxerga outro usuário do tenant A (mesmo sendo "meu" tenant de origem).
+                app_cur.execute("SELECT id FROM users WHERE id = %s", (ua2,))
+                assert app_cur.fetchone() is None, (
+                    "Usuário enxergou OUTRA linha do tenant A — vazamento cross-tenant"
+                )
+
+                # NÃO enxerga usuário do tenant B (escopo atual), pois não é a própria linha.
+                app_cur.execute("SELECT id FROM users WHERE id = %s", (ub,))
+                assert app_cur.fetchone() is None, (
+                    "Usuário enxergou linha de OUTRO usuário do tenant B — vazamento"
+                )
+
+                # SELECT geral só retorna a própria linha (nenhuma outra).
+                app_cur.execute(
+                    "SELECT id FROM users WHERE id IN (%s, %s, %s)", (ua, ua2, ub)
+                )
+                found = {row[0] for row in app_cur.fetchall()}
+                assert found == {ua}, (
+                    f"SELECT geral vazou linhas além da própria: {found}"
+                )
+        finally:
+            cur2 = owner_tx.cursor()
+            cur2.execute("DELETE FROM users WHERE tenant_id IN (%s, %s)", (ta, tb))
+            cur2.execute("DELETE FROM tenants WHERE id IN (%s, %s)", (ta, tb))
+            owner_tx.commit()
+
+    def test_T22_no_user_guc_still_fail_closed_on_users(self, owner_tx):
+        """Sessão sem current_user_id (default '-') sob escopo do tenant B NÃO casa a
+        linha de nenhum usuário do tenant A pelo ramo self-identity (NOT IN ('-',''))."""
+        cur = owner_tx.cursor()
+        ta, tb = setup_tenants(cur)
+        ua = setup_user(cur, ta)
+        owner_tx.commit()
+
+        try:
+            # app_session seta apenas o tenant; current_user_id fica ausente/'-'.
+            with app_session(tb) as app_cur:
+                app_cur.execute("SELECT id FROM users WHERE id = %s", (ua,))
+                assert app_cur.fetchone() is None, (
+                    "Sem current_user_id, a linha do tenant A ficou visível sob "
+                    "escopo B — o guard NOT IN ('-','') falhou"
+                )
+        finally:
+            cur2 = owner_tx.cursor()
             cur2.execute("DELETE FROM users WHERE tenant_id IN (%s, %s)", (ta, tb))
             cur2.execute("DELETE FROM tenants WHERE id IN (%s, %s)", (ta, tb))
             owner_tx.commit()

@@ -35,6 +35,23 @@ def get_current_user(
     except Exception as _exc:
         logger.warning("token_decode_failed reason=%s", type(_exc).__name__)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token invalido")
+    # HOTFIX RLS — identidade GLOBAL (Modelo B): o usuário é criado num tenant
+    # (user.tenant_id) mas troca de tenant no app (X-Tenant-Slug). Com o RLS da
+    # sessão escopado para o tenant da request, a policy tenant_isolation da tabela
+    # `users` esconderia a própria linha do usuário → db.get(User, ...) devolveria
+    # None → 401 em TODA request → app desloga. A migration 0091 amplia a policy de
+    # `users` com o predicado `id = app.current_user_id`, MAS esse GUC é setado por
+    # after_begin a partir de session.info["rls_user_id"] no INÍCIO da 1ª transação.
+    # Como db.get(User, ...) abaixo é a 1ª query, PRECISAMOS publicar o user_id em
+    # session.info ANTES do lookup, senão o after_begin injeta o default '-' e o
+    # predicado da policy não casa. set_session_user aqui só grava session.info
+    # (nenhuma transação aberta ainda) → o after_begin da própria query do lookup
+    # já vê o user_id correto. NO-OP em SQLite.
+    if user_id:
+        try:
+            set_session_user(db, str(user_id))
+        except Exception:
+            pass  # never block auth for GUC bookkeeping
     user = db.get(User, user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario invalido")
@@ -66,8 +83,10 @@ def get_current_user(
         user_id_var.set(str(user.id))
     except Exception:
         pass  # never block auth for logging bookkeeping
-    # Injeta app.current_user_id no GUC da transação PostgreSQL.
-    # NO-OP em SQLite (testes); jamais propaga exceção.
+    # Re-afirma app.current_user_id no GUC da transação com o id AUTORITATIVO da
+    # linha carregada (str(user.id)). O set_session_user pré-lookup usou o `sub` do
+    # token; aqui garantimos o GUC estável para todas as queries downstream da request
+    # (get_walker_self_db / get_tutor_self_db etc.). NO-OP em SQLite; nunca propaga.
     try:
         set_session_user(db, str(user.id))
     except Exception:

@@ -103,7 +103,7 @@ def _apply_rls_policies(sa_engine) -> None:
     Aplica TODAS as policies RLS do projeto usando SQL idempotente.
 
     Chamado após create_all + stamp head, repõe o que as migrations de
-    RLS (0043-0046, 0049, 0051, 0073-0077, 0080, 0081, 0086, 0087) fazem. Todo
+    RLS (0043-0046, 0049, 0051, 0073-0077, 0080, 0081, 0086, 0087, 0091) fazem. Todo
     statement usa DROP POLICY IF EXISTS + CREATE POLICY / ALTER POLICY,
     portanto é seguro re-executar em banco já configurado.
 
@@ -189,6 +189,31 @@ def _apply_rls_policies(sa_engine) -> None:
                 f"ALTER POLICY tenant_isolation ON walks "
                 f"USING {_WALKS_USING} "
                 f"WITH CHECK {_WALKS_WITH_CHECK}"
+            ))
+
+        # -------------------------------------------------------------------------
+        # users: USING/WITH CHECK estendidos com self-identity (migration 0091).
+        #
+        # Identidade GLOBAL (Modelo B): o usuário é criado num tenant mas troca de
+        # tenant no app; a policy precisa SEMPRE permitir a PRÓPRIA linha, senão
+        # get_current_user recebe None sob escopo de outro tenant → 401 em toda
+        # request. O ramo self-identity é fechado por NOT IN ('-', '') para não
+        # casar sessões sem usuário autenticado (default '-') nem GUC vazio.
+        # -------------------------------------------------------------------------
+        if "users" in all_tables:
+            _USERS_PREDICATE = """(
+  current_setting('app.current_tenant', true) = '*'
+  OR tenant_id IS NULL
+  OR tenant_id::text = current_setting('app.current_tenant', true)
+  OR (
+    current_setting('app.current_user_id', true) NOT IN ('-', '')
+    AND id::text = current_setting('app.current_user_id', true)
+  )
+)"""
+            conn.execute(sa.text(
+                f"ALTER POLICY tenant_isolation ON users "
+                f"USING {_USERS_PREDICATE} "
+                f"WITH CHECK {_USERS_PREDICATE}"
             ))
 
         # -------------------------------------------------------------------------
@@ -380,6 +405,37 @@ def app_session(tenant: str):
         conn.close()
 
 
+@contextmanager
+def app_session_as(tenant: str, user_id: str):
+    """Como app_session, mas também seta app.current_user_id (migration 0091).
+
+    Necessário para exercitar a policy self-identity da tabela `users`: o usuário
+    é resolvido pela PRÓPRIA linha (id = current_user_id) mesmo sob escopo de outro
+    tenant, sem enxergar outros usuários.
+
+    Exemplo:
+        with app_session_as(tenant_b, user_a_id) as cur:
+            cur.execute("SELECT id FROM users WHERE id = %s", (user_a_id,))
+    """
+    import psycopg2
+    conn = psycopg2.connect(**_app_kwargs())
+    conn.autocommit = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT set_config('app.current_tenant', %s, true)",
+                (tenant,),
+            )
+            cur.execute(
+                "SELECT set_config('app.current_user_id', %s, true)",
+                (user_id,),
+            )
+            yield cur
+        conn.rollback()  # nunca persistir em app_session — somente leitura/verificação
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Helpers de setup de dados compartilhados entre os blocos de teste.
 # ---------------------------------------------------------------------------
@@ -490,6 +546,7 @@ def setup_self_walk(cur, tenant_id: str, pet_id: str, tutor_id: str) -> str:
 
 __all__ = [
     "app_session",
+    "app_session_as",
     "APP_ROLE",
     "PG_TEST_DATABASE_URL",
     "make_uid",

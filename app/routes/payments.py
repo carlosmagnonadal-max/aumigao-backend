@@ -664,15 +664,66 @@ def get_payment_quote(walk_id: str, user: User = Depends(get_current_user), db: 
     return PaymentQuoteResponse(**quote)
 
 
+async def _fetch_pix_data_for_payment(payment: Payment) -> dict:
+    """Re-busca pixQrCode no Asaas para cobranças PIX pendentes.
+
+    Retorna dict com encodedImage/payload/expirationDate quando bem-sucedido,
+    ou {} em qualquer falha (timeout, 4xx/5xx, provider desconhecido, etc.).
+    Nunca levanta exceção — o GET /payments/{id} não deve falhar por causa disso.
+
+    Condições para chamar o Asaas (todas devem valer):
+    - provider em {asaas_live, asaas_sandbox}
+    - status em PAYMENT_PENDING_STATUSES
+    - provider_payment_id preenchido e sem prefixo "internal-sandbox-" (fallback
+      interno que não existe no Asaas e causaria 404 desnecessário)
+    """
+    provider = payment.provider or ""
+    if provider not in {"asaas_live", "asaas_sandbox"}:
+        return {}
+    if payment.status not in PAYMENT_PENDING_STATUSES:
+        return {}
+    pid = payment.provider_payment_id or ""
+    if not pid or pid.startswith("internal-sandbox-"):
+        return {}
+
+    try:
+        cfg = _get_asaas_config()
+        async with httpx.AsyncClient(
+            base_url=cfg["base_url"],
+            headers=asaas_headers(cfg["api_key"], mode="live" if cfg["is_live"] else "sandbox"),
+            timeout=10,
+        ) as client:
+            resp = await client.get(f"/payments/{pid}/pixQrCode")
+            if resp.status_code >= 400:
+                logger.warning(
+                    "_fetch_pix_data_for_payment: Asaas retornou status_http=%s payment_id=%s provider_payment_id=%s",
+                    resp.status_code, payment.id, pid,
+                )
+                return {}
+            data = resp.json()
+            return {
+                "pix_qr_code": data.get("encodedImage"),
+                "pix_copy_paste": data.get("payload"),
+                "pix_expiration_date": data.get("expirationDate"),
+            }
+    except Exception as exc:
+        logger.warning(
+            "_fetch_pix_data_for_payment: falha ao buscar pixQrCode payment_id=%s: %s",
+            payment.id, exc,
+        )
+        return {}
+
+
 @router.get("/{payment_id}", response_model=PaymentResponse)
-def get_payment(payment_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def get_payment(payment_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     payment = db.get(Payment, payment_id)
     # Retorna 404 (e nao 403) quando o pagamento nao e do solicitante para nao
     # revelar a existencia de pagamentos de outros usuarios via enumeracao de ID.
     is_admin = user.role in {"admin", "super_admin"}
     if not payment or (payment.tutor_id != user.id and not is_admin):
         raise HTTPException(status_code=404, detail="Pagamento nao encontrado.")
-    return payment_response(payment)
+    pix_extra = await _fetch_pix_data_for_payment(payment)
+    return payment_response(payment, **pix_extra)
 
 
 _PAYMENT_CONFIRMED_STATUS = "pagamento_confirmado_sandbox"

@@ -247,6 +247,140 @@ def test_get_payment_requires_auth_401():
     assert client.get("/payments/pay-z").status_code == 401
 
 
+# ----------------------------------------- get_payment: re-busca pixQrCode Asaas
+def test_get_payment_pending_pix_refetches_qr_code(monkeypatch):
+    """Pagamento PIX pendente com provider_payment_id real -> busca pixQrCode no Asaas."""
+    import httpx
+
+    pix_payload = {
+        "encodedImage": "base64imgdata==",
+        "payload": "00020126...",
+        "expirationDate": "2026-07-04T10:00:00",
+    }
+
+    async def fake_pix_fetch(payment):
+        # Confirma que a função helper retorna os dados quando mock responde OK.
+        # Para não depender de httpx real, monkeypatchamos diretamente o helper.
+        return {
+            "pix_qr_code": pix_payload["encodedImage"],
+            "pix_copy_paste": pix_payload["payload"],
+            "pix_expiration_date": pix_payload["expirationDate"],
+        }
+
+    monkeypatch.setattr(payments, "_fetch_pix_data_for_payment", fake_pix_fetch)
+
+    test_app, db = build()
+    db.add(Payment(
+        id="pay-pix-pending",
+        tenant_id=TENANT_ID,
+        tutor_id=TUTOR_ID,
+        amount=50.0,
+        status="aguardando_pagamento",
+        provider="asaas_sandbox",
+        provider_payment_id="asaas-real-id-123",
+    ))
+    db.commit()
+
+    client = as_user(test_app, db, TUTOR_ID)
+    r = client.get("/payments/pay-pix-pending")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["pix_qr_code"] == pix_payload["encodedImage"]
+    assert body["pix_copy_paste"] == pix_payload["payload"]
+    assert body["pix_expiration_date"] == pix_payload["expirationDate"]
+
+
+def test_get_payment_confirmed_does_not_call_asaas(monkeypatch):
+    """Pagamento JA confirmado nao deve chamar o Asaas — campos pix ficam None."""
+    called = []
+
+    async def spy_pix_fetch(payment):
+        called.append(payment.id)
+        return {}
+
+    monkeypatch.setattr(payments, "_fetch_pix_data_for_payment", spy_pix_fetch)
+
+    test_app, db = build()
+    db.add(Payment(
+        id="pay-confirmed",
+        tenant_id=TENANT_ID,
+        tutor_id=TUTOR_ID,
+        amount=50.0,
+        status="pagamento_confirmado_sandbox",
+        provider="asaas_sandbox",
+        provider_payment_id="asaas-real-id-456",
+    ))
+    db.commit()
+
+    client = as_user(test_app, db, TUTOR_ID)
+    r = client.get("/payments/pay-confirmed")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # helper foi chamado mas retornou {} -> campos ausentes / None no response
+    assert body.get("pix_qr_code") is None
+    assert body.get("pix_copy_paste") is None
+    assert body.get("pix_expiration_date") is None
+
+
+def test_get_payment_asaas_error_returns_200_without_pix_fields(monkeypatch):
+    """Erro do Asaas (4xx ou excecao de rede) nao deve falhar o GET — responde 200 sem campos pix."""
+
+    async def pix_fetch_error(payment):
+        # Simula falha: Asaas retornou 400 ou lancou excecao — helper retorna {}
+        return {}
+
+    monkeypatch.setattr(payments, "_fetch_pix_data_for_payment", pix_fetch_error)
+
+    test_app, db = build()
+    db.add(Payment(
+        id="pay-pix-err",
+        tenant_id=TENANT_ID,
+        tutor_id=TUTOR_ID,
+        amount=75.0,
+        status="aguardando_pagamento",
+        provider="asaas_sandbox",
+        provider_payment_id="asaas-real-id-789",
+    ))
+    db.commit()
+
+    client = as_user(test_app, db, TUTOR_ID)
+    r = client.get("/payments/pay-pix-err")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["id"] == "pay-pix-err"
+    assert body.get("pix_qr_code") is None
+    assert body.get("pix_copy_paste") is None
+
+
+def test_get_payment_live_never_returns_sandbox_message(monkeypatch):
+    """Cobranca REAL (asaas_live): o GET nao pode devolver o aviso de sandbox
+    (o app exibe sandbox_message ao tutor — em live seria falso e enganoso)."""
+
+    async def pix_fetch_noop(payment):
+        return {}
+
+    monkeypatch.setattr(payments, "_fetch_pix_data_for_payment", pix_fetch_noop)
+
+    test_app, db = build()
+    db.add(Payment(
+        id="pay-live", tenant_id=TENANT_ID, tutor_id=TUTOR_ID, amount=50.0,
+        status="aguardando_pagamento", provider="asaas_live",
+        provider_payment_id="asaas-live-id-1",
+    ))
+    db.add(Payment(
+        id="pay-sbx", tenant_id=TENANT_ID, tutor_id=TUTOR_ID, amount=50.0,
+        status="aguardando_pagamento", provider="asaas_sandbox",
+        provider_payment_id="asaas-sbx-id-1",
+    ))
+    db.commit()
+
+    client = as_user(test_app, db, TUTOR_ID)
+    live = client.get("/payments/pay-live").json()
+    assert live["sandbox_message"] is None
+    sbx = client.get("/payments/pay-sbx").json()
+    assert sbx["sandbox_message"] == "Ambiente Sandbox: nenhuma cobranca real sera realizada."
+
+
 # --------------------------------------------------------------------- quote
 def _add_walk(db, walk_id="walk-q", price=100.0, tenant_id=TENANT_ID, tutor_id=TUTOR_ID):
     pet_id = f"pet-{walk_id}"

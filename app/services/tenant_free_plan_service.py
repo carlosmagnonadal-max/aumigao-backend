@@ -234,6 +234,12 @@ def enforce_free_plan_pet_limit(db, tenant, tutor_id: str) -> None:
     Só bloqueia CRIAÇÃO — downgrade do trial NÃO remove pets excedentes (o tutor
     mantém os que já tem; apenas não cria novos acima do limite). Trial ativo isento
     (plano efetivo = pro). Pro/enterprise: no-op.
+
+    O cap é contado POR TENANT DE ORIGEM (Pet.tenant_id == tenant.id): com "pets seguem
+    o tutor" (0093) o pet do tutor cadastrado noutro tenant vinculado passa a ser
+    VISÍVEL sob o escopo RLS deste tenant; contar por tenant_id garante que o limite do
+    free continue medindo só os pets NASCIDOS aqui (semântica preservada). Sem o filtro,
+    a contagem vazaria pets seguidos de outros tenants e bloquearia criações legítimas.
     """
     from fastapi import HTTPException
 
@@ -242,7 +248,11 @@ def enforce_free_plan_pet_limit(db, tenant, tutor_id: str) -> None:
     from app.models.pet import Pet
 
     limit = free_plan_pets_per_tutor()
-    current = db.query(Pet).filter(Pet.tutor_id == tutor_id).count()
+    current = (
+        db.query(Pet)
+        .filter(Pet.tutor_id == tutor_id, Pet.tenant_id == tenant.id)
+        .count()
+    )
     if current >= limit:
         raise HTTPException(
             status_code=403,

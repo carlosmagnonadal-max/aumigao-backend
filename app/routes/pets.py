@@ -4,7 +4,6 @@ from uuid import uuid4
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -97,8 +96,11 @@ def _current_tenant_id(user: User, db: Session) -> str:
     return tenant_id
 
 
-def _pet_tenant_filter(tenant_id: str):
-    return or_(Pet.tenant_id == tenant_id, Pet.tenant_id.is_(None))
+# NOTA (0093 — "pets seguem o tutor"): as leituras do TUTOR filtram só por
+# tutor_id; o RLS decide a visibilidade cross-tenant (ficha/saúde seguem o tutor
+# para tenants com vínculo ativo). O carimbo de tenant na CRIAÇÃO permanece (tenant
+# de ORIGEM). O antigo _pet_tenant_filter foi removido: ele escondia pets do próprio
+# tutor cadastrados noutro tenant vinculado.
 
 @router.post("/upload-photo", status_code=201)
 async def upload_pet_photo(
@@ -137,8 +139,8 @@ async def upload_pet_photo(
 
 @router.get("", response_model=list[PetResponse])
 def list_pets(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    tenant_id = _current_tenant_id(user, db)
-    pets = db.query(Pet).filter(Pet.tutor_id == user.id, _pet_tenant_filter(tenant_id)).order_by(Pet.created_at.desc()).all()
+    _current_tenant_id(user, db)  # garante user.tenant_id preenchido (efeito colateral)
+    pets = db.query(Pet).filter(Pet.tutor_id == user.id).order_by(Pet.created_at.desc()).all()
 
     for pet in pets:
         if pet.is_neutered is None:
@@ -169,8 +171,8 @@ def create_pet(payload: PetCreate, user: User = Depends(get_current_user), db: S
 
 @router.get("/{pet_id}", response_model=PetResponse)
 def get_pet(pet_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    tenant_id = _current_tenant_id(user, db)
-    pet = db.query(Pet).filter(Pet.id == pet_id, Pet.tutor_id == user.id, _pet_tenant_filter(tenant_id)).first()
+    _current_tenant_id(user, db)  # garante user.tenant_id preenchido (efeito colateral)
+    pet = db.query(Pet).filter(Pet.id == pet_id, Pet.tutor_id == user.id).first()
     if not pet:
         raise HTTPException(status_code=404, detail="Pet nao encontrado")
     return pet

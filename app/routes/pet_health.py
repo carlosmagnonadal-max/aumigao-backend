@@ -60,18 +60,63 @@ def _is_tenant_admin(user: User, tenant_id: str | None) -> bool:
     )
 
 
+def _active_tenant_id() -> str | None:
+    """Tenant ATIVO do request (espelho de request.state.tenant_id).
+
+    Lido do ContextVar preenchido pelo RequestContextMiddleware a partir de
+    request.state.tenant_id. "-"/"" (fora de request) → None.
+    """
+    from app.core.request_context import tenant_id_var
+
+    tid = tenant_id_var.get()
+    return tid if tid and tid not in ("-", "") else None
+
+
+def _admin_of_linked_tenant(db: Session, user: User, pet: Pet) -> bool:
+    """True se o usuário é admin/staff cujo TENANT ATIVO tem vínculo ativo com o dono.
+
+    "Pets seguem o tutor" (0093): a ficha/saúde do pet é visível em QUALQUER tenant
+    onde o tutor tem vínculo ATIVO — então o admin do tenant ATIVO (request) precisa
+    ver o pet mesmo quando pet.tenant_id (origem) ≠ tenant ativo. Checa o vínculo
+    tutor↔tenant-ativo em TenantTutorAccess (status='active'). O RLS já libera a linha;
+    esta checagem é a autorização de aplicação equivalente para o caminho admin.
+    """
+    if getattr(user, "role", None) not in {"admin", "super_admin"}:
+        return False
+    active_tenant = _active_tenant_id()
+    if not active_tenant:
+        return False
+    from app.models.tenant_tutor_access import TenantTutorAccess
+
+    link = (
+        db.query(TenantTutorAccess.id)
+        .filter(
+            TenantTutorAccess.tutor_user_id == pet.tutor_id,
+            TenantTutorAccess.tenant_id == active_tenant,
+            TenantTutorAccess.status == "active",
+        )
+        .first()
+    )
+    return link is not None
+
+
 def _get_pet_for_health(db: Session, pet_id: str, user: User) -> tuple[Pet, str]:
-    """Busca o pet exigindo tutor dono OU admin do tenant do pet.
+    """Busca o pet exigindo tutor dono OU admin de um tenant vinculado ao dono.
 
     Retorna (pet, actor_role) onde actor_role ∈ {tutor, admin}. 404 se não
     encontrado / sem acesso (mesma mensagem para não vazar existência).
+
+    Admin: aceita tanto admin do tenant de ORIGEM do pet (compat) quanto admin/staff
+    cujo TENANT ATIVO (request.state.tenant_id) tem vínculo ativo com o dono do pet —
+    necessário para o modelo "pets seguem o tutor" (0093), em que o pet do tutor é
+    visível em todos os tenants vinculados.
     """
     pet = db.get(Pet, pet_id)
     if not pet:
         raise HTTPException(status_code=404, detail="Not found")
     if pet.tutor_id == user.id:
         return pet, "tutor"
-    if _is_tenant_admin(user, pet.tenant_id):
+    if _is_tenant_admin(user, pet.tenant_id) or _admin_of_linked_tenant(db, user, pet):
         return pet, "admin"
     raise HTTPException(status_code=404, detail="Not found")
 

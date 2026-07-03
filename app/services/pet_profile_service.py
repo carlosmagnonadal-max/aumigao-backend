@@ -170,6 +170,26 @@ def ensure_vaccine_reminder(
     return reminder
 
 
+def build_diary_entry(*, text: str, mood: str | None, title: str | None) -> tuple[str, str]:
+    """Monta (título, payload_json) de uma entrada de DIÁRIO do tutor (Fase B).
+
+    O payload é construído no servidor a partir de campos já validados (o payload
+    cru do cliente é ignorado): texto obrigatório + humor opcional. Título usa o
+    informado ou deriva do texto (truncado). Retorna (title, payload_json).
+    """
+    text = text.strip()
+    diary: dict[str, str] = {"text": text}
+    if mood:
+        diary["mood"] = mood
+    clean_title = (title or "").strip()
+    if clean_title:
+        diary["title"] = clean_title
+        final_title = clean_title
+    else:
+        final_title = (text[:60] + "…") if len(text) > 60 else text
+    return final_title, json.dumps(diary, ensure_ascii=False)
+
+
 def record_timeline_event(
     db: Session, pet: Pet, *, event_type: str, title: str, occurred_at: datetime,
     notes: str = "", payload_json: str | None = None, source: str = "tutor",

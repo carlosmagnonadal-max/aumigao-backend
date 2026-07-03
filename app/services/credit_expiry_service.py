@@ -140,12 +140,25 @@ def sweep_expired_credits(db: Session) -> dict:
     recognized = 0
     processed = 0
 
-    # 1) Assinaturas canceladas com crédito restante
+    # 1) Assinaturas canceladas com crédito restante.
+    # EXCEÇÃO (Opção B, decisão do Carlos): canceladas pelo DOWNGRADE do reverse
+    # trial (cancel_reason='plan_downgrade') são PULADAS — os créditos permanecem
+    # consumíveis até esgotar (consume_credit_if_available os honra), logo o
+    # passivo persiste e reconhecer breakage seria zerar crédito ainda resgatável.
+    # Canceladas manuais (reason NULL) continuam varridas (forfeit, inalterado).
+    from sqlalchemy import or_
+
+    from app.models.recurring_plan import CANCEL_REASON_PLAN_DOWNGRADE
+
     cancelled_with_credits = (
         db.query(TutorSubscription)
         .filter(
             TutorSubscription.status == SUBSCRIPTION_CANCELLED,
             TutorSubscription.credits_remaining > 0,
+            or_(
+                TutorSubscription.cancel_reason.is_(None),
+                TutorSubscription.cancel_reason != CANCEL_REASON_PLAN_DOWNGRADE,
+            ),
         )
         .all()
     )

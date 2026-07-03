@@ -31,6 +31,15 @@ SUBSCRIPTION_CANCELLED = "cancelled"
 # PAYMENT_CONFIRMED). NÃO cancela — a assinatura permanece, só suspensa.
 SUBSCRIPTION_OVERDUE = "overdue"
 
+# Motivo do cancelamento (cancel_reason). Só o downgrade do reverse trial marca
+# motivo; cancelamento manual/estorno deixa NULL. Decisão do Carlos (Opção B):
+# créditos JÁ PAGOS de assinatura cancelada pelo DOWNGRADE permanecem consumíveis
+# até esgotar — o gate de consumo (consume_credit_if_available) só honra CANCELLED
+# quando cancel_reason == plan_downgrade, e o sweep de breakage PULA essas
+# assinaturas (o passivo persiste — não há breakage de crédito ainda resgatável).
+# Cancelamento manual continua forfeit (breakage imediato, comportamento inalterado).
+CANCEL_REASON_PLAN_DOWNGRADE = "plan_downgrade"
+
 
 class RecurringPlan(Base):
     """Plano recorrente ofertado por um tenant (catálogo)."""
@@ -68,6 +77,9 @@ class TutorSubscription(Base):
     current_period_start: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     current_period_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Motivo do cancelamento — só o downgrade do reverse trial preenche
+    # (CANCEL_REASON_PLAN_DOWNGRADE); manual/estorno = NULL. Ver constante acima.
+    cancel_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     # ID da subscription nativa no Asaas — preenchido quando o pagamento recorrente
     # é criado via API nativa do Asaas (Fase 7 $-2). Nullable: sem Asaas fica None.
     asaas_subscription_id: Mapped[str | None] = mapped_column(String, nullable=True)

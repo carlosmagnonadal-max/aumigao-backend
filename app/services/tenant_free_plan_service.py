@@ -452,6 +452,7 @@ def _cancel_active_tutor_subscriptions(db, tenant) -> list[str]:
     cancelled_ids: list[str] = []
     try:
         from app.models.recurring_plan import (
+            CANCEL_REASON_PLAN_DOWNGRADE,
             SUBSCRIPTION_ACTIVE,
             SUBSCRIPTION_CANCELLED,
             SUBSCRIPTION_OVERDUE,
@@ -481,8 +482,12 @@ def _cancel_active_tutor_subscriptions(db, tenant) -> list[str]:
             if getattr(sub, "asaas_subscription_id", None):
                 _run_async_cancel(sub.asaas_subscription_id)
 
-            # 2) Marca local como cancelada (vocabulário de status do modelo).
+            # 2) Marca local como cancelada COM MOTIVO (Opção B): cancel_reason
+            # 'plan_downgrade' é o que mantém os créditos consumíveis
+            # (consume_credit_if_available honra CANCELLED-downgrade) e protege o
+            # saldo do sweep de breakage (que pula esse motivo).
             sub.status = SUBSCRIPTION_CANCELLED
+            sub.cancel_reason = CANCEL_REASON_PLAN_DOWNGRADE
             sub.cancelled_at = now
             sub.updated_at = now
             db.add(sub)

@@ -186,6 +186,62 @@ def test_routine_twelve_plus_full():
 
 
 # ---------------------------------------------------------------------------
+# Rotina — Fase D: self-walks contam junto dos passeios pagos (detail discriminado)
+# ---------------------------------------------------------------------------
+
+def _add_self_walk(db, *, days_ago):
+    from app.models.pet_self_walk import PetSelfWalk
+    db.add(PetSelfWalk(
+        pet_id="p1", tutor_id="u1", tenant_id="t1",
+        started_at=datetime.utcnow() - timedelta(days=days_ago),
+        duration_seconds=1800, distance_km=1.4, walk_type="rua", intensity="moderado",
+        had_gps=True, need_pee=True,
+    ))
+    db.commit()
+
+
+def test_routine_counts_self_walks_with_paid():
+    db = _db()
+    # 5 pagos + 3 do tutor = 8 → bucket 8-11 = 90 (self sozinho não chegaria).
+    for i in range(5):
+        _add_walk(db, days_ago=i + 1, status="completed", wid=f"w{i}")
+    for i in range(3):
+        _add_self_walk(db, days_ago=i + 1)
+    comp = wellness.compute_routine(db, "p1")
+    assert comp["score"] == 90
+    # Detail discrimina a mistura.
+    assert "8 passeios" in comp["detail"]
+    assert "5 com passeador" in comp["detail"]
+    assert "3 do tutor" in comp["detail"]
+
+
+def test_routine_self_walks_only():
+    db = _db()
+    for i in range(4):
+        _add_self_walk(db, days_ago=i + 1)
+    comp = wellness.compute_routine(db, "p1")
+    # 4 do tutor → bucket 4-7 = 70.
+    assert comp["score"] == 70
+    assert "0 com passeador" in comp["detail"] and "4 do tutor" in comp["detail"]
+
+
+def test_routine_no_self_walks_no_discriminator():
+    db = _db()
+    for i in range(2):
+        _add_walk(db, days_ago=i + 1, status="completed", wid=f"w{i}")
+    comp = wellness.compute_routine(db, "p1")
+    # Sem self-walks → detail simples, sem parênteses discriminando.
+    assert "do tutor" not in comp["detail"]
+
+
+def test_routine_self_walks_excluded_outside_window():
+    db = _db()
+    _add_self_walk(db, days_ago=40)  # fora dos 30d
+    comp = wellness.compute_routine(db, "p1")
+    assert comp["score"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Componente comportamento (observações 90d)
 # ---------------------------------------------------------------------------
 

@@ -42,6 +42,18 @@ class Pet(Base):
     diet_meals_per_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
     diet_meal_times: Mapped[str | None] = mapped_column(String, nullable=True)  # JSON simples (lista de horários)
     diet_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Perfil Vivo P0 (0094) — ficha expandida. Todas nullable, aditivas.
+    # supplements_json/fear_triggers_json = JSON simples em TEXT (padrão diet_meal_times).
+    supplements_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: [{name,dose,frequency}]
+    food_bag_weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)  # peso da embalagem atual (recompra P1)
+    food_bag_opened_at: Mapped["date | None"] = mapped_column(Date, nullable=True)  # quando abriu a embalagem
+    vet_clinic: Mapped[str | None] = mapped_column(String, nullable=True)  # vet_name/vet_phone já existem acima
+    insurance_provider: Mapped[str | None] = mapped_column(String, nullable=True)  # plano de saúde pet
+    insurance_policy: Mapped[str | None] = mapped_column(String, nullable=True)
+    behavior_with_dogs: Mapped[str | None] = mapped_column(String, nullable=True)  # amigavel|indiferente|reativo|desconhecido
+    behavior_with_children: Mapped[str | None] = mapped_column(String, nullable=True)
+    behavior_with_cats: Mapped[str | None] = mapped_column(String, nullable=True)
+    fear_triggers_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: ["trovão","fogos",...]
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     tutor = relationship("User", back_populates="pets")

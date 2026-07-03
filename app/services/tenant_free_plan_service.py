@@ -4,8 +4,9 @@ Decisão do Carlos (matriz final, docs/go-to-market/03-plano-gratuito-freemium.m
   Plano `free`: R$0/mês · comissão PRÓPRIA 20% · REDE desligada · sem multiplicadores
   · cap de 40 passeios próprios/mês · SÓ passeio avulso individual (nada de shared
   walks / pet tour / recorrência).
-  Reverse trial: tenant novo entra como `free` MAS roda como Pro completo por 21 dias
-  (comissão Pro + rede + multiplicadores) → depois é rebaixado para free de fato.
+  Reverse trial: tenant novo entra como `free` MAS roda como Pro completo pelo período
+  de teste (comissão Pro + rede + multiplicadores) → depois é rebaixado para free de fato.
+  Duração configurável via env FREE_PLAN_TRIAL_DAYS (default 7 dias).
 
 Nenhuma dimensão do free pode ser melhor que a do Pro (escada monotônica):
   mensalidade 0 → 129,90 · comissão própria 20 → 10 · rede off → 18.
@@ -30,8 +31,23 @@ TENANT_PLAN_FREE = "free"
 # Comissão própria do plano free (take-rate próprio). 20% por decisão do Carlos.
 FREE_PLAN_COMMISSION_PERCENT = 20.0
 
-# Duração padrão do reverse trial (em dias) — tenant novo roda como Pro por N dias.
-FREE_PLAN_TRIAL_DAYS = 21
+# Duração padrão do reverse trial (em dias) — configurável via env FREE_PLAN_TRIAL_DAYS.
+_DEFAULT_TRIAL_DAYS = 7
+
+
+def free_plan_trial_days() -> int:
+    """Duração do reverse trial em dias (env FREE_PLAN_TRIAL_DAYS, default 7).
+
+    Valor inválido/não-positivo cai no default (não zera o trial por engano de config).
+    Lida no momento do uso (não import-time) para ser testável via env override.
+    """
+    raw = os.getenv("FREE_PLAN_TRIAL_DAYS", str(_DEFAULT_TRIAL_DAYS))
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_TRIAL_DAYS
+    return value if value > 0 else _DEFAULT_TRIAL_DAYS
+
 
 # Cap default de passeios PRÓPRIOS por mês no plano free. Configurável via env.
 _DEFAULT_WALK_CAP = 40
@@ -43,7 +59,7 @@ _DEFAULT_PETS_PER_TUTOR = 2
 # Multiplicadores de receita + "Evolução do Pet" pro-only (mapa do Carlos 2026-07-02).
 # O bloqueio é aplicado NOS CHOKE POINTS de tenant_plan_service (tenant_feature_enabled/
 # tenant_has_feature), POR CIMA dos gates existentes (3 camadas do pet_live_profile,
-# TenantFeature etc.) — sem tocá-los. Trial 21d libera tudo (plano efetivo = pro).
+# TenantFeature etc.) — sem tocá-los. Trial ativo libera tudo (plano efetivo = pro).
 #
 # LIBERADO no free (NÃO listar aqui): pet_live_profile (cadastro/ficha do pet),
 # walk_observations_form (observação do passeador no relatório do passeio),
@@ -110,9 +126,13 @@ def effective_tenant_plan(tenant, *, now: datetime | None = None) -> str:
 
 
 def compute_trial_ends_at(created_at: datetime | None = None) -> datetime:
-    """Fim do reverse trial = criação + FREE_PLAN_TRIAL_DAYS dias."""
+    """Fim do reverse trial = criação + free_plan_trial_days() dias.
+
+    A duração é lida da env FREE_PLAN_TRIAL_DAYS (default 7) no momento da chamada,
+    nunca em import-time, para permitir override nos testes.
+    """
     base = created_at or datetime.utcnow()
-    return base + timedelta(days=FREE_PLAN_TRIAL_DAYS)
+    return base + timedelta(days=free_plan_trial_days())
 
 
 def plan_blocks_feature(tenant, key: str, *, now: datetime | None = None) -> bool:
@@ -165,7 +185,7 @@ def enforce_free_plan_pet_limit(db, tenant, tutor_id: str) -> None:
     """Trava de criação de pet NOVO no plano free: máx N pets por tutor (default 2).
 
     Só bloqueia CRIAÇÃO — downgrade do trial NÃO remove pets excedentes (o tutor
-    mantém os que já tem; apenas não cria novos acima do limite). Trial 21d isento
+    mantém os que já tem; apenas não cria novos acima do limite). Trial ativo isento
     (plano efetivo = pro). Pro/enterprise: no-op.
     """
     from fastapi import HTTPException

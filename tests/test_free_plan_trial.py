@@ -1,6 +1,6 @@
-"""Reverse trial de 21 dias do plano free.
+"""Reverse trial do plano free (duração configurável via FREE_PLAN_TRIAL_DAYS, default 7d).
 
-- Tenant criado com plan=free ganha trial_ends_at = criação + 21d (via rota).
+- Tenant criado com plan=free ganha trial_ends_at = criação + N dias (via rota).
 - DINHEIRO É STATELESS: comissão em trial = Pro (10%); expirado = free (20%) —
   mesmo sem o carimbo de downgrade ter rodado. Override custom prevalece.
 - maybe_downgrade_expired_trial: carimba UMA vez (idempotente), garante config
@@ -27,8 +27,8 @@ from app.services.payment_split_service import (
     update_payment_config,
 )
 from app.services.tenant_free_plan_service import (
-    FREE_PLAN_TRIAL_DAYS,
     compute_trial_ends_at,
+    free_plan_trial_days,
     maybe_downgrade_expired_trial,
 )
 
@@ -46,12 +46,31 @@ def _tenant(db, tid, plan, **kw) -> Tenant:
     return t
 
 
-# ── criação: trial de 21 dias ───────────────────────────────────────────────
+# ── criação: trial de 7 dias (default) ──────────────────────────────────────
 
-def test_compute_trial_ends_at_is_21_days():
+def test_compute_trial_ends_at_default_7_days(monkeypatch):
+    monkeypatch.delenv("FREE_PLAN_TRIAL_DAYS", raising=False)
     base = datetime(2026, 7, 2, 12, 0)
-    assert compute_trial_ends_at(base) == base + timedelta(days=21)
-    assert FREE_PLAN_TRIAL_DAYS == 21
+    assert compute_trial_ends_at(base) == base + timedelta(days=7)
+    assert free_plan_trial_days() == 7
+
+
+def test_free_plan_trial_days_env_override(monkeypatch):
+    """Duração é lida da env no momento do uso — testável sem patch de módulo."""
+    monkeypatch.setenv("FREE_PLAN_TRIAL_DAYS", "14")
+    assert free_plan_trial_days() == 14
+    base = datetime(2026, 7, 2, 12, 0)
+    assert compute_trial_ends_at(base) == base + timedelta(days=14)
+
+
+def test_free_plan_trial_days_invalid_env_falls_back_to_default(monkeypatch):
+    """Valor inválido na env retorna o default (7), não zera o trial por engano."""
+    monkeypatch.setenv("FREE_PLAN_TRIAL_DAYS", "nope")
+    assert free_plan_trial_days() == 7
+    monkeypatch.setenv("FREE_PLAN_TRIAL_DAYS", "0")
+    assert free_plan_trial_days() == 7
+    monkeypatch.setenv("FREE_PLAN_TRIAL_DAYS", "-5")
+    assert free_plan_trial_days() == 7
 
 
 def test_create_tenant_free_sets_trial():
@@ -70,7 +89,7 @@ def test_create_tenant_free_sets_trial():
     assert t is not None and t.plan == "free"
     assert t.trial_ends_at is not None
     delta = t.trial_ends_at - datetime.utcnow()
-    assert timedelta(days=20) < delta <= timedelta(days=21)
+    assert timedelta(days=6) < delta <= timedelta(days=7)
     assert t.trial_downgraded_at is None
     # Config de pagamento nasce no default do plano free (20%).
     assert get_or_create_payment_config(db, t.id).commission_percent == 20.0

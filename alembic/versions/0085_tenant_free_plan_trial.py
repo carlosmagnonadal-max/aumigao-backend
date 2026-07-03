@@ -2,7 +2,7 @@
 
 Plano `free` ("Começar"): R$0/mês, comissão própria 20%, REDE desligada, sem
 multiplicadores, cap de 40 passeios próprios/mês. Reverse trial: tenant novo entra
-como Pro por 21 dias e depois é rebaixado para free.
+como Pro pelo período de teste (FREE_PLAN_TRIAL_DAYS, default 7d) e depois é rebaixado para free.
 
 Colunas ADITIVAS em `tenants` (sem tabela nova → sem RLS nova):
   - trial_ends_at        TIMESTAMP NULL  → fim do reverse trial (Pro completo até lá).

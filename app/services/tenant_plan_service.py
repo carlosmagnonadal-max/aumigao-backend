@@ -36,7 +36,7 @@ def tenant_feature_enabled(tenant: Tenant, db: Session, key: str) -> bool:
 
     Semantica:
     - Plano free bloqueia multiplicadores/pro-only INDEPENDENTE dos toggles por
-      tenant (FREE_PLAN_BLOCKED_FEATURE_KEYS; trial 21d libera — plano efetivo pro).
+      tenant (FREE_PLAN_BLOCKED_FEATURE_KEYS; trial ativo libera — plano efetivo pro).
     - Linha na TenantFeature presente → usa o campo `enabled`.
     - Linha ausente → True se key em DEFAULT_ON_FEATURE_KEYS, False caso contrario.
 
@@ -266,7 +266,7 @@ def get_tenant_capabilities(tenant: Tenant, db: Session) -> dict[str, Any]:
 
 def tenant_has_feature(tenant: Tenant, db: Session, feature_key: str) -> bool:
     # Bloqueio por PLANO free (multiplicadores/pro-only) vence qualquer toggle do
-    # tenant — mesmo TenantFeature enabled=True não libera (trial 21d libera).
+    # tenant — mesmo TenantFeature enabled=True não libera (trial ativo libera).
     from app.services.tenant_free_plan_service import plan_blocks_feature
 
     if plan_blocks_feature(tenant, feature_key):
@@ -330,7 +330,7 @@ def tenant_tem_rede(tenant: Tenant, db: Session) -> bool:  # noqa: ARG001
         return bool(override)
 
     # Plano free ("Começar"): REDE DESLIGADA por decisão de plano. Usa o plano
-    # EFETIVO (trial-aware): durante o reverse trial de 21d o plano efetivo é
+    # EFETIVO (trial-aware): durante o reverse trial o plano efetivo é
     # "pro" → rede liberada. Pro/enterprise nunca entram neste ramo.
     from app.services.tenant_free_plan_service import effective_tenant_plan, is_free_plan
 

@@ -628,6 +628,8 @@ def _build_split_config_for_payment(db: Session, walk_id: str | None, tenant_id:
 
 @router.post("/create", response_model=PaymentResponse)
 async def create_payment(payload: PaymentCreate, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.dependencies.legal_gate import enforce_legal_acceptance
+    enforce_legal_acceptance(request, user, db)
     # Valida o modo antes de qualquer coisa (levanta 400 para modo desconhecido,
     # 503 para live sem chave configurada).
     cfg = _get_asaas_config()

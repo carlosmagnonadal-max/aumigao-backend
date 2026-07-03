@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -10,6 +10,7 @@ from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.legal_acceptance import LegalAcceptance
 from app.models.user import User
+from app.services import legal_status_service as status_svc
 
 
 router = APIRouter(prefix="/legal", tags=["legal"])
@@ -289,6 +290,8 @@ class LegalAcceptanceCreate(BaseModel):
     # Granular acceptance (CDC art. 54 §4): list of document types accepted.
     # When provided, `accepted` is ignored and each type is validated individually.
     accepted_types: list[str] | None = Field(default=None)
+    # Camada do aceite: "platform" (default, retrocompativel) ou "tenant".
+    scope: str = Field(default="platform")
 
 
 def _normalize_role(role: str | None, user: User | None = None) -> str:
@@ -333,6 +336,7 @@ def _serialize_acceptance(acceptance: LegalAcceptance | None) -> dict[str, Any] 
         "id": acceptance.id,
         "user_id": acceptance.user_id,
         "user_role": acceptance.user_role,
+        "tenant_id": acceptance.tenant_id,
         "terms_version": acceptance.terms_version,
         "privacy_version": acceptance.privacy_version,
         "cancellation_version": acceptance.cancellation_version,
@@ -390,17 +394,26 @@ def acceptance_status(
     }
 
 
-def accept_documents(
-    payload: LegalAcceptanceCreate,
+def legal_status(
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # O aceite e do usuario logado: o role DELE e a fonte de verdade (payload.role
-    # tem default "tutor", entao nao serve para distinguir passeador de tutor).
-    normalized_role = _normalize_role(getattr(current_user, "role", "") or payload.role)
+    """Status de aceite em 2 camadas (plataforma + tenant ativo da request).
 
+    tenant=None quando nao ha tenant ativo/vinculo. A camada tenant considera a
+    versao VIGENTE dos docs do tenant (custom ou base).
+    """
+    active_tenant_id = getattr(request.state, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+    return {
+        "platform": status_svc.platform_status(db, current_user, LEGAL_VERSION),
+        "tenant": status_svc.tenant_status(db, current_user, active_tenant_id),
+    }
+
+
+def _accept_platform(payload, db, current_user, normalized_role):
     if payload.accepted_types is not None:
-        # --- Granular path (CDC art. 54 §4) ---
+        # --- Granular path (CDC art. 54 4) ---
         required_types = {doc["type"] for doc in _documents_for_role(normalized_role)}
         provided_types = set(payload.accepted_types)
         missing = required_types - provided_types
@@ -423,15 +436,64 @@ def accept_documents(
         id=str(uuid.uuid4()),
         user_id=current_user.id,
         user_role=normalized_role,
+        tenant_id=None,
         accepted_at=datetime.utcnow(),
         **versions,
     )
     db.add(acceptance)
     db.commit()
     db.refresh(acceptance)
+    return acceptance
+
+
+def _accept_tenant(db, current_user, normalized_role, tenant_id):
+    from app.services import tenant_legal_document_service as tld
+
+    doc_types = status_svc.base.doc_types_for_role(normalized_role)
+    if not doc_types:
+        raise HTTPException(status_code=400, detail="Nenhum documento de tenant aplicavel ao seu papel.")
+    # Persiste as versoes VIGENTES dos docs do tenant nas colunas mapeadas.
+    version_kwargs = {}
+    for doc_type in doc_types:
+        column = status_svc._tenant_doc_column(doc_type)
+        version_kwargs[column] = tld.effective_version(db, tenant_id, doc_type)
+    acceptance = LegalAcceptance(
+        id=str(uuid.uuid4()),
+        user_id=current_user.id,
+        user_role=normalized_role,
+        tenant_id=tenant_id,
+        accepted_at=datetime.utcnow(),
+        **version_kwargs,
+    )
+    db.add(acceptance)
+    db.commit()
+    db.refresh(acceptance)
+    return acceptance
+
+
+def accept_documents(
+    payload: LegalAcceptanceCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # O aceite e do usuario logado: o role DELE e a fonte de verdade (payload.role
+    # tem default "tutor", entao nao serve para distinguir passeador de tutor).
+    normalized_role = _normalize_role(getattr(current_user, "role", "") or payload.role)
+    scope = (payload.scope or "platform").strip().lower()
+
+    if scope == "tenant":
+        tenant_id = getattr(request.state, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+        if not tenant_id:
+            raise HTTPException(status_code=400, detail="Nenhum tenant ativo para aceite por estabelecimento.")
+        acceptance = _accept_tenant(db, current_user, normalized_role, tenant_id)
+    else:
+        acceptance = _accept_platform(payload, db, current_user, normalized_role)
+
     return {
         "ok": True,
         "role": normalized_role,
+        "scope": scope if scope in {"platform", "tenant"} else "platform",
         "version": LEGAL_VERSION,
         "accepted": True,
         "acceptance": _serialize_acceptance(acceptance),
@@ -440,5 +502,6 @@ def accept_documents(
 
 for legal_router in (router, api_router):
     legal_router.add_api_route("/documents", list_documents, methods=["GET"])
+    legal_router.add_api_route("/status", legal_status, methods=["GET"])
     legal_router.add_api_route("/acceptance", acceptance_status, methods=["GET"])
     legal_router.add_api_route("/acceptance", accept_documents, methods=["POST"])

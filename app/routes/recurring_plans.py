@@ -87,6 +87,8 @@ async def subscribe_to_plan(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    from app.dependencies.legal_gate import enforce_legal_acceptance
+    enforce_legal_acceptance(request, user, db)
     tenant = _resolve_user_tenant(user, db, request)
     subscription = await svc.subscribe_async(db, tenant, user.id, plan_id, tutor_user=user)
     return _subscription_response(db, subscription)

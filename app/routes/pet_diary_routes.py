@@ -24,6 +24,8 @@ from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.pet_timeline_event import (
     EVENT_TYPE_CATEGORY,
+    QUICK_EVENT_TITLES,
+    QUICK_EVENT_TYPES,
     PetTimelineEvent,
     TIMELINE_CATEGORIES,
 )
@@ -116,6 +118,12 @@ def add_event(pet_id: str, payload: TimelineEventCreate,
         title, payload_json = svc.build_diary_entry(
             text=payload.diary_text or "", mood=payload.diary_mood, title=payload.title,
         )
+    elif payload.event_type in QUICK_EVENT_TYPES and not (title or "").strip():
+        # Registro rápido (Perfil Vivo P0): título default do servidor quando ausente.
+        # Eventos de rotina/saúde de fonte TUTOR — SEGUEM o tutor pela policy RLS 0093
+        # (o guard exclui só walk_observation/tenant_note; estes não estão lá). Sem
+        # mudança de policy necessária.
+        title = QUICK_EVENT_TITLES[payload.event_type]
 
     ev = svc.record_timeline_event(
         db, pet, event_type=payload.event_type, title=title, notes=payload.notes,

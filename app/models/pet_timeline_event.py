@@ -7,6 +7,33 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 
 EVENT_TYPES = {"vaccine", "weight", "health_note", "medication", "walk_observation", "birthday", "custom", "diary", "self_walk", "tenant_note"}
+
+# Registro rápido do TUTOR (Perfil Vivo P0) — eventos de rotina/saúde sem GPS.
+# São de fonte TUTOR e SEGUEM o tutor pela policy RLS 0093 (o guard exclui só
+# walk_observation/tenant_note — estes NÃO estão lá, então seguem automaticamente).
+# Título default no servidor via QUICK_EVENT_TITLES (rota).
+QUICK_EVENT_TYPES = {
+    "potty_pee", "potty_poop", "meal", "water", "short_walk", "play",
+    "hygiene_bath", "hygiene_brushing", "hygiene_nails", "hygiene_teeth",
+    "medication_given",
+}
+EVENT_TYPES |= QUICK_EVENT_TYPES
+
+# Título default por tipo de registro rápido, quando o cliente não manda `title`.
+QUICK_EVENT_TITLES = {
+    "potty_pee": "Xixi",
+    "potty_poop": "Cocô",
+    "meal": "Refeição",
+    "water": "Água",
+    "short_walk": "Voltinha",
+    "play": "Brincadeira",
+    "hygiene_bath": "Banho",
+    "hygiene_brushing": "Escovação",
+    "hygiene_nails": "Corte de unhas",
+    "hygiene_teeth": "Escovação dos dentes",
+    "medication_given": "Medicação dada",
+}
+
 EVENT_SOURCES = {"tutor", "walker", "admin", "system"}
 # Humores válidos do diário do tutor (Fase B) — armazenados no payload_json.
 DIARY_MOODS = {"bom", "neutro", "ruim"}

@@ -27,7 +27,7 @@ from app.models.protected_chat_message import ProtectedChatMessage
 from app.models.push_token import PushToken
 from app.models.walker_kit_submission import WalkerKitSubmission
 from app.models.walk_completion_review import WalkCompletionReview
-from app.models.legal_acceptance import LegalAcceptance
+from app.models.legal_acceptance import LegalAcceptance, TenantLegalDocument  # noqa: F401
 from app.models.tenant import Tenant, TenantBranding, TenantFeature, TenantSettings, TenantUnit
 from app.models.tenant_onboarding import TenantOnboarding
 from app.models.walker_network_profile import WalkerNetworkProfile

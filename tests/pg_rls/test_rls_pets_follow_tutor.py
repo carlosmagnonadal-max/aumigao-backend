@@ -182,10 +182,18 @@ class TestPetsFollowTutor:
 
     def test_T27_with_check_update_ok_insert_forge_blocked(self, owner_tx):
         """WITH CHECK: UPDATE do pet do tenant A sob sessão B (com vínculo) funciona;
-        INSERT forjando tenant_id de um TERCEIRO tenant continua bloqueado."""
+        INSERT de pet cujo TUTOR NÃO tem vínculo com o tenant da sessão é bloqueado.
+
+        NOTA (comportamento documentado da 0093): o ramo de VÍNCULO do WITH CHECK
+        compara o vínculo do tutor com o tenant da SESSÃO (não com o tenant_id da
+        linha) — necessário para o UPDATE legítimo do pet seguido (linha mantém
+        tenant_id=ta sob sessão tb). Consequência: com vínculo ativo, o RLS sozinho
+        NÃO impede gravar tenant_id de terceiro; essa defesa fica na camada de
+        aplicação (PetCreate/PetUpdate não expõem tenant_id — carimbo server-side).
+        Mesmo trade-off do precedente 0092 (users)."""
         cur = owner_tx.cursor()
         ta, tb = setup_tenants(cur)
-        tc = make_uid()  # terceiro tenant (sem vínculo) para o INSERT forjado
+        tc = make_uid()  # terceiro tenant para o tenant_id forjado
         cur.execute(
             """
             INSERT INTO tenants (id, slug, name, plan, status, created_at, updated_at)
@@ -196,6 +204,8 @@ class TestPetsFollowTutor:
         tutor = setup_user(cur, ta)
         pet = setup_pet(cur, ta, tutor)
         setup_tutor_link(cur, tb, tutor, status="active")
+        # tutor2 NÃO tem vínculo com tb — todos os ramos do WITH CHECK falham pra ele.
+        tutor2 = setup_user(cur, tc)
         owner_tx.commit()
 
         try:
@@ -208,8 +218,9 @@ class TestPetsFollowTutor:
                 assert app_cur.rowcount == 1, (
                     "UPDATE do pet seguido sob escopo B não afetou a linha"
                 )
-            # INSERT forjando tenant_id de um tenant de TERCEIRO (tc) sob sessão B: o
-            # WITH CHECK rejeita (nem escopo, nem NULL, nem dono, nem vínculo com tc).
+            # INSERT sob sessão B de pet de tutor SEM vínculo com B, forjando
+            # tenant_id=tc: nenhum ramo casa (nem escopo, nem NULL, nem dono — GUC de
+            # user ausente —, nem vínculo do tutor2 com tb) → WITH CHECK rejeita.
             intruder = make_uid()
             with app_session(tb) as app_cur:
                 with pytest.raises((psycopg2.errors.CheckViolation,
@@ -226,7 +237,7 @@ class TestPetsFollowTutor:
                                 true, false, false, false, false,
                                 '', '', '', '', 5.0, NOW())
                         """,
-                        (intruder, tc, tutor),  # sessão=tb mas tenant_id=tc (terceiro)
+                        (intruder, tc, tutor2),  # sessão=tb, tutor sem vínculo com tb
                     )
         finally:
             _cleanup(owner_tx, ta, tb, extra=(

@@ -35,6 +35,13 @@ FIX (RLS — amplia a policy `tenant_isolation`):
   casam vínculo ATIVO; o ramo dono é fechado por NOT IN ('-',''). Um tutor/pet sem
   vínculo ativo com o tenant do escopo continua invisível — nenhum vazamento.
 
+  TRADE-OFF DOCUMENTADO (WITH CHECK): o ramo de vínculo valida contra o tenant da
+  SESSÃO, não contra o tenant_id da linha — necessário para o UPDATE legítimo do pet
+  seguido (linha mantém tenant_id de origem sob sessão de outro tenant). Com vínculo
+  ativo, o RLS sozinho não impede gravar tenant_id de terceiro; essa defesa é da
+  camada de aplicação (PetCreate/PetUpdate NÃO expõem tenant_id — o carimbo de origem
+  é server-side em routes/pets.py). Mesmo trade-off do precedente 0092 (users).
+
 PERFORMANCE:
   Reusa o índice composto ix_tenant_tutor_access_lookup (tutor_user_id, tenant_id,
   status) criado na 0092 e o índice existente em pets.tutor_id (modelo). Nenhum índice

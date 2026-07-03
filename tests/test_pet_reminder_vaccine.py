@@ -19,6 +19,7 @@ from app.models.pet_reminder import PetReminder
 from app.models.pet_timeline_event import PetTimelineEvent
 from app.models.tenant import Tenant, TenantFeature
 from app.models.user import User
+from app.routes import pet_diary_routes  # noqa: F401 — anexa rotas Fase B/5 ao router
 from app.routes import pet_profile as routes
 
 

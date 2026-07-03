@@ -54,7 +54,7 @@ def _ctx(share_active=True, profile_active=True):
     return db
 
 
-def _client(db, user, env_profile=True, env_share=True, monkeypatch=None):
+def _client(db, user, env_profile=True, env_share=True, monkeypatch=None, use_bare=False):
     if monkeypatch:
         if env_profile:
             monkeypatch.setenv("PET_LIVE_PROFILE_ENABLED", "true")
@@ -66,7 +66,10 @@ def _client(db, user, env_profile=True, env_share=True, monkeypatch=None):
             monkeypatch.delenv("PET_SHARE_ENABLED", raising=False)
 
     app = FastAPI()
-    app.include_router(routes.api_router)
+    if use_bare:
+        app.include_router(routes.bare_router)
+    else:
+        app.include_router(routes.api_router)
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_current_user] = lambda: user
     return TestClient(app)
@@ -646,3 +649,38 @@ def test_public_timeline_health_note_payload_always_null(monkeypatch):
     assert len(hn) == 1
     assert hn[0]["payload_json"] is None
     assert "detalhe_sensivel" not in str(r.json())
+
+
+# ---------------------------------------------------------------------------
+# P1-1 — rota bare /pets/{id}/share-link (gêmeo sem prefix /api)
+# ---------------------------------------------------------------------------
+
+def test_bare_post_share_link(monkeypatch):
+    """POST /pets/{id}/share-link (sem /api) → 200, mesmo comportamento do /api."""
+    db = _ctx()
+    c = _client(db, db.get(User, "u1"), monkeypatch=monkeypatch, use_bare=True)
+
+    r = c.post("/pets/p1/share-link", json={"consent": True})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "token" in body
+    assert body["url"].startswith("https://app.aumigaowalk.com.br/pet/")
+
+
+def test_bare_delete_share_link(monkeypatch):
+    """DELETE /pets/{id}/share-link (sem /api) → 200 e revoga o link."""
+    db = _ctx()
+    # Cria via /api para ter link ativo
+    c_api = _client(db, db.get(User, "u1"), monkeypatch=monkeypatch)
+    c_api.post("/api/pets/p1/share-link", json={"consent": True})
+
+    c_bare = _client(db, db.get(User, "u1"), monkeypatch=monkeypatch, use_bare=True)
+    r = c_bare.delete("/pets/p1/share-link")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True}
+
+    db.expire_all()
+    from app.models.pet_share_link import PetShareLink
+    assert db.query(PetShareLink).filter(
+        PetShareLink.pet_id == "p1", PetShareLink.revoked_at.is_(None)
+    ).count() == 0

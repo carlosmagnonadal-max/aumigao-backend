@@ -675,7 +675,11 @@ app.include_router(walk_locations.api_router)
 app.include_router(live_share.router)
 app.include_router(live_share.api_router)
 app.include_router(pet_share.public_router)
+app.include_router(pet_share.bare_router)
 app.include_router(pet_share.api_router)
+# Fase B/5 (diário do tutor + stats): anexa suas rotas aos routers de pet_profile
+# ANTES do include_router (que congela o conjunto de rotas).
+from app.routes import pet_diary_routes  # noqa: E402,F401
 # Fase E (comportamento multi-fonte + convivência): anexa suas rotas aos routers
 # de pet_profile ANTES do include_router (que congela o conjunto de rotas).
 from app.routes import pet_behavior_routes  # noqa: E402,F401

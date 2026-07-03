@@ -132,8 +132,13 @@ def test_cap_blocks_free_tenant_at_limit(db, monkeypatch):
     with pytest.raises(HTTPException) as exc:
         enforce_free_plan_walk_cap(db, t)
     assert exc.value.status_code == 403
-    assert "plano Pro" in str(exc.value.detail)
-    assert "2/2" in str(exc.value.detail)
+    detail = exc.value.detail
+    assert isinstance(detail, dict), "detail deve ser dict estruturado (shape teaser)"
+    assert detail["code"] == "plan_upgrade_required"
+    assert detail["required_plan"] == "pro"
+    assert detail["feature"] == "walk_cap"
+    assert "plano Pro" in detail["message"]
+    assert "2/2" in detail["message"]
 
 
 def test_cap_allows_below_limit(db, monkeypatch):

@@ -229,6 +229,7 @@ def _pet_ctx(plan="free", **tenant_kw):
 
 
 def _pet_client(db, monkeypatch):
+    from app.routes import pet_diary_routes  # noqa: F401 — anexa rotas Fase B/5
     from app.routes import pet_profile as routes
     monkeypatch.setenv("PET_LIVE_PROFILE_ENABLED", "true")
     app = FastAPI()

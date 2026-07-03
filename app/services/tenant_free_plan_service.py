@@ -454,9 +454,14 @@ def enforce_free_plan_walk_cap(db, tenant, *, now: datetime | None = None) -> No
     if used >= cap:
         raise HTTPException(
             status_code=403,
-            detail=(
-                f"Limite de {cap} passeios/mês do plano gratuito atingido "
-                f"({used}/{cap}). Faça upgrade para o plano Pro e tenha passeios "
-                "ilimitados, rede de passeadores e recorrência."
-            ),
+            detail={
+                "code": "plan_upgrade_required",
+                "required_plan": "pro",
+                "feature": "walk_cap",
+                "message": (
+                    f"Limite de {cap} passeios/mês do plano gratuito atingido "
+                    f"({used}/{cap}). Faça upgrade para o plano Pro e tenha passeios "
+                    "ilimitados, rede de passeadores e recorrência."
+                ),
+            },
         )

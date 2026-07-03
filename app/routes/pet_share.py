@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 public_router = APIRouter(tags=["pet-share"])
 # Router autenticado com prefix /api
 api_router = APIRouter(prefix="/api", tags=["pet-share"])
+# Router bare (sem prefix /api) para paridade com os demais arquivos de rota pet
+bare_router = APIRouter(tags=["pet-share"])
 
 PUBLIC_BASE = "https://app.aumigaowalk.com.br"
 _SHARE_LINK_TTL_DAYS = 30
@@ -231,6 +233,7 @@ def _create_share_link(pet_id: str, body: ShareLinkCreate, user: User, db: Sessi
 
 
 @api_router.post("/pets/{pet_id}/share-link")
+@bare_router.post("/pets/{pet_id}/share-link")
 def create_share_link(
     pet_id: str,
     body: ShareLinkCreate,
@@ -267,6 +270,7 @@ def _revoke_share_link(pet_id: str, user: User, db: Session) -> dict:
 
 
 @api_router.delete("/pets/{pet_id}/share-link")
+@bare_router.delete("/pets/{pet_id}/share-link")
 def revoke_share_link(
     pet_id: str,
     user: User = Depends(get_current_user),

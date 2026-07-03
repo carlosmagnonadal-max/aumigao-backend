@@ -11,7 +11,7 @@ o gate do tenant DO PASSEIO (não do usuário logado).
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator

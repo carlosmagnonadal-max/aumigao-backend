@@ -29,10 +29,11 @@ from app.models.tenant_product_highlight import TenantProductHighlight
 # Limite default de itens ATIVOS por tenant (env PRODUCT_HIGHLIGHTS_MAX_ACTIVE, default 6).
 _DEFAULT_MAX_ACTIVE = 6
 
-# Limites de tamanho (coerentes com a migration 0090 / contrato).
+# Limites de tamanho (coerentes com a migration 0090/0095 / contrato).
 TITLE_MAX = 120
 DESCRIPTION_MAX = 500
 PHOTO_URL_MAX = 2000
+PRODUCT_URL_MAX = 2000
 
 
 def product_highlights_max_active() -> int:
@@ -83,6 +84,31 @@ def _validate_prices(price_cents: int | None, promo_price_cents: int | None) -> 
         )
 
 
+def _validate_product_url(url: str | None) -> str | None:
+    """Valida e normaliza o link do produto.
+
+    - None / vazio → None (campo opcional).
+    - Presente: strip, deve começar com http:// ou https:// (422 caso contrário).
+    - Máximo PRODUCT_URL_MAX caracteres.
+    """
+    if url is None:
+        return None
+    url = url.strip()
+    if not url:
+        return None
+    if len(url) > PRODUCT_URL_MAX:
+        raise HTTPException(
+            status_code=422,
+            detail=f"product_url deve ter no máximo {PRODUCT_URL_MAX} caracteres.",
+        )
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(
+            status_code=422,
+            detail="product_url deve começar com http:// ou https://.",
+        )
+    return url
+
+
 def _count_active(db: Session, tenant_id: str, *, exclude_id: str | None = None) -> int:
     q = db.query(TenantProductHighlight).filter(
         TenantProductHighlight.tenant_id == tenant_id,
@@ -118,6 +144,7 @@ def to_admin_dict(h: TenantProductHighlight) -> dict:
         "title": h.title,
         "description": h.description,
         "photo_url": h.photo_url,
+        "product_url": h.product_url,
         "price_cents": h.price_cents,
         "promo_price_cents": h.promo_price_cents,
         "is_active": bool(h.is_active),
@@ -140,6 +167,7 @@ def to_public_dict(h: TenantProductHighlight) -> dict:
         "title": h.title,
         "description": h.description,
         "photo_url": h.photo_url,
+        "product_url": h.product_url,
         "price_cents": h.price_cents,
         "promo_price_cents": h.promo_price_cents,
         "has_promo": has_promo,
@@ -197,6 +225,7 @@ def create_highlight(
     title: str,
     description: str | None = None,
     photo_url: str | None = None,
+    product_url: str | None = None,
     price_cents: int | None = None,
     promo_price_cents: int | None = None,
     is_active: bool = True,
@@ -206,6 +235,7 @@ def create_highlight(
     title = _clean_str(title, max_len=TITLE_MAX, field="title", required=True)
     description = _clean_str(description, max_len=DESCRIPTION_MAX, field="description", required=False)
     photo_url = _clean_str(photo_url, max_len=PHOTO_URL_MAX, field="photo_url", required=False)
+    product_url = _validate_product_url(product_url)
     _validate_prices(price_cents, promo_price_cents)
 
     if is_active:
@@ -218,6 +248,7 @@ def create_highlight(
         title=title,
         description=description,
         photo_url=photo_url,
+        product_url=product_url,
         price_cents=price_cents,
         promo_price_cents=promo_price_cents,
         is_active=is_active,
@@ -259,6 +290,8 @@ def update_highlight(
         fields["photo_url"] = _clean_str(
             fields["photo_url"], max_len=PHOTO_URL_MAX, field="photo_url", required=False
         )
+    if "product_url" in fields:
+        fields["product_url"] = _validate_product_url(fields["product_url"])
 
     activating = fields.get("is_active") is True and not highlight.is_active
     if activating:

@@ -295,11 +295,14 @@ def list_walks(
             # restritos aos tenants que ele atende.
             # M-04: removido o allow tenant_id IS NULL (vazamento cross-tenant).
             # Auditoria 2026-06-17 confirmou 0 walks orfaos em prod.
+            # R7: defesa explícita — passeios AGUARDANDO PAGAMENTO nunca aparecem para
+            # o walker no pool disponível (o gate já muda o status, isto evita regressão).
             query = query.filter(
                 (Walk.walker_id == user.id)
                 | (
                     Walk.walker_id.is_(None)
                     & Walk.tenant_id.in_(allowed_tenant_ids)
+                    & (Walk.operational_status != "awaiting_payment")
                 )
             )
         elif user.role in {"admin", "super_admin"}:
@@ -319,11 +322,14 @@ def list_walks(
         # restritos aos tenants que ele atende.
         # M-04: removido o allow tenant_id IS NULL (vazamento cross-tenant).
         # Auditoria 2026-06-17 confirmou 0 walks orfaos em prod.
+        # R7: defesa explícita — passeios AGUARDANDO PAGAMENTO nunca aparecem para
+        # o walker no pool disponível (o gate já muda o status, isto evita regressão).
         query = query.filter(
             (Walk.walker_id == user.id)
             | (
                 Walk.walker_id.is_(None)
                 & Walk.tenant_id.in_(allowed_tenant_ids)
+                & (Walk.operational_status != "awaiting_payment")
             )
         )
     elif user.role in {"admin", "super_admin"}:
@@ -334,10 +340,13 @@ def list_walks(
     return _serialize_walk_list(rows, user)
 
 def _require_payment_before_matching() -> bool:
-    """R7: gate de produto. Quando ligado, o walk só entra no fluxo operacional
-    (matching) depois que o pagamento liquida — antes disso fica 'awaiting_payment'.
-    Default DESLIGADO para não mudar o comportamento de produção sem decisão."""
-    return os.getenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "false").strip().lower() in {"1", "true", "yes", "on"}
+    """R7: gate de produto (fail-closed). Quando ligado, o walk só entra no fluxo
+    operacional (matching) depois que o pagamento liquida — antes disso fica
+    'awaiting_payment'. DEFAULT LIGADO: passeio só fica visível/aceitável pro
+    passeador com pagamento LIQUIDADO (regra do dono). Exceções legítimas
+    (assinatura, cupom 100%, crédito de rede) têm fluxos próprios que promovem o
+    walk. Pode ser DESLIGADO via env REQUIRE_PAYMENT_BEFORE_MATCHING=false."""
+    return os.getenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @router.post("", response_model=WalkResponse)

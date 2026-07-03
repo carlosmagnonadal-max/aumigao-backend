@@ -23,6 +23,13 @@ os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.setdefault("RUN_STARTUP_ADMIN_SEED", "false")
 os.environ.setdefault("RUN_LEGACY_ID_COMPAT", "false")
 
+# 2b) Gate de pagamento (R7): o DEFAULT DE PRODUÇÃO é LIGADO (fail-closed), mas os
+#     testes LEGADOS de criação/matching foram escritos assumindo o passeio já
+#     nascendo agendado. Para não reescrever dezenas de suítes, a suíte roda com o
+#     gate DESLIGADO por padrão; os testes NOVOS do gate ligam-no explicitamente via
+#     monkeypatch.setenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "true"), que sobrepõe isto.
+os.environ.setdefault("REQUIRE_PAYMENT_BEFORE_MATCHING", "false")
+
 # 3) Chave fixa de cifragem de PII (CPF/RG) para os testes — Fernet key válida de 32 bytes.
 #    NUNCA usar em produção (lá vem de PII_ENCRYPTION_KEY no ambiente).
 #    Gerada com: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"

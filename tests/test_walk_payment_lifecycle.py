@@ -2,8 +2,8 @@
 
 Com o gate REQUIRE_PAYMENT_BEFORE_MATCHING ligado, o walk nasce 'awaiting_payment'
 e só entra no fluxo operacional quando o webhook de pagamento confirmado o libera.
-Default desligado (não muda produção). Aqui testamos o gate (puro) e a liberação
-no webhook (a parte que vale mesmo com gate desligado: só age em walks à espera).
+Default LIGADO (fail-closed — regra do dono). Aqui testamos o gate (puro) e a
+liberação no webhook (que só age em walks à espera).
 """
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -58,8 +58,14 @@ def _webhook(client, event="PAYMENT_CONFIRMED", prov="prov-1", status="CONFIRMED
                        headers={"asaas-access-token": "segredo"})
 
 
-def test_gate_default_off(monkeypatch):
+def test_gate_default_on(monkeypatch):
+    # Fail-closed: sem env explícito, o gate está LIGADO (regra do dono).
     monkeypatch.delenv("REQUIRE_PAYMENT_BEFORE_MATCHING", raising=False)
+    assert _require_payment_before_matching() is True
+
+
+def test_gate_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "false")
     assert _require_payment_before_matching() is False
 
 

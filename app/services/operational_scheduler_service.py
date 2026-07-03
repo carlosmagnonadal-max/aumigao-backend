@@ -384,44 +384,111 @@ def _task_pet_reminder_alerts(db: Session) -> int:
     return task_pet_reminder_alerts(db)
 
 
+def _parse_walk_start(scheduled_date: str | None) -> datetime | None:
+    """Parseia o INÍCIO do passeio (naive UTC) a partir de walk.scheduled_date.
+
+    scheduled_date é uma string ISO tipo 'YYYY-MM-DDTHH:MM' (o app grava data+hora
+    juntas). Sem hora (só data), assume início de dia. Devolve None se não parseável
+    — nesse caso o corte de 45min não se aplica (só o timeout de 24h).
+    """
+    if not scheduled_date:
+        return None
+    raw = str(scheduled_date).strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        # Fallback: só a parte de data (sem hora) — início de dia.
+        date_part = raw.partition("T")[0]
+        try:
+            return datetime.fromisoformat(date_part).replace(tzinfo=None)
+        except ValueError:
+            return None
+
+
+def _cancel_pending_charge_for_walk(db: Session, walk_id: str) -> None:
+    """Cancela no Asaas a cobrança PENDENTE do walk (best-effort) e marca o Payment
+    local como `cancelado_regenerado`. Reusa o helper de mutação de cobrança (item B).
+    Nunca levanta — dinheiro/estado do walk já foi decidido pelo caller.
+    """
+    try:
+        from app.models.payment import Payment
+        from app.routes.payments import PAYMENT_PENDING_STATUSES, cancel_asaas_charge_sync
+        pendings = (
+            db.query(Payment)
+            .filter(
+                Payment.walk_id == walk_id,
+                Payment.status.in_(list(PAYMENT_PENDING_STATUSES)),
+            )
+            .all()
+        )
+        for pay in pendings:
+            cancel_asaas_charge_sync(pay.provider, pay.provider_payment_id)
+            pay.status = "cancelado_regenerado"
+            db.add(pay)
+    except Exception:
+        # best-effort: cancelar a cobrança nunca deve travar a expiração do walk.
+        pass
+
+
 def _task_expire_unpaid_walks(db: Session) -> int:
-    """R7: cancela passeios que ficaram 'awaiting_payment' além do prazo do PIX.
+    """R7 + corte de 45min: cancela passeios 'awaiting_payment' não pagos a tempo.
 
     Passeio nasce aguardando pagamento (gate REQUIRE_PAYMENT_BEFORE_MATCHING).
-    Se o pagamento não liquida em WALK_PAYMENT_TIMEOUT_HOURS (default 24 — janela do
-    PIX D+1), o walk é cancelado e o tutor é notificado. Idempotente: só toca walks
-    ainda em 'awaiting_payment'; lote limitado a 50 por ciclo.
+    Dois critérios de expiração (basta um):
+      1. Timeout absoluto: criado há mais de WALK_PAYMENT_TIMEOUT_HOURS (default 24).
+      2. Corte operacional: o INÍCIO do passeio está a menos de
+         WALK_PAYMENT_CUTOFF_MINUTES (default 45) de agora, ou já passou — sem
+         pagamento, não dá mais tempo de executar.
+    Ao expirar (por qualquer critério): cancela TAMBÉM a cobrança pendente no Asaas
+    (DELETE, best-effort). Idempotente; lote limitado a 50 por ciclo.
     """
     from app.services.operational_matching_service import notify_tutor_walk_event
 
     timeout_hours = _int_env("WALK_PAYMENT_TIMEOUT_HOURS", 24)
-    cutoff = _utcnow() - timedelta(hours=timeout_hours)
+    cutoff_minutes = _int_env("WALK_PAYMENT_CUTOFF_MINUTES", 45)
+    now = _utcnow()
+    timeout_cutoff = now - timedelta(hours=timeout_hours)
+    start_deadline = now + timedelta(minutes=cutoff_minutes)
+
     walks = (
         db.query(Walk)
-        .filter(
-            Walk.operational_status == "awaiting_payment",
-            Walk.created_at < cutoff,
-        )
+        .filter(Walk.operational_status == "awaiting_payment")
         .order_by(Walk.created_at.asc())
         .limit(50)
         .all()
     )
     cancelled: list[tuple[str, str | None]] = []
     for walk in walks:
+        timed_out = walk.created_at is not None and walk.created_at < timeout_cutoff
+        walk_start = _parse_walk_start(walk.scheduled_date)
+        past_cutoff = walk_start is not None and walk_start <= start_deadline
+        if not (timed_out or past_cutoff):
+            continue
+
+        reason = (
+            "Pagamento não confirmado a tempo (corte de %d min antes do início)." % cutoff_minutes
+            if past_cutoff
+            else "Pagamento não confirmado no prazo."
+        )
+        expiry_kind = "payment_cutoff" if past_cutoff else "payment_timeout"
         walk.operational_status = "ride_cancelled"
         walk.status = "Cancelado"
-        walk.no_walker_reason = "Pagamento não confirmado no prazo."
+        walk.no_walker_reason = reason
         db.add(walk)
+        # Cancela a cobrança pendente no Asaas antes de seguir (best-effort).
+        _cancel_pending_charge_for_walk(db, walk.id)
         try:
             notify_tutor_walk_event(
                 db,
                 walk,
                 title="Passeio cancelado",
-                message="Seu passeio foi cancelado porque o pagamento não foi confirmado no prazo.",
+                message="Seu passeio foi cancelado porque o pagamento não foi confirmado a tempo.",
                 notification_type="walk_status",
                 priority="high",
                 action="ride_cancelled",
-                metadata={"reason": "payment_timeout"},
+                metadata={"reason": expiry_kind},
             )
         except Exception:
             # Notificação é best-effort: nunca impede o cancelamento (estado > push).
@@ -439,8 +506,13 @@ def _task_expire_unpaid_walks(db: Session) -> int:
             event_type="unpaid_walk_expired",
             severity="info",
             source="scheduler.payment_expiry",
-            message="Passeio cancelado por pagamento não confirmado no prazo.",
-            context={"walk_id": walk_id, "tenant_id": tenant_id, "timeout_hours": timeout_hours},
+            message="Passeio cancelado por pagamento não confirmado a tempo.",
+            context={
+                "walk_id": walk_id,
+                "tenant_id": tenant_id,
+                "timeout_hours": timeout_hours,
+                "cutoff_minutes": cutoff_minutes,
+            },
         )
     return len(cancelled)
 

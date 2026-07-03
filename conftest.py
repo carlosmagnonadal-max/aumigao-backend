@@ -30,6 +30,14 @@ os.environ.setdefault("RUN_LEGACY_ID_COMPAT", "false")
 #     monkeypatch.setenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "true"), que sobrepõe isto.
 os.environ.setdefault("REQUIRE_PAYMENT_BEFORE_MATCHING", "false")
 
+# 2c) Aceite legal BLOQUEANTE (feat/aceite-legal-bloqueante): o DEFAULT DE PRODUCAO
+#     e LIGADO (fail-closed), mas as suites LEGADAS de rota exercitam
+#     create_walk/create_payment/accept/subscribe sem passar pelo fluxo de aceite.
+#     Para nao reescrever ~17 suites, a suite roda com o enforcement DESLIGADO por
+#     padrao; os testes NOVOS do aceite ligam via monkeypatch.setenv(
+#     "LEGAL_ACCEPTANCE_ENFORCED", "true"). Mesmo padrao do gate de pagamento acima.
+os.environ.setdefault("LEGAL_ACCEPTANCE_ENFORCED", "false")
+
 # 3) Chave fixa de cifragem de PII (CPF/RG) para os testes — Fernet key válida de 32 bytes.
 #    NUNCA usar em produção (lá vem de PII_ENCRYPTION_KEY no ambiente).
 #    Gerada com: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"

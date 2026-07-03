@@ -351,6 +351,8 @@ def _require_payment_before_matching() -> bool:
 
 @router.post("", response_model=WalkResponse)
 def create_walk(payload: WalkCreate, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.dependencies.legal_gate import enforce_legal_acceptance
+    enforce_legal_acceptance(request, user, db)
     logger.warning(
         "create_walk.start user_id=%s role=%s payload=%s",
         user.id,

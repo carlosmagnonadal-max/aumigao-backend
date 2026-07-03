@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -50,7 +50,9 @@ def start_walk_matching(walk_id: str, user: User = Depends(get_current_user), db
 
 @router.post("/{walk_id}/accept")
 @api_router.post("/{walk_id}/accept")
-def accept_walk_request(walk_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def accept_walk_request(walk_id: str, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.dependencies.legal_gate import enforce_legal_acceptance
+    enforce_legal_acceptance(request, user, db)
     if user.role != "walker":
         raise HTTPException(status_code=403, detail="Apenas passeadores podem aceitar.")
     # with_for_update() garante exclusao mutua em Postgres (no-op em SQLite nos testes).

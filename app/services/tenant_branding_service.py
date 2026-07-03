@@ -1,3 +1,4 @@
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models.tenant import Tenant, TenantBranding
@@ -57,12 +58,35 @@ def get_tenant_branding_runtime(db: Session, tenant_id: str | None = None, tenan
     }
 
 
+def _enforce_powered_by_plan(tenant: Tenant, db: Session, powered_by_enabled: bool) -> None:
+    """Rejeita powered_by_enabled=False quando o plano do tenant exige o selo.
+
+    Cobre ambas as familias de update (A self-service + B super_admin) pois o
+    enforcement fica no servico, nao na rota.
+    """
+    if powered_by_enabled:
+        # Ligar o selo nunca e um problema.
+        return
+    from app.services.tenant_plan_service import get_plan_capabilities
+    from app.services.tenant_free_plan_service import effective_tenant_plan
+
+    caps = get_plan_capabilities(effective_tenant_plan(tenant))
+    if caps.get("powered_by_required", False):
+        raise HTTPException(
+            status_code=422,
+            detail="Seu plano exige o selo 'powered by Aumigao'.",
+        )
+
+
 def update_tenant_branding_runtime(
     db: Session,
     tenant: Tenant,
     payload: TenantBrandingUpdatePayload,
     actor=None,
 ) -> dict[str, str | bool]:
+    # Enforcement de plano: free/starter nao pode desligar o powered_by.
+    _enforce_powered_by_plan(tenant, db, payload.powered_by_enabled)
+
     branding = tenant.branding
     if not branding:
         branding = TenantBranding(tenant_id=tenant.id, display_name=payload.display_name)

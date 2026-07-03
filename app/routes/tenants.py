@@ -52,6 +52,8 @@ from app.services.tenant_plan_service import (
 )
 from app.services import tenant_saas_billing_service as saas_billing
 from app.services.recurring_plan_seed import seed_base_recurring_plans
+from app.schemas.tenant_branding_update import TenantBrandingUpdatePayload
+from app.services.tenant_branding_service import update_tenant_branding_runtime
 
 
 # ── Schema local (Fase 1 Passo 1) ─────────────────────────────────────────────
@@ -248,16 +250,42 @@ def get_tenant_branding(tenant_id: str, admin: User = Depends(get_current_user),
 @router.patch("/{tenant_id}/branding", response_model=TenantBrandingResponse)
 @api_router.patch("/{tenant_id}/branding", response_model=TenantBrandingResponse)
 def update_tenant_branding(tenant_id: str, payload: TenantBrandingUpdate, admin: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """PATCH branding do tenant por id (familia B — super_admin).
+
+    Delega ao mesmo servico da familia A para garantir:
+    - incremento de published_version (invalida cache do cliente, spec §9.4);
+    - enforcement de powered_by_required por plano;
+    - evento de auditoria de publicacao de branding.
+
+    Campos nao informados (exclude_unset) sao preenchidos a partir do estado atual,
+    preservando o comportamento de PATCH parcial.
+    """
     _scope_or_404(admin, tenant_id, db)
     tenant = _tenant_or_404(tenant_id, db)
-    branding = tenant.branding or _default_branding(tenant)
-    db.add(branding)
+
+    # Mescla o estado atual com os campos enviados (PATCH parcial).
+    current = tenant.branding
+    merged = TenantBrandingUpdatePayload(
+        display_name=(current.display_name if current and current.display_name is not None else (tenant.name or "")),
+        app_name=(current.app_name if current and current.app_name is not None else (tenant.name or "")),
+        logo_url=(current.logo_url if current and current.logo_url is not None else ""),
+        icon_url=(current.icon_url if current and current.icon_url is not None else ""),
+        splash_image_url=(current.splash_image_url if current and current.splash_image_url is not None else ""),
+        primary_color=(current.primary_color if current and current.primary_color is not None else ""),
+        secondary_color=(current.secondary_color if current and current.secondary_color is not None else ""),
+        accent_color=(current.accent_color if current and current.accent_color is not None else ""),
+        powered_by_enabled=(current.powered_by_enabled if current and current.powered_by_enabled is not None else True),
+    )
     for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(branding, field, value.strip() if isinstance(value, str) else value)
-    branding.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(branding)
-    return branding
+        setattr(merged, field, value)
+
+    # Chama o servico unificado (bumpa published_version + auditoria + enforcement).
+    update_tenant_branding_runtime(db, tenant, merged, actor=admin)
+
+    # Devolve a resposta no schema legado (TenantBrandingResponse) para manter
+    # compatibilidade com clientes da familia B.
+    db.refresh(tenant)
+    return tenant.branding
 
 
 @router.get("/{tenant_id}/settings", response_model=TenantSettingsResponse)

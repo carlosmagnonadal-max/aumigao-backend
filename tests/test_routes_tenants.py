@@ -194,3 +194,53 @@ def test_update_tenant_invalid_plan_400():
     client, _ = build()
     r = client.patch("/admin/tenants/t-1", json={"plan": "ultra"})
     assert r.status_code == 400
+
+
+# ----- PATCH branding familia B (super_admin) -----
+
+def test_patch_branding_familia_b_bumps_published_version():
+    """PATCH /{tenant_id}/branding (familia B) deve incrementar published_version.
+
+    Antes do fix, o handler gravava diretamente no ORM sem chamar o servico,
+    portanto published_version ficava inalterado (bug de cache). Apos o fix,
+    delega ao servico unificado que faz o bump.
+    """
+    from app.models.tenant import TenantBranding
+
+    client, db = build()
+
+    # Estado inicial: sem branding (published_version implicitamente 0).
+    r = client.patch("/admin/tenants/t-1/branding", json={"display_name": "Nova"})
+    assert r.status_code == 200, r.text
+
+    stored = db.query(TenantBranding).filter(TenantBranding.tenant_id == "t-1").first()
+    assert stored is not None
+    assert stored.published_version == 1  # 0 -> 1 (bump obrigatorio)
+
+
+def test_patch_branding_familia_b_segundo_update_incrementa():
+    """Segunda chamada na familia B incrementa novamente (2 -> 3)."""
+    from app.models.tenant import TenantBranding
+
+    client, db = build()
+
+    client.patch("/admin/tenants/t-1/branding", json={"display_name": "v1"})
+    client.patch("/admin/tenants/t-1/branding", json={"display_name": "v2"})
+
+    stored = db.query(TenantBranding).filter(TenantBranding.tenant_id == "t-1").first()
+    assert stored.published_version == 2
+
+
+def test_patch_branding_familia_b_powered_by_false_free_422():
+    """Familia B tambem e bloqueada pelo enforcement de plano (powered_by_required)."""
+    client, db = build()
+    # Muda tenant para plano free.
+    tenant = db.query(Tenant).filter(Tenant.id == "t-1").first()
+    tenant.plan = "free"
+    db.commit()
+
+    r = client.patch("/admin/tenants/t-1/branding", json={
+        "display_name": "Teste",
+        "powered_by_enabled": False,
+    })
+    assert r.status_code == 422, r.text

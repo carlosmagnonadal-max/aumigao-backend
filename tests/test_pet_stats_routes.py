@@ -21,6 +21,7 @@ from app.models.tenant import Tenant, TenantFeature
 from app.models.user import User
 from app.models.walk import Walk
 from app.models.walk_observation import WalkObservation
+from app.routes import pet_diary_routes  # noqa: F401 — anexa rotas Fase B/5 ao api_router
 from app.routes import pet_profile as routes
 
 

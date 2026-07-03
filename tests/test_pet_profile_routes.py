@@ -16,6 +16,7 @@ from app.models.tenant import Tenant, TenantFeature
 from app.models.user import User
 from app.models.pet import Pet
 from app.models.pet_profile_config import PetProfileConfig
+from app.routes import pet_diary_routes  # noqa: F401 — anexa rotas Fase B/5 ao router
 from app.routes import pet_profile as routes
 
 

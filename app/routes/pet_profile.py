@@ -15,7 +15,13 @@ from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_permission
 from app.dependencies.tenant_scope import get_admin_tenant_scope
 from app.models.pet import Pet
-from app.models.pet_timeline_event import DIARY_MOODS, PetTimelineEvent, EVENT_TYPES
+from app.models.pet_timeline_event import (
+    DIARY_MOODS,
+    EVENT_TYPE_CATEGORY,
+    EVENT_TYPES,
+    PetTimelineEvent,
+    TIMELINE_CATEGORIES,
+)
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.walk import Walk
@@ -179,13 +185,38 @@ def _event_dict(e: PetTimelineEvent) -> dict:
     }
 
 
+# Tipos que NÃO têm categoria fixa e aparecem em TODAS as categorias (Fase E):
+# diary (entrada livre do tutor). Somado ao mapa EVENT_TYPE_CATEGORY.
+_CATEGORY_ALWAYS_TYPES = {"diary"}
+
+
+def _category_matches(ev: PetTimelineEvent, category: str) -> bool:
+    """True se o evento pertence à `category` (Fase E).
+
+    - diary: aparece em todas as categorias (sem categoria fixa);
+    - tenant_note: categoria vem do payload_json.category (por-evento);
+    - demais tipos: mapa EVENT_TYPE_CATEGORY (tipo→categoria default).
+    """
+    if ev.event_type in _CATEGORY_ALWAYS_TYPES:
+        return True
+    if ev.event_type == "tenant_note":
+        try:
+            return (json.loads(ev.payload_json or "{}") or {}).get("category") == category
+        except (json.JSONDecodeError, TypeError):
+            return False
+    return EVENT_TYPE_CATEGORY.get(ev.event_type) == category
+
+
 @router.get("/{pet_id}/timeline")
 @api_router.get("/{pet_id}/timeline")
 def get_timeline(pet_id: str, cursor: str | None = Query(None), limit: int = Query(20, ge=1, le=100),
+                 category: str | None = Query(None),
                  user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_active(db, user)
     _require_pet_evolution_plan(db, user, feature="pet_timeline", label="Timeline do pet")
     _get_owned_pet(db, pet_id, user)
+    if category is not None and category not in TIMELINE_CATEGORIES:
+        raise HTTPException(status_code=422, detail=f"category inválida: {category!r}")
     q = db.query(PetTimelineEvent).filter(PetTimelineEvent.pet_id == pet_id)
     if cursor:
         try:
@@ -193,9 +224,23 @@ def get_timeline(pet_id: str, cursor: str | None = Query(None), limit: int = Que
         except ValueError:
             raise HTTPException(status_code=400, detail="cursor inválido")
         q = q.filter(PetTimelineEvent.occurred_at < _cur)
-    rows = q.order_by(PetTimelineEvent.occurred_at.desc()).limit(limit + 1).all()
-    events = rows[:limit]
-    next_cursor = events[-1].occurred_at.isoformat() if len(rows) > limit and events else None
+
+    # Sem filtro de categoria: comportamento atual intacto (aditivo).
+    if category is None:
+        rows = q.order_by(PetTimelineEvent.occurred_at.desc()).limit(limit + 1).all()
+        events = rows[:limit]
+        next_cursor = events[-1].occurred_at.isoformat() if len(rows) > limit and events else None
+        return {"events": [_event_dict(e) for e in events], "next_cursor": next_cursor}
+
+    # Com categoria: pré-filtra por tipo elegível no SQL (mapa + diary + tenant_note),
+    # depois refina tenant_note pela category do payload em Python. Pagina após o refino.
+    eligible_types = {t for t, c in EVENT_TYPE_CATEGORY.items() if c == category}
+    eligible_types |= _CATEGORY_ALWAYS_TYPES | {"tenant_note"}
+    q = q.filter(PetTimelineEvent.event_type.in_(list(eligible_types)))
+    candidates = q.order_by(PetTimelineEvent.occurred_at.desc()).all()
+    filtered = [e for e in candidates if _category_matches(e, category)]
+    events = filtered[:limit]
+    next_cursor = events[-1].occurred_at.isoformat() if len(filtered) > limit and events else None
     return {"events": [_event_dict(e) for e in events], "next_cursor": next_cursor}
 
 
@@ -318,6 +363,11 @@ def _admin_tenant_id(admin: User, db: Session) -> str:
     if not tid:
         raise HTTPException(status_code=400, detail="tenant_id obrigatório para admin global.")
     return tid
+
+
+# NB: a observação estruturada do TENANT (POST tenant_note, Fase E) e o mapa de
+# convivência (GET companions, Fase E) ficam em pet_behavior_routes.py — reusam os
+# routers/helpers deste módulo (mantém pet_profile.py mais enxuto).
 
 
 @admin_router.get("/config")

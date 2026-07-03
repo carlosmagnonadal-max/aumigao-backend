@@ -16,7 +16,9 @@ from tests.pg_rls.conftest import (
     make_uid,
     setup_pet,
     setup_tenants,
+    setup_tutor_link,
     setup_user,
+    setup_walker_link,
 )
 
 
@@ -232,6 +234,116 @@ class TestUsersSelfIdentity:
                 )
         finally:
             cur2 = owner_tx.cursor()
+            cur2.execute("DELETE FROM users WHERE tenant_id IN (%s, %s)", (ta, tb))
+            cur2.execute("DELETE FROM tenants WHERE id IN (%s, %s)", (ta, tb))
+            owner_tx.commit()
+
+
+class TestUsersMembershipVisibility:
+    """T23-T25: MEMBERSHIP por vínculo ativo na tabela `users` (migration 0092).
+
+    Modelo B: o usuário nasce no tenant A mas é MEMBRO do tenant B via vínculo
+    (tenant_tutor_access / tenant_walker_access). Sob o escopo RLS do tenant B, a
+    policy deve enxergar a linha do user vinculado (senão a contagem/listagem de
+    tutores/walkers vinculados retorna 0), SEM afrouxar o isolamento das demais linhas.
+
+    NB: os testes exercitam a policy SEM current_user_id (app_session, não
+    app_session_as) — o ramo self-identity da 0091 fica DESLIGADO, isolando o efeito
+    da 0092 (membership). É exatamente o cenário de produção: o admin do tenant lista
+    usuários vinculados que NÃO são ele mesmo.
+    """
+
+    def test_T23_active_tutor_link_makes_user_visible(self, owner_tx):
+        """(0092 — tutor) User nascido no tenant A, com vínculo ATIVO ao tenant B,
+        fica VISÍVEL sob o escopo RLS do tenant B (reproduz a contagem/listagem do
+        fix 6f6f17b sob RLS)."""
+        cur = owner_tx.cursor()
+        ta, tb = setup_tenants(cur)
+        ua = setup_user(cur, ta)                  # tutor nasce no tenant A
+        setup_tutor_link(cur, tb, ua, "active")   # vínculo ativo ao tenant B
+        owner_tx.commit()
+
+        try:
+            with app_session(tb) as app_cur:  # escopo do tenant B, sem current_user_id
+                app_cur.execute("SELECT id FROM users WHERE id = %s", (ua,))
+                assert app_cur.fetchone() is not None, (
+                    "Tutor vinculado (tenant_tutor_access ativo) INVISÍVEL sob o escopo "
+                    "do tenant do vínculo — a policy 0092 (membership) falhou; a "
+                    "contagem/listagem de tutores vinculados voltaria a dar 0"
+                )
+        finally:
+            cur2 = owner_tx.cursor()
+            cur2.execute(
+                "DELETE FROM tenant_tutor_access WHERE tenant_id IN (%s, %s)", (ta, tb)
+            )
+            cur2.execute("DELETE FROM users WHERE tenant_id IN (%s, %s)", (ta, tb))
+            cur2.execute("DELETE FROM tenants WHERE id IN (%s, %s)", (ta, tb))
+            owner_tx.commit()
+
+    def test_T24_inactive_link_does_not_make_user_visible(self, owner_tx):
+        """(0092 — isolamento) Vínculo NÃO-ativo (pending/revoked) NÃO torna o user
+        visível: só membership ATIVO conta."""
+        cur = owner_tx.cursor()
+        ta, tb = setup_tenants(cur)
+        ua_pending = setup_user(cur, ta)
+        ua_revoked = setup_user(cur, ta)
+        setup_tutor_link(cur, tb, ua_pending, "pending")
+        setup_walker_link(cur, tb, ua_revoked, "revoked")
+        owner_tx.commit()
+
+        try:
+            with app_session(tb) as app_cur:
+                app_cur.execute(
+                    "SELECT id FROM users WHERE id IN (%s, %s)",
+                    (ua_pending, ua_revoked),
+                )
+                found = {row[0] for row in app_cur.fetchall()}
+                assert found == set(), (
+                    f"Vínculo inativo tornou user(s) visível sob o tenant do vínculo: "
+                    f"{found} — a policy 0092 exige status='active'"
+                )
+        finally:
+            cur2 = owner_tx.cursor()
+            cur2.execute(
+                "DELETE FROM tenant_tutor_access WHERE tenant_id IN (%s, %s)", (ta, tb)
+            )
+            cur2.execute(
+                "DELETE FROM tenant_walker_access WHERE tenant_id IN (%s, %s)", (ta, tb)
+            )
+            cur2.execute("DELETE FROM users WHERE tenant_id IN (%s, %s)", (ta, tb))
+            cur2.execute("DELETE FROM tenants WHERE id IN (%s, %s)", (ta, tb))
+            owner_tx.commit()
+
+    def test_T25_user_without_link_stays_isolated(self, owner_tx):
+        """(0092 — isolamento) User de outro tenant SEM vínculo com o tenant do escopo
+        continua INVISÍVEL. Também cobre o ramo walker: um vínculo walker ativo ao
+        tenant B torna o walker visível, mas um user do tenant A sem vínculo nenhum não."""
+        cur = owner_tx.cursor()
+        ta, tb = setup_tenants(cur)
+        ua_unlinked = setup_user(cur, ta)   # tenant A, SEM vínculo com B
+        ua_walker = setup_user(cur, ta)     # tenant A, vínculo walker ATIVO com B
+        setup_walker_link(cur, tb, ua_walker, "active")
+        owner_tx.commit()
+
+        try:
+            with app_session(tb) as app_cur:
+                # Sem vínculo → invisível (isolamento cross-tenant preservado).
+                app_cur.execute("SELECT id FROM users WHERE id = %s", (ua_unlinked,))
+                assert app_cur.fetchone() is None, (
+                    "User do tenant A SEM vínculo com o tenant B ficou visível — "
+                    "vazamento cross-tenant introduzido pela 0092"
+                )
+                # Com vínculo walker ativo → visível (ramo walker da 0092).
+                app_cur.execute("SELECT id FROM users WHERE id = %s", (ua_walker,))
+                assert app_cur.fetchone() is not None, (
+                    "Walker vinculado (tenant_walker_access ativo) INVISÍVEL sob o "
+                    "escopo do tenant do vínculo — ramo walker da 0092 falhou"
+                )
+        finally:
+            cur2 = owner_tx.cursor()
+            cur2.execute(
+                "DELETE FROM tenant_walker_access WHERE tenant_id IN (%s, %s)", (ta, tb)
+            )
             cur2.execute("DELETE FROM users WHERE tenant_id IN (%s, %s)", (ta, tb))
             cur2.execute("DELETE FROM tenants WHERE id IN (%s, %s)", (ta, tb))
             owner_tx.commit()

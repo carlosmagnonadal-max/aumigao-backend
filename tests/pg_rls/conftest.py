@@ -103,7 +103,7 @@ def _apply_rls_policies(sa_engine) -> None:
     Aplica TODAS as policies RLS do projeto usando SQL idempotente.
 
     Chamado após create_all + stamp head, repõe o que as migrations de
-    RLS (0043-0046, 0049, 0051, 0073-0077, 0080, 0081, 0086, 0087, 0091) fazem. Todo
+    RLS (0043-0046, 0049, 0051, 0073-0077, 0080, 0081, 0086, 0087, 0091, 0092) fazem. Todo
     statement usa DROP POLICY IF EXISTS + CREATE POLICY / ALTER POLICY,
     portanto é seguro re-executar em banco já configurado.
 
@@ -192,13 +192,19 @@ def _apply_rls_policies(sa_engine) -> None:
             ))
 
         # -------------------------------------------------------------------------
-        # users: USING/WITH CHECK estendidos com self-identity (migration 0091).
+        # users: USING/WITH CHECK estendidos com self-identity (0091) + MEMBERSHIP
+        # por vínculo ativo (migration 0092).
         #
         # Identidade GLOBAL (Modelo B): o usuário é criado num tenant mas troca de
         # tenant no app; a policy precisa SEMPRE permitir a PRÓPRIA linha, senão
         # get_current_user recebe None sob escopo de outro tenant → 401 em toda
         # request. O ramo self-identity é fechado por NOT IN ('-', '') para não
         # casar sessões sem usuário autenticado (default '-') nem GUC vazio.
+        #
+        # MEMBERSHIP (0092): o tenant enxerga os usuários que são MEMBROS dele via
+        # vínculo ATIVO (tenant_tutor_access / tenant_walker_access). Sem isso a
+        # contagem/listagem de tutores/walkers vinculados de outro tenant retorna 0
+        # sob RLS. Os EXISTS comparam sempre com current_tenant → sem vazamento.
         # -------------------------------------------------------------------------
         if "users" in all_tables:
             _USERS_PREDICATE = """(
@@ -208,6 +214,18 @@ def _apply_rls_policies(sa_engine) -> None:
   OR (
     current_setting('app.current_user_id', true) NOT IN ('-', '')
     AND id::text = current_setting('app.current_user_id', true)
+  )
+  OR EXISTS (
+    SELECT 1 FROM tenant_tutor_access a
+    WHERE a.tutor_user_id = users.id
+      AND a.tenant_id = current_setting('app.current_tenant', true)
+      AND a.status = 'active'
+  )
+  OR EXISTS (
+    SELECT 1 FROM tenant_walker_access w
+    WHERE w.walker_user_id = users.id
+      AND w.tenant_id = current_setting('app.current_tenant', true)
+      AND w.status = 'active'
   )
 )"""
             conn.execute(sa.text(
@@ -522,6 +540,42 @@ def setup_health_record(cur, tenant_id: str, pet_id: str) -> str:
     return rid
 
 
+def setup_tutor_link(cur, tenant_id: str, tutor_user_id: str, status: str = "active") -> str:
+    """Insere um vínculo tutor↔tenant (tenant_tutor_access, Modelo B) e retorna o id.
+
+    Usado pelos testes de membership (0092): sob o escopo do tenant, um tutor
+    vinculado (mesmo nascido noutro tenant) deve ficar VISÍVEL na tabela users.
+    """
+    aid = make_uid()
+    cur.execute(
+        """
+        INSERT INTO tenant_tutor_access
+            (id, tenant_id, tutor_user_id, status, initiated_by, created_at, updated_at)
+        VALUES (%s, %s, %s, %s, 'tutor', NOW(), NOW())
+        """,
+        (aid, tenant_id, tutor_user_id, status),
+    )
+    return aid
+
+
+def setup_walker_link(cur, tenant_id: str, walker_user_id: str, status: str = "active") -> str:
+    """Insere um vínculo walker↔tenant (tenant_walker_access, rede Modelo B) e retorna o id.
+
+    Espelho de setup_tutor_link para o ramo walker da policy 0092.
+    """
+    aid = make_uid()
+    cur.execute(
+        """
+        INSERT INTO tenant_walker_access
+            (id, tenant_id, walker_user_id, access_type, status,
+             requirements_met, initiated_by, created_at, updated_at)
+        VALUES (%s, %s, %s, 'shared_network', %s, true, 'tenant', NOW(), NOW())
+        """,
+        (aid, tenant_id, walker_user_id, status),
+    )
+    return aid
+
+
 def setup_self_walk(cur, tenant_id: str, pet_id: str, tutor_id: str) -> str:
     """Insere um passeio self-serve do tutor (0087) e retorna o self_walk_id."""
     sid = make_uid()
@@ -555,4 +609,6 @@ __all__ = [
     "setup_pet",
     "setup_health_record",
     "setup_self_walk",
+    "setup_tutor_link",
+    "setup_walker_link",
 ]

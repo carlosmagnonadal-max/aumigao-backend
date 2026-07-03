@@ -229,6 +229,25 @@ def get_plan_capabilities(plan: str) -> dict[str, Any]:
     return deepcopy(TENANT_PLAN_CAPABILITIES.get(plan or "", TENANT_PLAN_CAPABILITIES[TENANT_PLAN_STARTER]))
 
 
+def effective_plan_for_capabilities(tenant: Tenant) -> str:
+    """Plano EFETIVO normalizado à chave canônica (trial-aware, PRICING_V2-aware).
+
+    Combina effective_tenant_plan (free em reverse trial → "pro") com a normalização
+    de chave legada→canônica (_canonical_v2 quando v2 ligado; caso contrário a própria
+    chave lower). Devolve TENANT_PLAN_ENTERPRISE ("enterprise") para tenants Enterprise
+    reais — usado por gates de plano exclusivos do Enterprise (enforce_enterprise_only).
+
+    O reverse trial resolve capabilities de PRO, então um free em trial NUNCA vira
+    "enterprise" aqui — coerente com get_tenant_capabilities.
+    """
+    from app.services.tenant_free_plan_service import effective_tenant_plan
+
+    eff = effective_tenant_plan(tenant)
+    if _PRICING_V2_ENABLED:
+        return _canonical_v2(eff)
+    return (eff or "").strip().lower()
+
+
 def _coerce_limit(value: str | None):
     if value is None:
         return None

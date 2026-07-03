@@ -171,6 +171,50 @@ def free_plan_upgrade_exception(feature: str, label: str):
     )
 
 
+def enterprise_upgrade_exception(feature: str, label: str):
+    """403 com shape de TEASER de upgrade para ENTERPRISE (contrato pro admin-web/app).
+
+    Análogo a free_plan_upgrade_exception, mas o plano requerido é `enterprise` (não
+    `pro`): usado por recursos exclusivos do Enterprise (Vitrine de destaques, avaliação
+    estruturada multi-equipe). O cliente usa `code` == "plan_upgrade_required" para
+    renderizar o CTA de upgrade em vez de erro genérico; `required_plan` == "enterprise".
+
+    Body: {"detail": {"code": "plan_upgrade_required", "required_plan": "enterprise",
+                       "feature": "<chave>", "message": "<label mensagem>"}}
+    """
+    from fastapi import HTTPException
+
+    return HTTPException(
+        status_code=403,
+        detail={
+            "code": "plan_upgrade_required",
+            "required_plan": "enterprise",
+            "feature": feature,
+            "message": label,
+        },
+    )
+
+
+def enforce_enterprise_only(tenant, db, *, feature: str, label: str) -> None:
+    """Gate por PLANO para recursos EXCLUSIVOS do Enterprise (403 teaser se não for).
+
+    Usa o plano EFETIVO via get_tenant_capabilities/tenant_plan_service semantics: o
+    reverse trial do free resolve capabilities de Pro (NÃO de Enterprise), então um
+    tenant free/pro (mesmo em trial) recebe 403 — só Enterprise real passa. Aplicado
+    POR CIMA dos gates existentes (3 camadas / toggle), que continuam decidindo 404
+    quando a feature está dormente.
+    """
+    from app.services.tenant_plan_service import (
+        TENANT_PLAN_ENTERPRISE,
+        effective_plan_for_capabilities,
+    )
+
+    if tenant is None:
+        raise enterprise_upgrade_exception(feature, label)
+    if effective_plan_for_capabilities(tenant) != TENANT_PLAN_ENTERPRISE:
+        raise enterprise_upgrade_exception(feature, label)
+
+
 def free_plan_pets_per_tutor() -> int:
     """Máximo de pets por tutor no plano free (env FREE_PLAN_PETS_PER_TUTOR, default 2).
 

@@ -69,3 +69,4 @@ from app.models.pet_share_link import PetShareLink  # noqa: F401 — Fase 4: com
 from app.models.pet_health_record import PetHealthRecord  # noqa: F401 — Fase A: carteira de saúde
 from app.models.pet_self_walk import PetSelfWalk  # noqa: F401 — Fase D: passeio self-serve do tutor
 from app.models.webhook_event import WebhookEvent  # noqa: F401 — dedup de webhooks do provedor
+from app.models.tenant_product_highlight import TenantProductHighlight  # noqa: F401 — Vitrine de destaques (Enterprise)

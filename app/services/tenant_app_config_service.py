@@ -54,6 +54,7 @@ def _fallback_branding(tenant: Tenant | None = None) -> dict[str, Any]:
         "splash_image_url": "",
         "primary_color": DEFAULT_PRIMARY_COLOR,
         "secondary_color": DEFAULT_SECONDARY_COLOR,
+        "accent_color": "",
         "powered_by_enabled": True,
     }
 
@@ -81,6 +82,9 @@ def _safe_branding(db: Session, tenant: Tenant | None) -> dict[str, Any]:
             "splash_image_url": runtime.get("splash_image_url") or "",
             "primary_color": runtime.get("primary_color") or DEFAULT_PRIMARY_COLOR,
             "secondary_color": runtime.get("secondary_color") or DEFAULT_SECONDARY_COLOR,
+            # accent_color: o admin edita e o app usa no tema dinâmico do tenant —
+            # sem esta linha o valor salvo nunca chega ao app (funil do app-config).
+            "accent_color": runtime.get("accent_color") or "",
             "powered_by_enabled": bool(runtime.get("powered_by_enabled", True)),
         }
     except Exception:

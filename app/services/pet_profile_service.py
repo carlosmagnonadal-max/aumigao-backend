@@ -190,6 +190,148 @@ def build_diary_entry(*, text: str, mood: str | None, title: str | None) -> tupl
     return final_title, json.dumps(diary, ensure_ascii=False)
 
 
+def build_tenant_note(*, context: str, category: str, text: str, title: str | None) -> tuple[str, str]:
+    """Monta (título, payload_json) da observação estruturada do TENANT (Fase E).
+
+    Igual ao diary: o payload é construído no servidor a partir de campos já
+    validados (o payload cru do cliente é ignorado). Texto obrigatório (<=2000);
+    contexto/categoria validados na rota. Título usa o informado ou deriva do texto.
+    Retorna (title, payload_json).
+    """
+    text = text.strip()
+    note: dict[str, str] = {"context": context, "category": category, "text": text}
+    clean_title = (title or "").strip()
+    if clean_title:
+        note["title"] = clean_title
+        final_title = clean_title
+    else:
+        final_title = (text[:60] + "…") if len(text) > 60 else text
+    return final_title, json.dumps(note, ensure_ascii=False)
+
+
+def notify_owner_of_tenant_note(db: Session, pet: Pet, *, category: str, text: str) -> None:
+    """Notifica o TUTOR dono do pet quando o tenant registra incidente/restrição.
+
+    Best-effort (padrão maybe_downgrade_expired_trial): nunca quebra o request.
+    Não faz commit — o caller comita.
+    """
+    from app.models.pet_timeline_event import TENANT_NOTE_ALERT_CATEGORIES
+
+    if category not in TENANT_NOTE_ALERT_CATEGORIES:
+        return
+    try:
+        from app.routes.notifications import NotificationCreate, _create_notification
+
+        label = "Incidente registrado" if category == "incidente" else "Restrição registrada"
+        snippet = (text or "").strip()
+        if len(snippet) > 140:
+            snippet = snippet[:140] + "…"
+        _create_notification(
+            db,
+            NotificationCreate(
+                tenant_id=pet.tenant_id,
+                user_id=pet.tutor_id,
+                user_role="tutor",
+                title=f"{label} para {pet.name}",
+                message=snippet or f"A equipe registrou uma observação sobre {pet.name}.",
+                type="warning",
+                related_entity_type="pet",
+                related_entity_id=pet.id,
+                metadata={"event": "tenant_note", "category": category},
+            ),
+        )
+    except Exception:  # noqa: BLE001 — notificação best-effort
+        pass
+
+
+def list_pet_companions(db: Session, pet: Pet) -> list[dict]:
+    """Mapa de convivência: pets que dividiram shared walk CONCLUÍDO com este pet.
+
+    "Concluído" = shared walk em status confirmed/matched (todos pagaram → o passeio
+    aconteceu) — o modelo SharedWalk não tem estado "completed" dedicado, então
+    confirmed/matched são os estados terminais positivos (ver desenho da Fase E).
+    Conta só participantes que efetivamente pagaram (PARTICIPANT_PAID), excluindo
+    declined/cancelled. Mesmo tenant apenas (shared walks são tenant-scoped).
+
+    SANITIZAÇÃO: devolve só pet_id/name/photo_url/breed do OUTRO pet + agregados
+    (walks_together, last_walk_at) — NUNCA tutor/endereço/contato. Ordenado por
+    walks_together desc, depois last_walk_at desc.
+    """
+    from app.models.shared_walk import (
+        PARTICIPANT_PAID,
+        SHARED_CONFIRMED,
+        SHARED_MATCHED,
+        SharedWalk,
+        SharedWalkParticipant,
+    )
+
+    concluded = {SHARED_CONFIRMED, SHARED_MATCHED}
+
+    # Shared walks CONCLUÍDOS do tenant do pet em que este pet participou (pago).
+    my_walk_ids = [
+        row[0]
+        for row in (
+            db.query(SharedWalkParticipant.shared_walk_id)
+            .join(SharedWalk, SharedWalk.id == SharedWalkParticipant.shared_walk_id)
+            .filter(
+                SharedWalkParticipant.pet_id == pet.id,
+                SharedWalkParticipant.status == PARTICIPANT_PAID,
+                SharedWalk.tenant_id == pet.tenant_id,
+                SharedWalk.status.in_(list(concluded)),
+            )
+            .all()
+        )
+    ]
+    if not my_walk_ids:
+        return []
+
+    # Companheiros: outros pets pagantes nesses mesmos walks (exclui o próprio pet).
+    rows = (
+        db.query(SharedWalkParticipant.pet_id, SharedWalk.confirmed_at, SharedWalk.created_at)
+        .join(SharedWalk, SharedWalk.id == SharedWalkParticipant.shared_walk_id)
+        .filter(
+            SharedWalkParticipant.shared_walk_id.in_(my_walk_ids),
+            SharedWalkParticipant.pet_id != pet.id,
+            SharedWalkParticipant.status == PARTICIPANT_PAID,
+        )
+        .all()
+    )
+
+    agg: dict[str, dict] = {}
+    for other_pet_id, confirmed_at, created_at in rows:
+        when = confirmed_at or created_at
+        entry = agg.setdefault(other_pet_id, {"count": 0, "last": None})
+        entry["count"] += 1
+        if when and (entry["last"] is None or when > entry["last"]):
+            entry["last"] = when
+
+    if not agg:
+        return []
+
+    # Busca os pets companheiros (mesmo tenant) e monta a saída sanitizada.
+    pets = (
+        db.query(Pet)
+        .filter(Pet.id.in_(list(agg.keys())), Pet.tenant_id == pet.tenant_id)
+        .all()
+    )
+    companions = []
+    for other in pets:
+        info = agg[other.id]
+        companions.append({
+            "pet_id": other.id,
+            "name": other.name,
+            "photo_url": other.photo_url,
+            "breed": other.breed or "",
+            "walks_together": info["count"],
+            "last_walk_at": info["last"].isoformat() if info["last"] else None,
+        })
+    companions.sort(
+        key=lambda c: (c["walks_together"], c["last_walk_at"] or ""),
+        reverse=True,
+    )
+    return companions
+
+
 def record_timeline_event(
     db: Session, pet: Pet, *, event_type: str, title: str, occurred_at: datetime,
     notes: str = "", payload_json: str | None = None, source: str = "tutor",

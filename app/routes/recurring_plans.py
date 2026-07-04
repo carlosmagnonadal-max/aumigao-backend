@@ -3,8 +3,13 @@
 - Cliente-final (tutor): vê o catálogo (gated pela feature flag), assina e cancela.
 - Admin do tenant: CRUD do catálogo (gated por permissão finance.*).
 """
-from fastapi import APIRouter, Depends, Request
+import logging
+
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger("aumigao.routes.recurring_plans")
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
@@ -45,6 +50,7 @@ api_admin_router = APIRouter(
 def _subscription_response(db: Session, subscription) -> TutorSubscriptionResponse:
     response = TutorSubscriptionResponse.model_validate(subscription)
     response.plan_name = svc.plan_name_for(db, subscription)
+    response.payment_status = "ativa" if subscription.credits_granted else "aguardando_pagamento"
     return response
 
 
@@ -100,6 +106,145 @@ async def cancel_my_subscription(request: Request, user: User = Depends(get_curr
     tenant = _resolve_user_tenant(user, db, request)
     subscription = await svc.cancel_subscription_async(db, tenant.id, user.id)
     return _subscription_response(db, subscription)
+
+
+@router.get("/subscription/payment")
+@api_router.get("/subscription/payment")
+async def get_subscription_payment(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Retorna a cobrança PIX pendente mais recente da assinatura ativa do tutor.
+
+    Busca a cobrança diretamente no Asaas via
+    ``GET /payments?subscription={asaas_subscription_id}&status=PENDING``.
+
+    Respostas:
+    - 200: cobrança encontrada (payment_id, value, due_date, status,
+      pix_qr_code, pix_payload, invoice_url). pix_* podem ser null quando
+      o Asaas ainda não gerou o QR Code.
+    - 404 sem assinatura ativa.
+    - 404 sem cobrança pendente (assinatura em dia).
+    - 502 em falha do Asaas.
+
+    Segurança de tenant: usa db.info["rls_tenant"] (tenant da request) e
+    nunca user.tenant_id (tenant de nascimento) — evita cross-tenant leak.
+    """
+    # Tenant da request (não o tenant de nascimento do usuário).
+    rls_tenant = db.info.get("rls_tenant")
+    if rls_tenant and rls_tenant not in ("*", ""):
+        tenant_id = rls_tenant
+    else:
+        tenant = _resolve_user_tenant(user, db, request)
+        tenant_id = tenant.id
+
+    subscription = svc.get_active_subscription(db, tenant_id, user.id)
+    if subscription is None:
+        raise HTTPException(status_code=404, detail="Nenhuma assinatura ativa encontrada.")
+
+    asaas_sub_id = subscription.asaas_subscription_id
+    if not asaas_sub_id:
+        raise HTTPException(
+            status_code=404,
+            detail="Assinatura sem vínculo com o gateway de pagamento; aguardando sincronização.",
+        )
+
+    # Busca a cobrança pendente no Asaas.
+    try:
+        from app.routes.payments import _get_asaas_config, asaas_headers as _asaas_headers
+    except Exception as exc:
+        logger.error("get_subscription_payment: falha ao importar client Asaas: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail="Serviço de pagamento temporariamente indisponível. Tente novamente em instantes.",
+        )
+
+    try:
+        cfg = _get_asaas_config()
+        hdrs = _asaas_headers(cfg["api_key"], mode="live" if cfg["is_live"] else "sandbox")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("get_subscription_payment: falha ao obter configuração Asaas: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail="Serviço de pagamento temporariamente indisponível. Tente novamente em instantes.",
+        )
+
+    try:
+        async with httpx.AsyncClient(
+            base_url=cfg["base_url"],
+            headers=hdrs,
+            timeout=15,
+        ) as client:
+            resp = await client.get(
+                "/payments",
+                params={"subscription": asaas_sub_id, "status": "PENDING"},
+            )
+            if resp.status_code >= 400:
+                logger.error(
+                    "get_subscription_payment: Asaas retornou status_http=%s asaas_sub_id=%s",
+                    resp.status_code, asaas_sub_id,
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail="Erro ao consultar cobrança no gateway de pagamento. Tente novamente em instantes.",
+                )
+
+            data = resp.json()
+            payments_list = data.get("data") or []
+            if not payments_list:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Nenhuma cobrança pendente encontrada. A assinatura pode já estar em dia.",
+                )
+
+            # Cobrança PENDING mais recente (primeira da lista — Asaas retorna desc por dueDate).
+            payment_data = payments_list[0]
+            payment_id = payment_data.get("id")
+            value = payment_data.get("value")
+            due_date = payment_data.get("dueDate")
+            status = payment_data.get("status")
+            invoice_url = payment_data.get("invoiceUrl") or payment_data.get("bankSlipUrl")
+
+            # Busca PIX QR Code — pode ainda não estar disponível (Asaas pode demorar alguns segundos).
+            pix_qr_code = None
+            pix_payload = None
+            if payment_id:
+                try:
+                    pix_resp = await client.get(f"/payments/{payment_id}/pixQrCode")
+                    if pix_resp.status_code == 200:
+                        pix_data = pix_resp.json()
+                        pix_qr_code = pix_data.get("encodedImage")
+                        pix_payload = pix_data.get("payload")
+                except Exception as exc:
+                    logger.warning(
+                        "get_subscription_payment: falha ao buscar pixQrCode payment_id=%s: %s",
+                        payment_id, exc,
+                    )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "get_subscription_payment: falha de rede ao consultar Asaas asaas_sub_id=%s: %s",
+            asaas_sub_id, exc,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Serviço de pagamento temporariamente indisponível. Tente novamente em instantes.",
+        )
+
+    return {
+        "payment_id": payment_id,
+        "value": value,
+        "due_date": due_date,
+        "status": status,
+        "pix_qr_code": pix_qr_code,
+        "pix_payload": pix_payload,
+        "invoice_url": invoice_url,
+    }
 
 
 # --------------------------------------------------------------------------- #

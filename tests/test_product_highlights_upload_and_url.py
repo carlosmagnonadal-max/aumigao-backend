@@ -17,7 +17,7 @@ from unittest.mock import patch
 import app.models  # noqa: F401
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -55,10 +55,21 @@ def _ctx(*, plan: str = "enterprise", toggle: bool = True):
     return db
 
 
-def _client(db, user, monkeypatch):
+def _client(db, user, monkeypatch, *, active_tenant_id: str | None = "t1"):
+    """Constrói o TestClient injetando request.state.tenant_id via middleware.
+
+    active_tenant_id: tenant ativo da request (default "t1" — o único tenant nos
+    testes deste módulo). Passa None para simular ausência de tenant resolvido.
+    """
     monkeypatch.setenv("PRODUCT_HIGHLIGHTS_ENABLED", "true")
     monkeypatch.setenv("PRICING_V2_ENABLED", "true")
     app = FastAPI()
+
+    @app.middleware("http")
+    async def _inject_tenant(request: Request, call_next):
+        request.state.tenant_id = active_tenant_id
+        return await call_next(request)
+
     app.include_router(routes.api_router)
     app.include_router(routes.api_tutor_router)
     app.dependency_overrides[get_db] = lambda: db

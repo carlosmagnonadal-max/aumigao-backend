@@ -258,9 +258,18 @@ async def admin_upload_photo(
 # ---------------------------------------------------------------------------
 
 def _tenant_of_request(db: Session, request: Request, user: User) -> Tenant | None:
-    """Tenant da request (padrão das rotas do tutor): tenant resolvido no middleware,
-    com fallback para o tenant_id do usuário autenticado (BFF nem sempre injeta slug)."""
-    tenant_id = getattr(request.state, "tenant_id", None) or getattr(user, "tenant_id", None)
+    """Tenant da request (padrão das rotas do tutor): tenant resolvido no middleware.
+
+    NÃO usa user.tenant_id como fallback — o usuário tem um tenant de nascimento, mas
+    no modelo multi-tenant (Modelo B) pode operar em outro tenant via X-Tenant-Slug.
+    O fallback por user.tenant_id causaria cross-tenant leak: destaques do tenant A
+    (tenant de nascimento) seriam devolvidos enquanto o usuário está no tenant B.
+
+    O tenant é resolvido exclusivamente a partir de request.state.tenant_id, que o
+    TenantResolverMiddleware popula a partir do header X-Tenant-Slug / X-Tenant-Id.
+    Se não houver tenant resolvido, retorna None (→ _require_vitrine levanta 404).
+    """
+    tenant_id = getattr(request.state, "tenant_id", None)
     return db.get(Tenant, tenant_id) if tenant_id else None
 
 

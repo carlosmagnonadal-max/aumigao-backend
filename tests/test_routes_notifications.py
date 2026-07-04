@@ -239,3 +239,74 @@ def test_null_tenant_notifications_are_visible():
     _add_notification(db, title="Broadcast", user_id=TUTOR_A, tenant_id=None)
     body = client.get("/notifications").json()
     assert any(n["title"] == "Broadcast" for n in body)
+
+
+# ----- regressão BUG 2 — cross-tenant leak via user.tenant_id -----
+
+def _build_multitenant(*, active_tenant_id: str):
+    """Constrói app com get_db que injeta rls_tenant = active_tenant_id, simulando
+    o comportamento real do TenantResolverMiddleware + get_db no FastAPI.
+
+    Cenário BUG 2: usuário nascido em TENANT_ID mas operando em OTHER_TENANT_ID.
+    _current_tenant_id deve usar o tenant ATIVO (db.info["rls_tenant"]) e NÃO
+    user.tenant_id (tenant de nascimento).
+    """
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    db.info["rls_tenant"] = active_tenant_id  # simula o que get_db(request) faz
+
+    db.add(Tenant(id=TENANT_ID, name="Aumigao", slug=DEFAULT_TENANT_SLUG, status="active", plan="business"))
+    db.add(Tenant(id=OTHER_TENANT_ID, name="Outro", slug="outro", status="active", plan="business"))
+    # Usuário nasce em TENANT_ID mas vai operar em OTHER_TENANT_ID neste build
+    db.add(User(id=TUTOR_A, email="a@test.com", password_hash="x", role="cliente", tenant_id=TENANT_ID))
+    db.commit()
+
+    test_app = FastAPI()
+    test_app.include_router(notifications.router)
+    test_app.dependency_overrides[get_db] = lambda: db
+    test_app.dependency_overrides[get_current_user] = lambda: db.get(User, TUTOR_A)
+    return TestClient(test_app), db
+
+
+def test_multitenant_user_sees_only_active_tenant_notifications():
+    """Regressão BUG 2: tutor nascido em TENANT_ID operando em OTHER_TENANT_ID deve
+    ver SOMENTE as notificações do tenant ATIVO — não as do tenant de nascimento.
+
+    Com o bug presente (_current_tenant_id retornava user.tenant_id), notificações de
+    TENANT_ID (tenant de nascimento) vazavam para o contexto de OTHER_TENANT_ID.
+    """
+    client, db = _build_multitenant(active_tenant_id=OTHER_TENANT_ID)
+
+    # Notificação do tenant de NASCIMENTO (deve ficar invisível no contexto OTHER_TENANT)
+    _add_notification(db, title="Do nascimento", user_id=TUTOR_A, tenant_id=TENANT_ID)
+    # Notificação do tenant ATIVO (deve aparecer)
+    _add_notification(db, title="Do ativo", user_id=TUTOR_A, tenant_id=OTHER_TENANT_ID)
+
+    body = client.get("/notifications").json()
+    titles = [n["title"] for n in body]
+    assert "Do ativo" in titles, "Notificação do tenant ativo deve aparecer"
+    assert "Do nascimento" not in titles, (
+        "BUG 2 detectado: notificação do tenant de nascimento vazando para o "
+        "contexto do tenant ativo (OTHER_TENANT_ID)"
+    )
+
+
+def test_multitenant_unread_count_uses_active_tenant():
+    """Regressão BUG 2 (unread-count): contagem deve usar o tenant ATIVO, não o de nascimento."""
+    client, db = _build_multitenant(active_tenant_id=OTHER_TENANT_ID)
+
+    # 3 não lidas no tenant de nascimento — não devem contar
+    for i in range(3):
+        _add_notification(db, user_id=TUTOR_A, tenant_id=TENANT_ID, is_read=False)
+    # 1 não lida no tenant ativo — deve contar
+    _add_notification(db, user_id=TUTOR_A, tenant_id=OTHER_TENANT_ID, is_read=False)
+
+    r = client.get("/notifications/unread-count")
+    assert r.status_code == 200
+    assert r.json()["count"] == 1, (
+        "BUG 2 detectado: contagem incluiu notificações do tenant de nascimento"
+    )

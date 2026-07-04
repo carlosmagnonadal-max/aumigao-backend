@@ -10,7 +10,7 @@ from weakref import WeakKeyDictionary
 from fastapi import Request
 from sqlalchemy.orm import Session
 
-from app.models.tenant import Tenant
+from app.models.tenant import Tenant, TenantUnit
 from app.services.tenant_context import get_default_tenant
 
 logger = logging.getLogger(__name__)
@@ -32,9 +32,24 @@ def resolve_tenant_from_headers(request: Request, db: Session) -> Tenant | None:
 
     tenant_slug = _clean_header(request.headers.get("X-Tenant-Slug"))
     if tenant_slug:
-        tenant = db.query(Tenant).filter(Tenant.slug == tenant_slug.lower()).first()
+        normalized = tenant_slug.lower()
+        # 1) Tentativa primária: slug do tenant raiz.
+        tenant = db.query(Tenant).filter(Tenant.slug == normalized).first()
         if tenant:
             return tenant
+        # 2) Fallback: slug de UNIDADE (TenantUnit.slug) — o app envia o slug da
+        #    unidade recém-criada como X-Tenant-Slug; precisamos resolver o tenant PAI.
+        #    Sem este fallback, um slug de unidade "não encontrado" faz o resolver cair
+        #    no default ou retornar None → 400 TENANT_REQUIRED (BUG 3).
+        unit = (
+            db.query(TenantUnit)
+            .filter(TenantUnit.slug == normalized, TenantUnit.status == "active")
+            .first()
+        )
+        if unit:
+            tenant = db.get(Tenant, unit.tenant_id)
+            if tenant:
+                return tenant
 
     return None
 

@@ -86,7 +86,21 @@ def _serialize_notification(notification: Notification) -> dict[str, Any]:
 
 def _create_notification(db: Session, payload: NotificationCreate) -> Notification:
     user = db.get(User, payload.user_id) if payload.user_id else None
-    tenant_id = payload.tenant_id or (user.tenant_id if user else None) or resolve_current_tenant_id(db)
+    # Etiqueta com o tenant ATIVO da request (db.info["rls_tenant"]), não com o
+    # tenant de NASCIMENTO do usuário: no Modelo B o usuário opera em vários
+    # tenants e a notificação pertence ao contexto onde o evento ocorreu. Usar
+    # user.tenant_id gravava tudo no tenant de origem — vazamento cross-tenant
+    # na leitura mesmo com o filtro correto (mesma classe de bug de
+    # product_highlights._tenant_of_request). payload.tenant_id explícito
+    # continua soberano (chamadas internas dirigidas, ex.: schedulers).
+    rls_tenant = db.info.get("rls_tenant")
+    active_tenant = rls_tenant if rls_tenant and rls_tenant not in ("*", "") else None
+    tenant_id = (
+        payload.tenant_id
+        or active_tenant
+        or (user.tenant_id if user else None)
+        or resolve_current_tenant_id(db)
+    )
     notification = Notification(
         id=str(uuid.uuid4()),
         tenant_id=tenant_id,

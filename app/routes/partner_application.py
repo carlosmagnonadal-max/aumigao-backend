@@ -313,8 +313,18 @@ def _emit_restrictive_status_audit_and_notification(
     if walker_user:
         import json as _json
         from uuid import uuid4 as _uuid4
+        # Etiqueta com o tenant do PERFIL (contexto do evento); fallback pro tenant
+        # ativo da sessão. Sem tenant_id a notificação ficava global (visível em
+        # qualquer tenant) — mesma classe do vazamento cross-tenant de notificações.
+        _rls = db.info.get("rls_tenant")
+        _notif_tenant = (
+            getattr(profile, "tenant_id", None)
+            or (_rls if _rls and _rls not in ("*", "") else None)
+            or walker_user.tenant_id
+        )
         notif = Notification(
             id=str(_uuid4()),
+            tenant_id=_notif_tenant,
             user_id=walker_user.id,
             user_role="walker",
             title=f"Seu perfil foi {status_label}",

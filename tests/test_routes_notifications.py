@@ -310,3 +310,38 @@ def test_multitenant_unread_count_uses_active_tenant():
     assert r.json()["count"] == 1, (
         "BUG 2 detectado: contagem incluiu notificações do tenant de nascimento"
     )
+
+
+def test_create_notification_labels_active_tenant_not_birth_tenant():
+    """Regressão (BUG 2, camada de CRIAÇÃO): _create_notification deve etiquetar a
+    notificação com o tenant ATIVO da request (db.info["rls_tenant"]), não com o
+    tenant de NASCIMENTO do usuário. Com o bug presente, eventos ocorridos no
+    tenant B eram gravados com tenant_id do tenant A (nascimento) e "vazavam" na
+    listagem do tenant A mesmo com o filtro de leitura correto."""
+    _client, db = _build_multitenant(active_tenant_id=OTHER_TENANT_ID)
+    payload = notifications.NotificationCreate(
+        user_id=TUTOR_A,  # usuário nascido em TENANT_ID
+        title="Evento no tenant ativo",
+        message="deve ser etiquetado com o tenant ativo",
+    )
+    created = notifications._create_notification(db, payload)
+    db.commit()
+    assert created.tenant_id == OTHER_TENANT_ID, (
+        "BUG: notificação etiquetada com o tenant de nascimento do usuário, "
+        "não com o tenant ativo da request"
+    )
+
+
+def test_create_notification_explicit_tenant_id_wins():
+    """payload.tenant_id explícito continua soberano sobre o tenant ativo
+    (chamadas internas dirigidas, ex.: schedulers e leads públicos)."""
+    _client, db = _build_multitenant(active_tenant_id=OTHER_TENANT_ID)
+    payload = notifications.NotificationCreate(
+        tenant_id=TENANT_ID,
+        user_id=TUTOR_A,
+        title="Dirigida",
+        message="tenant explícito vence",
+    )
+    created = notifications._create_notification(db, payload)
+    db.commit()
+    assert created.tenant_id == TENANT_ID

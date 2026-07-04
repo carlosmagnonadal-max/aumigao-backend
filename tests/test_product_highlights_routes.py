@@ -12,7 +12,7 @@ import app.models  # noqa: F401
 from datetime import datetime
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -34,6 +34,7 @@ def _ctx(*, plan="enterprise", toggle=True):
     db.add(Tenant(id="t2", name="T2", slug="t2", status="active", plan="enterprise"))
     db.add(User(id="adm1", email="a1@x.com", password_hash="x", role="admin", tenant_id="t1"))
     db.add(User(id="adm2", email="a2@x.com", password_hash="x", role="admin", tenant_id="t2"))
+    # tut1: nasce no t1 — no cenário multi-tenant pode operar em t1 ou t2
     db.add(User(id="tut1", email="t1u@x.com", password_hash="x", role="tutor", tenant_id="t1"))
     if toggle:
         db.add(TenantFeature(tenant_id="t1", feature_key="product_highlights", enabled=True))
@@ -42,7 +43,13 @@ def _ctx(*, plan="enterprise", toggle=True):
     return db
 
 
-def _client(db, user, env, monkeypatch):
+def _client(db, user, env, monkeypatch, *, active_tenant_id: str | None = None):
+    """Constrói o TestClient com middleware que seta request.state.tenant_id.
+
+    active_tenant_id: simula o tenant ATIVO da request (cabeçalho X-Tenant-Slug
+    resolvido pelo TenantResolverMiddleware). Quando None, não injeta o estado —
+    o resultado é como se o middleware não tivesse resolvido o tenant.
+    """
     if env:
         monkeypatch.setenv("PRODUCT_HIGHLIGHTS_ENABLED", "true")
     else:
@@ -50,6 +57,12 @@ def _client(db, user, env, monkeypatch):
     # PRICING_V2 ON: enterprise canônico resolvido corretamente pelo gate de plano.
     monkeypatch.setenv("PRICING_V2_ENABLED", "true")
     app = FastAPI()
+
+    @app.middleware("http")
+    async def _inject_tenant(request: Request, call_next):
+        request.state.tenant_id = active_tenant_id
+        return await call_next(request)
+
     app.include_router(routes.api_router)
     app.include_router(routes.api_tutor_router)
     app.dependency_overrides[get_db] = lambda: db
@@ -232,7 +245,8 @@ def test_tutor_route_returns_only_active_of_own_tenant(monkeypatch):
     _seed(db, "t1", 2, active=True, prefix="A")
     _seed(db, "t1", 1, active=False, prefix="I")   # inativo — não deve aparecer
     _seed(db, "t2", 3, active=True, prefix="B")     # outro tenant — não deve aparecer
-    c = _client(db, db.get(User, "tut1"), env=True, monkeypatch=monkeypatch)
+    # active_tenant_id="t1": simula o TenantResolverMiddleware resolvendo X-Tenant-Slug → t1
+    c = _client(db, db.get(User, "tut1"), env=True, monkeypatch=monkeypatch, active_tenant_id="t1")
     r = c.get("/api/product-highlights")
     assert r.status_code == 200
     items = r.json()["items"]
@@ -247,7 +261,7 @@ def test_tutor_route_returns_only_active_of_own_tenant(monkeypatch):
 
 def test_tutor_route_gated_by_plan(monkeypatch):
     db = _ctx(plan="free")
-    c = _client(db, db.get(User, "tut1"), env=True, monkeypatch=monkeypatch)
+    c = _client(db, db.get(User, "tut1"), env=True, monkeypatch=monkeypatch, active_tenant_id="t1")
     r = c.get("/api/product-highlights")
     assert r.status_code == 403
     assert r.json()["detail"]["required_plan"] == "enterprise"
@@ -258,7 +272,50 @@ def test_tutor_route_public_promo_fields(monkeypatch):
     c_admin = _client(db, db.get(User, "adm1"), env=True, monkeypatch=monkeypatch)
     c_admin.post("/api/admin/product-highlights", json={
         "title": "Combo", "price_cents": 10000, "promo_price_cents": 7500})
-    c_tut = _client(db, db.get(User, "tut1"), env=True, monkeypatch=monkeypatch)
+    c_tut = _client(db, db.get(User, "tut1"), env=True, monkeypatch=monkeypatch, active_tenant_id="t1")
     item = c_tut.get("/api/product-highlights").json()["items"][0]
     assert item["has_promo"] is True
     assert item["effective_price_cents"] == 7500
+
+
+# ---------------------------------------------------------------------------
+# Regressão BUG 1 — Cross-tenant leak via fallback user.tenant_id
+# ---------------------------------------------------------------------------
+
+def test_tutor_multitenant_no_cross_tenant_leak(monkeypatch):
+    """Regressão BUG 1: tutor nascido em t1 operando em t2 (active_tenant_id=t2) NÃO
+    vê os destaques de t1 (seu tenant de nascimento). O tenant ativo da request
+    (request.state.tenant_id) deve determinar o escopo — não user.tenant_id.
+
+    Com o bug presente (_tenant_of_request fallbackava para user.tenant_id quando
+    request.state.tenant_id == None), o contexto correto do active_tenant é t2 mas
+    a função retornaria t1 → highlights de t1 vazariam para o contexto de t2.
+    """
+    db = _ctx()
+    _seed(db, "t1", 3, active=True, prefix="T1")  # destaques do tenant de NASCIMENTO
+    _seed(db, "t2", 2, active=True, prefix="T2")  # destaques do tenant ATIVO
+
+    # Tutor nascido em t1, mas operando em t2 (active_tenant_id = "t2")
+    c = _client(db, db.get(User, "tut1"), env=True, monkeypatch=monkeypatch, active_tenant_id="t2")
+    r = c.get("/api/product-highlights")
+    assert r.status_code == 200
+    items = r.json()["items"]
+    # Deve ver SOMENTE os destaques do tenant ativo (t2) — não os do tenant de nascimento (t1)
+    assert len(items) == 2
+    assert all(i["id"].startswith("t2-T2-") for i in items), (
+        "BUG 1 detectado: destaques do tenant de nascimento (t1) vazando para o "
+        "contexto do tenant ativo (t2)"
+    )
+
+
+def test_tutor_no_tenant_resolved_returns_404(monkeypatch):
+    """Quando o middleware não resolve nenhum tenant (active_tenant_id=None),
+    a rota deve retornar 404 em vez de cair no tenant de nascimento do usuário.
+    """
+    db = _ctx()
+    _seed(db, "t1", 2, active=True)
+    # active_tenant_id=None: middleware não injetou nenhum tenant
+    c = _client(db, db.get(User, "tut1"), env=True, monkeypatch=monkeypatch, active_tenant_id=None)
+    r = c.get("/api/product-highlights")
+    # Sem tenant resolvido → _require_vitrine → 404
+    assert r.status_code == 404

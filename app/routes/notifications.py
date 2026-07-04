@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -111,6 +111,23 @@ def _is_admin_role(role: str | None) -> bool:
 
 
 def _current_tenant_id(current_user: User, db: Session) -> str:
+    """Retorna o tenant ATIVO da request (request.state.tenant_id, injetado em
+    db.info["rls_tenant"] pelo get_db dependency).
+
+    NÃO usa current_user.tenant_id: o usuário tem um tenant de NASCIMENTO, mas no
+    modelo multi-tenant (Modelo B) pode operar em outro tenant via X-Tenant-Slug.
+    Usar o tenant_id do usuário (fixo) causaria cross-tenant leak: notificações do
+    tenant A apareceriam enquanto o usuário está operando no tenant B.
+
+    Hierarquia: rls_tenant (da request) → tenant_id do usuário (fallback de
+    compatibilidade para chamadores internos sem request, e.g., schedulers) →
+    default tenant.
+    """
+    rls_tenant = db.info.get("rls_tenant")
+    # rls_tenant pode ser "*" (super_admin global) ou "" (fail-closed sem tenant) —
+    # nesses casos caímos no fallback do user.
+    if rls_tenant and rls_tenant not in ("*", ""):
+        return rls_tenant
     return current_user.tenant_id or resolve_current_tenant_id(db)
 
 

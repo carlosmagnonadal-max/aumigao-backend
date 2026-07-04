@@ -128,6 +128,9 @@ class TenantUnit(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     tenant_id: Mapped[str] = mapped_column(String, ForeignKey("tenants.id"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    # slug: derivado do name; único por tenant (migration 0097). Nullable para
+    # zero-regressão: linhas antigas sem slug recebem o valor gerado em runtime.
+    slug: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
     city: Mapped[str | None] = mapped_column(String, nullable=True)
     state: Mapped[str | None] = mapped_column(String, nullable=True)

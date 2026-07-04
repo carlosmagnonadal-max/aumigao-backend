@@ -36,13 +36,19 @@ NEW_PERMISSIONS = [
 TARGET_ROLES = {"global_admin", "tenant_admin"}
 
 
+def _has_column(table: str, column: str) -> bool:
+    return column in {c["name"] for c in sa.inspect(op.get_bind()).get_columns(table)}
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     now = datetime.utcnow()
 
-    # 1. Adiciona coluna slug (nullable) ─────────────────────────────────────
-    op.add_column("tenant_units", sa.Column("slug", sa.String(), nullable=True))
-    op.create_index("ix_tenant_units_slug", "tenant_units", ["slug"], unique=False)
+    # 1. Adiciona coluna slug (nullable) — idempotente (padrão da casa, 0094/0096):
+    #    protege contra drift de create_all e re-execução.
+    if not _has_column("tenant_units", "slug"):
+        op.add_column("tenant_units", sa.Column("slug", sa.String(), nullable=True))
+        op.create_index("ix_tenant_units_slug", "tenant_units", ["slug"], unique=False)
 
     # 2. Backfill: slug = slugify(name) com sufixo por colisão por tenant ────
     # Implementação em SQL puro (compatível com PostgreSQL e SQLite).

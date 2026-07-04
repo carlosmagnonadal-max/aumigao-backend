@@ -57,6 +57,10 @@ class TutorSubscriptionResponse(ORMModel):
     created_at: datetime
     # Conveniência para o app não precisar cruzar com o catálogo.
     plan_name: str | None = None
+    # Estado de pagamento derivado: "ativa" quando créditos já foram concedidos
+    # (primeiro pagamento confirmado via webhook), "aguardando_pagamento" caso contrário.
+    # Nunca persiste — calculado em _subscription_response.
+    payment_status: str = "aguardando_pagamento"
 
 
 class RecurringPlansView(BaseModel):

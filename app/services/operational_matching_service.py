@@ -466,6 +466,13 @@ def serialize_operational_walk(
         "walkerSelectionMode": walk.walker_selection_mode or "auto",
         "pickup_method": walk.pickup_method,
         **address_payload,
+        # mig 0100: ponto de encontro dedicado. Privacidade segue a mesma regra
+        # do address_payload (can_see_full / coarse_pickup_payload): se o
+        # usuário não tem direito a ver o endereço, NÃO vê o ponto. Lê null
+        # até que a política de privacidade do ponto seja afinada (se necessário).
+        "meeting_point": (walk.meeting_point if can_see_full else None),
+        "meeting_lat": (walk.meeting_lat if can_see_full else None),
+        "meeting_lng": (walk.meeting_lng if can_see_full else None),
         "pickup_privacy_level": "full" if can_see_full else "coarse",
         "current_attempt": walk.current_attempt,
         "current_matching_attempt": walk.current_attempt,

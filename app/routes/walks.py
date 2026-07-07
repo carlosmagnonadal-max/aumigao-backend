@@ -363,6 +363,22 @@ def create_walk(payload: WalkCreate, request: Request, user: User = Depends(get_
     try:
         data = payload.model_dump()
 
+        # mig 0100: valida coerência do trio meeting_point/lat/lng. Se meeting_point
+        # foi informado, lat+lng também devem ter (e vice-versa). Recusa trio parcial.
+        _mp = data.get("meeting_point")
+        _mlat = data.get("meeting_lat")
+        _mlng = data.get("meeting_lng")
+        if any(v is not None for v in (_mp, _mlat, _mlng)) and not (
+            isinstance(_mp, str)
+            and bool(_mp.strip())
+            and isinstance(_mlat, (int, float))
+            and isinstance(_mlng, (int, float))
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Ponto de encontro exige meeting_point, meeting_lat e meeting_lng em conjunto.",
+            )
+
         selected_walker_id = data.pop("walker_id", None)
         requested_selection_mode = data.pop("walker_selection_mode", None)
         pet = db.get(Pet, data.get("pet_id")) if data.get("pet_id") else None
@@ -542,6 +558,11 @@ def create_walk(payload: WalkCreate, request: Request, user: User = Depends(get_
             "pickup_method": walk.pickup_method,
             "address_snapshot": walk.address_snapshot,
             "notes": walk.notes,
+            # mig 0100: trio meeting_point devolvido na confirmação (UX: app do
+            # tutor e do passeador precisam ler o ponto imediatamente após o POST).
+            "meeting_point": walk.meeting_point,
+            "meeting_lat": walk.meeting_lat,
+            "meeting_lng": walk.meeting_lng,
             "created_at": walk.created_at,
     }
 

@@ -27,6 +27,12 @@ class Walk(Base):
     destination: Mapped[str] = mapped_column(Text, default="")
     address_snapshot: Mapped[str] = mapped_column(Text, default="")
     notes: Mapped[str] = mapped_column(Text, default="")
+    # Ponto de encontro dedicado (mig 0100). Preenchido quando pickup_method =
+    # "Levar até ponto de encontro" (meeting_point no app). Nullable para passeios
+    # "buscar em casa" (default). Lat/lng alimentam o mapa no app do passeador.
+    meeting_point: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    meeting_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    meeting_lng: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     operational_status: Mapped[str] = mapped_column(String, default="ride_scheduled", index=True)
     walker_selection_mode: Mapped[str] = mapped_column(String, default="auto")

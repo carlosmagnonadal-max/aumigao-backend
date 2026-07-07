@@ -15,6 +15,12 @@ class WalkCreate(BaseModel):
     destination: str = Field("", max_length=500)
     address_snapshot: str = Field("", max_length=2000)
     notes: str = Field("", max_length=2000)
+    # mig 0100: ponto de encontro dedicado (substitui hack "Ponto de encontro: X" em notes).
+    # Trio coerente: meeting_point exige lat+lng; sem meeting_point os 3 ficam null
+    # (válido para pickup_method=Buscar em casa).
+    meeting_point: str | None = Field(None, max_length=500)
+    meeting_lat: float | None = Field(None, ge=-90, le=90)
+    meeting_lng: float | None = Field(None, ge=-180, le=180)
 
 class WalkUpdateStatus(BaseModel):
     status: str
@@ -60,6 +66,10 @@ class WalkResponse(ORMModel):
     destination: str | None = None
     address_snapshot: str
     notes: str
+    # mig 0100: ponto de encontro dedicado (lido pelo app do passeador).
+    meeting_point: str | None = None
+    meeting_lat: float | None = None
+    meeting_lng: float | None = None
     created_at: datetime
     # Aditivo (review P2 #3): app do passeador esconde o formulário de observação
     # do passeio quando False. Default False para compat com serializers de listagem.

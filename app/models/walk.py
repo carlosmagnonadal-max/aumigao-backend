@@ -25,6 +25,11 @@ class Walk(Base):
     modality: Mapped[str] = mapped_column(String, default="standard")
     # Destino do Pet Tour, escolhido pelo tutor (vazio em passeios standard).
     destination: Mapped[str] = mapped_column(Text, default="")
+    # Coordenadas do destino do Pet Tour (mig 0101). Nullable: passeios standard
+    # e Pet Tours antigos/sem mapa ficam só com o texto. Alimentam o mapa
+    # read-only no app do passeador (mesma UX do meeting_point).
+    destination_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    destination_lng: Mapped[float | None] = mapped_column(Float, nullable=True)
     address_snapshot: Mapped[str] = mapped_column(Text, default="")
     notes: Mapped[str] = mapped_column(Text, default="")
     # Ponto de encontro dedicado (mig 0100). Preenchido quando pickup_method =

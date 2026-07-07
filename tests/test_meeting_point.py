@@ -6,7 +6,8 @@ get_db / get_current_user. NAO importa app.main.
 
 Cobre:
   - create_walk aceita trio coerente (point + lat + lng).
-  - create_walk recusa trio parcial (point sem lat, ou lat sem lng) com 400.
+  - create_walk aceita meeting_point SO TEXTO (fallback com flag OFF).
+  - create_walk recusa par de coords parcial, ou coords sem texto, com 400.
   - create_walk aceita trio null (pickup_method=Buscar em casa).
   - Validacao Pydantic recusa lat fora de [-90, 90] com 422.
 """
@@ -85,8 +86,8 @@ def test_create_walk_with_meeting_point_succeeds():
     assert body.get("meeting_lng") == pytest.approx(-38.5014)
 
 
-def test_create_walk_with_partial_trio_rejected():
-    """meeting_point sem lat/lng deve ser rejeitado com 400."""
+def test_create_walk_meeting_point_text_only_succeeds():
+    """meeting_point só texto (fallback flag OFF) é aceito — coords ficam null."""
     client, _ = build()
     res = client.post(
         "/walks",
@@ -97,8 +98,40 @@ def test_create_walk_with_partial_trio_rejected():
             meeting_point="Só texto, sem coordenadas",
         ),
     )
+    assert res.status_code in (200, 201), res.text
+    body = res.json()
+    assert body.get("meeting_point") == "Só texto, sem coordenadas"
+    assert body.get("meeting_lat") is None
+    assert body.get("meeting_lng") is None
+
+
+def test_create_walk_with_partial_coords_rejected():
+    """meeting_lat sem meeting_lng (par parcial) deve ser rejeitado com 400."""
+    client, _ = build()
+    res = client.post(
+        "/walks",
+        json=_payload(
+            scheduled_date="2026-08-01T10:30:00",
+            meeting_point="Portão do parque",
+            meeting_lat=-12.9714,
+        ),
+    )
     assert res.status_code == 400, res.text
     assert "meeting_point" in res.json().get("detail", "").lower()
+
+
+def test_create_walk_coords_without_text_rejected():
+    """Pino sem endereço em texto deve ser rejeitado com 400."""
+    client, _ = build()
+    res = client.post(
+        "/walks",
+        json=_payload(
+            scheduled_date="2026-08-01T10:45:00",
+            meeting_lat=-12.9714,
+            meeting_lng=-38.5014,
+        ),
+    )
+    assert res.status_code == 400, res.text
 
 
 def test_create_walk_without_meeting_point_succeeds():

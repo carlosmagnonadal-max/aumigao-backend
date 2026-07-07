@@ -363,12 +363,13 @@ def create_walk(payload: WalkCreate, request: Request, user: User = Depends(get_
     try:
         data = payload.model_dump()
 
-        # mig 0100: valida coerência do trio meeting_point/lat/lng. Se meeting_point
-        # foi informado, lat+lng também devem ter (e vice-versa). Recusa trio parcial.
+        # mig 0100: coerência do meeting_point. Texto sozinho é VÁLIDO (fallback do
+        # app com a flag meeting_point_map OFF). Coordenadas exigem par completo
+        # (lat+lng) e texto preenchido — recusa par parcial ou pino sem endereço.
         _mp = data.get("meeting_point")
         _mlat = data.get("meeting_lat")
         _mlng = data.get("meeting_lng")
-        if any(v is not None for v in (_mp, _mlat, _mlng)) and not (
+        if any(v is not None for v in (_mlat, _mlng)) and not (
             isinstance(_mp, str)
             and bool(_mp.strip())
             and isinstance(_mlat, (int, float))
@@ -376,7 +377,21 @@ def create_walk(payload: WalkCreate, request: Request, user: User = Depends(get_
         ):
             raise HTTPException(
                 status_code=400,
-                detail="Ponto de encontro exige meeting_point, meeting_lat e meeting_lng em conjunto.",
+                detail="Coordenadas do ponto de encontro exigem meeting_point, meeting_lat e meeting_lng em conjunto.",
+            )
+
+        # mig 0101: coordenadas do destino do Pet Tour. Par coerente (os dois ou
+        # nenhum) e só fazem sentido com destination em texto preenchido.
+        _dlat = data.get("destination_lat")
+        _dlng = data.get("destination_lng")
+        if any(v is not None for v in (_dlat, _dlng)) and not (
+            isinstance(_dlat, (int, float))
+            and isinstance(_dlng, (int, float))
+            and bool(str(data.get("destination") or "").strip())
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Coordenadas do destino exigem destination, destination_lat e destination_lng em conjunto.",
             )
 
         selected_walker_id = data.pop("walker_id", None)
@@ -563,6 +578,11 @@ def create_walk(payload: WalkCreate, request: Request, user: User = Depends(get_
             "meeting_point": walk.meeting_point,
             "meeting_lat": walk.meeting_lat,
             "meeting_lng": walk.meeting_lng,
+            # mig 0101: destino do Pet Tour com coordenadas (mesma UX do meeting_point).
+            "modality": walk.modality,
+            "destination": walk.destination,
+            "destination_lat": walk.destination_lat,
+            "destination_lng": walk.destination_lng,
             "created_at": walk.created_at,
     }
 

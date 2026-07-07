@@ -13,6 +13,10 @@ class WalkCreate(BaseModel):
     pickup_method: str = Field("Buscar em casa", max_length=100)
     modality: str = Field("standard", max_length=100)
     destination: str = Field("", max_length=500)
+    # mig 0101: coordenadas do destino do Pet Tour (par coerente — os dois ou nenhum;
+    # exigem destination não-vazio). Null para standard/legado/flag OFF.
+    destination_lat: float | None = Field(None, ge=-90, le=90)
+    destination_lng: float | None = Field(None, ge=-180, le=180)
     address_snapshot: str = Field("", max_length=2000)
     notes: str = Field("", max_length=2000)
     # mig 0100: ponto de encontro dedicado (substitui hack "Ponto de encontro: X" em notes).
@@ -64,6 +68,9 @@ class WalkResponse(ORMModel):
     pickup_method: str
     modality: str | None = None
     destination: str | None = None
+    # mig 0101: coordenadas do destino do Pet Tour (lidas pelo app do passeador).
+    destination_lat: float | None = None
+    destination_lng: float | None = None
     address_snapshot: str
     notes: str
     # mig 0100: ponto de encontro dedicado (lido pelo app do passeador).

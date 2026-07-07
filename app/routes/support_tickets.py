@@ -353,12 +353,16 @@ def user_create_support_ticket(
         )
     _user_ticket_limiter.record_failure(current_user.id)
 
-    # Determina role do solicitante
+    # Determina role do solicitante. Fallback "interno" cobre admin/super_admin
+    # do tenant (que não é tutor nem walker mas pode abrir ticket pelo app).
+    # Mapeamento espelha o que o admin-web usa para classificar quem abriu.
     requester_role: str | None = None
     if current_user.role in {"tutor"}:
         requester_role = "tutor"
-    elif current_user.role in {"walker"}:
+    elif current_user.role in {"walker", "passeador"}:
         requester_role = "walker"
+    elif current_user.role in {"admin", "super_admin", "interno"}:
+        requester_role = "interno"
 
     subject = (payload.subject or "").strip()
     if payload.category:
@@ -396,13 +400,21 @@ def user_list_my_tickets(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Lista os tickets abertos pelo usuário logado (máx 50, desc).
+    """Lista os tickets do usuário no tenant ATUAL (máx 50, desc).
+
+    Filtra por user_id E por tenant_id atual. Decisão: tickets pertencem ao
+    BINÔMIO (user, tenant) — quando o usuário troca de tenant, os tickets
+    antigos não migram (histórico fica com o tenant de origem, visível
+    apenas para admin daquele tenant). Sem isso, um tutor que troca de
+    PMG→Aumigão continuaria vendo tickets antigos do PMG (UX confusa:
+    "por que minha solicitação antiga não tem nada a ver com este tenant?").
 
     Retorna apenas os campos relevantes para o app (sem internal_notes).
     """
     tickets = (
         db.query(SupportTicket)
         .filter(SupportTicket.user_id == current_user.id)
+        .filter(SupportTicket.tenant_id == current_user.tenant_id)
         .order_by(SupportTicket.created_at.desc())
         .limit(50)
         .all()

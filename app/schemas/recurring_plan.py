@@ -15,6 +15,9 @@ class RecurringPlanResponse(ORMModel):
     walks_per_cycle: int
     interval: str
     active: bool
+    # Vitrine do app (mig 0102): curadoria do tenant via admin-web.
+    featured: bool = False
+    display_order: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -29,6 +32,8 @@ class RecurringPlanCreate(BaseModel):
     walks_per_cycle: int = Field(ge=0)
     interval: _IntervalLiteral = "monthly"
     active: bool = True
+    featured: bool = False
+    display_order: int = Field(default=0, ge=0)
 
 
 class RecurringPlanUpdate(BaseModel):
@@ -38,6 +43,8 @@ class RecurringPlanUpdate(BaseModel):
     walks_per_cycle: int | None = Field(default=None, ge=0)
     interval: _IntervalLiteral | None = None
     active: bool | None = None
+    featured: bool | None = None
+    display_order: int | None = Field(default=None, ge=0)
 
 
 class TutorSubscriptionResponse(ORMModel):

@@ -118,7 +118,13 @@ def list_plans(db: Session, tenant_id: str, *, only_active: bool) -> list[Recurr
     query = db.query(RecurringPlan).filter(RecurringPlan.tenant_id == tenant_id)
     if only_active:
         query = query.filter(RecurringPlan.active.is_(True))
-    return query.order_by(RecurringPlan.price.asc()).all()
+    # Vitrine (mig 0102): curadoria do tenant primeiro (featured por
+    # display_order), depois o resto por preço — o app respeita essa ordem.
+    return query.order_by(
+        RecurringPlan.featured.desc(),
+        RecurringPlan.display_order.asc(),
+        RecurringPlan.price.asc(),
+    ).all()
 
 
 def get_plan_or_404(db: Session, tenant_id: str, plan_id: str) -> RecurringPlan:

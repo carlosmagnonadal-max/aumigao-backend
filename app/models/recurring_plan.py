@@ -56,6 +56,11 @@ class RecurringPlan(Base):
     walks_per_cycle: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     interval: Mapped[str] = mapped_column(String, nullable=False, default="monthly")
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Vitrine do app (mig 0102): o tenant escolhe no admin-web quais planos
+    # aparecem em destaque (home + topo da aba Planos) e em que ordem. Nenhum
+    # featured → o app cai no fallback automático por custo-benefício.
+    featured: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

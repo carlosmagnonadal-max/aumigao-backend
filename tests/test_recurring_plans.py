@@ -153,3 +153,29 @@ def test_list_plans_only_active_filter():
 
     assert len(svc.list_plans(db, tenant.id, only_active=True)) == 1
     assert len(svc.list_plans(db, tenant.id, only_active=False)) == 2
+
+
+def test_list_plans_showcase_ordering():
+    """Vitrine (mig 0102): featured primeiro por display_order; resto por preço."""
+    db = _db()
+    tenant = _tenant(db, with_feature=True)
+    cheap = _plan(db, tenant.id, price=79.0)
+    vitrine_2 = _plan(db, tenant.id, price=199.0)
+    vitrine_1 = _plan(db, tenant.id, price=299.0)
+    vitrine_1.featured = True
+    vitrine_1.display_order = 1
+    vitrine_2.featured = True
+    vitrine_2.display_order = 2
+    db.commit()
+
+    ordered = svc.list_plans(db, tenant.id, only_active=True)
+    assert [p.id for p in ordered] == [vitrine_1.id, vitrine_2.id, cheap.id]
+
+
+def test_plan_featured_defaults_false():
+    """Plano novo nasce FORA da vitrine — fallback automático preservado."""
+    db = _db()
+    tenant = _tenant(db, with_feature=True)
+    plan = _plan(db, tenant.id)
+    assert plan.featured is False
+    assert plan.display_order == 0

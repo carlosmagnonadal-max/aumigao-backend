@@ -385,12 +385,31 @@ def _ensure_internal_walk_payment(walk: Walk, db: Session):
     # relatórios financeiros não tinham o repasse das finalizações manuais).
     amount = float(walk.price or 0)
     _walker_id = walk.walker_id or walk.assigned_walker_id
-    split = build_payment_split(
-        db, walk.tenant_id, amount, walker_id=_walker_id
-    )
+    _subscription_id = getattr(walk, "subscription_id", None)
+    if _subscription_id:
+        # Economia do plano (decisão 07/07/2026): passeador recebe o residual da
+        # ÂNCORA cheia (intocado em reais); o valor EFETIVO do plano (preço do
+        # ciclo ÷ passeios, snapshot da assinatura) é o que entra de receita, e a
+        # sobra é co-financiada pro-rata plataforma:tenant. Payment.amount vira o
+        # efetivo — receita verdadeira, sem receita-fantasma do preço avulso.
+        from app.models.recurring_plan import TutorSubscription as _TutorSubscription
+        from app.services.plan_walk_economics import resolve_plan_walk_split
+
+        _subscription = db.get(_TutorSubscription, _subscription_id)
+        if _subscription is not None:
+            split = resolve_plan_walk_split(db, walk, _subscription, walker_id=_walker_id)
+            amount = round(
+                split["platform_amount"] + split["tenant_amount"] + split["walker_amount"], 2
+            )
+        else:
+            split = build_payment_split(db, walk.tenant_id, amount, walker_id=_walker_id)
+    else:
+        split = build_payment_split(
+            db, walk.tenant_id, amount, walker_id=_walker_id
+        )
     # Fase 2: calculado ANTES do Payment para decidir walker_amount e acumular ledger.
     _is_network = is_network_walk(db, walk.tenant_id, _walker_id)
-    _provider = "subscription_walk" if getattr(walk, "subscription_id", None) else "internal"
+    _provider = "subscription_walk" if _subscription_id else "internal"
     payment = Payment(
         id=str(uuid4()),
         tenant_id=walk.tenant_id,

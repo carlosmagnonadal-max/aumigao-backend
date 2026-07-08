@@ -1,6 +1,8 @@
 import os
 from datetime import datetime, timedelta
 
+import pytest
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -336,6 +338,37 @@ def test_subscription_walk_payment_uses_distinct_provider_and_excluded_from_reve
         or_(Payment.provider.is_(None), Payment.provider != "subscription_walk")
     ).scalar()
     assert revenue == 0.0  # o único Payment é o subscription_walk → excluído
+
+
+def test_subscription_walk_split_anchors_walker_and_uses_effective_amount():
+    """Economia do plano (07/07): walker recebe o residual da ÂNCORA cheia
+    (walk.price), e Payment.amount = valor EFETIVO do plano (preço÷passeios) —
+    receita verdadeira, sem fantasma do avulso."""
+    from app.routes.admin import _ensure_internal_walk_payment
+
+    db = _make_db(); tenant = _tenant(db)
+    # Plano: 4 passeios por R$170 → efetivo R$42,50/passeio (15% off da âncora 50).
+    plan = _make_plan(db, tenant, walks_per_cycle=4, price=170.0)
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)
+    db.add(User(id="walker-anchor", email="wa@x.com", password_hash="x", role="passeador", tenant_id=tenant.id))
+    walk = _make_covered_walk(db, tenant, sub)  # walk.price (âncora) = 50.0
+    walk.walker_id = "walker-anchor"; db.add(walk); db.commit()
+
+    _ensure_internal_walk_payment(walk, db)
+    db.commit()
+
+    pay = db.query(Payment).filter(Payment.walk_id == walk.id).first()
+    assert pay is not None
+    # Receita registrada = efetivo do plano, não a âncora (mata receita-fantasma).
+    assert pay.amount == pytest.approx(42.50, abs=0.01)
+    # Walker intocado em reais: residual da ÂNCORA cheia (walk.price=50), com a
+    # comissão/margem REAIS resolvidas — idêntico ao avulso, MAIOR que o efetivo.
+    expected_walker = 50.0 * (100 - pay.commission_percent) / 100
+    assert pay.walker_amount == pytest.approx(expected_walker, abs=0.01)
+    assert pay.walker_amount > pay.amount
+    # Plano abaixo do piso (15% off > fatias disponíveis): plataforma NUNCA
+    # negativa — zera; o déficit é do tenant que precificou (visível em relatório).
+    assert pay.platform_amount == pytest.approx(0.0, abs=0.01)
 
 
 def test_subscription_renewal_resets_credits(monkeypatch):

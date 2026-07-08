@@ -262,6 +262,45 @@ def admin_list_plans(admin: User = Depends(require_permission("finance.read")), 
     return svc.list_plans(db, tenant_id, only_active=False)
 
 
+@admin_router.get("/economics")
+@api_admin_router.get("/economics")
+def admin_plan_economics(admin: User = Depends(require_permission("finance.read")), db: Session = Depends(get_db)):
+    """Números pro painel de margem do admin (decisão 07/07): âncora avulsa,
+    fatias (comissão/margem/take de rede), repasse do passeador (intocável),
+    teto de desconto e utilização média medida dos créditos (quebra real).
+    """
+    from sqlalchemy import func
+
+    from app.models.recurring_plan import TutorSubscription
+    from app.services.plan_walk_economics import plan_pricing_floor
+
+    tenant_id = _admin_tenant_id(admin, db)
+    floor = plan_pricing_floor(db, tenant_id)
+
+    # Utilização medida: créditos consumidos ÷ concedidos, sobre assinaturas do
+    # tenant que já conceberam créditos. Sem dados → null (o painel mostra "—").
+    totals = (
+        db.query(
+            func.coalesce(func.sum(TutorSubscription.walks_per_cycle), 0),
+            func.coalesce(func.sum(TutorSubscription.credits_remaining), 0),
+            func.count(TutorSubscription.id),
+        )
+        .filter(
+            TutorSubscription.tenant_id == tenant_id,
+            TutorSubscription.credits_granted.is_(True),
+        )
+        .first()
+    )
+    granted, remaining, cycles = (int(totals[0]), int(totals[1]), int(totals[2])) if totals else (0, 0, 0)
+    utilization = round((granted - remaining) / granted * 100, 1) if granted > 0 else None
+
+    return {
+        **floor,
+        "utilization_percent": utilization,
+        "utilization_cycles_measured": cycles,
+    }
+
+
 @admin_router.post("", response_model=RecurringPlanResponse)
 @api_admin_router.post("", response_model=RecurringPlanResponse)
 def admin_create_plan(
@@ -273,6 +312,10 @@ def admin_create_plan(
     tenant = db.get(Tenant, tenant_id)
     if tenant is not None:
         enforce_plan_allows_product_feature(tenant, RECURRING_PLANS_FEATURE_KEY, "Planos recorrentes")
+    # Trava do piso (decisão 07/07): preço/passeio nunca abaixo do mínimo
+    # sustentável do tenant — nenhum elo pode ficar negativo.
+    from app.services.plan_walk_economics import enforce_plan_pricing_floor
+    enforce_plan_pricing_floor(db, tenant_id, payload.price, payload.walks_per_cycle)
     plan = RecurringPlan(tenant_id=tenant_id, **payload.model_dump())
     db.add(plan)
     record_audit_log(
@@ -295,6 +338,15 @@ def admin_update_plan(
     tenant_id = _admin_tenant_id(admin, db)
     plan = svc.get_plan_or_404(db, tenant_id, plan_id)
     values = payload.model_dump(exclude_unset=True)
+    # Trava do piso (decisão 07/07): valida o estado FINAL (payload + atuais).
+    if "price" in values or "walks_per_cycle" in values:
+        from app.services.plan_walk_economics import enforce_plan_pricing_floor
+        enforce_plan_pricing_floor(
+            db,
+            tenant_id,
+            float(values.get("price", plan.price)),
+            int(values.get("walks_per_cycle", plan.walks_per_cycle)),
+        )
     for field, value in values.items():
         setattr(plan, field, value)
     db.add(plan)

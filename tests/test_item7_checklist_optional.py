@@ -363,3 +363,40 @@ class TestNormalizeCompletionChecklist:
             _normalize_completion_checklist({})
         except HTTPException:
             pytest.fail("_normalize_completion_checklist levantou HTTPException com checklist vazio — não deve bloquear.")
+
+
+# --------------------------------------------------------------------------- #
+# Regressão 2026-07-08: review DEVE herdar o tenant_id do walk (RLS de prod
+# rejeitava o INSERT com tenant_id NULL — 500 no Enviar para revisão).
+# --------------------------------------------------------------------------- #
+
+class TestCompletionReviewTenantScope:
+    def test_review_inherits_walk_tenant_id(self):
+        client, db = _build()
+        w = Walk(
+            id="walk-chk-tenant",
+            tenant_id=TENANT_ID,
+            tutor_id=TUTOR_ID,
+            walker_id=WALKER_ID,
+            pet_id="pet-1",
+            scheduled_date="2024-06-01T10:00:00",
+            duration_minutes=30,
+            price=50.0,
+            status="Passeando agora",
+            operational_status="ride_in_progress",
+            created_at=datetime.utcnow(),
+        )
+        db.add(w)
+        db.commit()
+
+        r = client.post(
+            "/walker/walks/walk-chk-tenant/completion-report",
+            json={"photo_url": "https://example.com/foto.jpg", "notes": "Passeio finalizado"},
+        )
+        assert r.status_code == 200, r.text
+        review = (
+            db.query(WalkCompletionReview)
+            .filter(WalkCompletionReview.walk_id == "walk-chk-tenant")
+            .one()
+        )
+        assert review.tenant_id == TENANT_ID

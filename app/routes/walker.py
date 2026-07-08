@@ -2530,6 +2530,7 @@ def _submit_completion_review(walk: Walk, payload: dict | None, user: User, db: 
     resubmission = review is not None
     if not review:
         review = WalkCompletionReview(
+            tenant_id=walk.tenant_id,
             walk_id=walk.id,
             walker_user_id=user.id,
             tutor_user_id=walk.tutor_id,

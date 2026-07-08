@@ -2411,7 +2411,23 @@ def _normalize_completion_checklist(payload: dict) -> dict:
         checklist = {}
     # Registra apenas as chaves conhecidas; campos ausentes = False (não informado).
     # NÃO levanta exceção por campos faltantes — ver docstring acima.
-    return {key: bool(checklist.get(key, False)) for key in COMPLETION_CHECKLIST_KNOWN_KEYS}
+    normalized = {key: bool(checklist.get(key, False)) for key in COMPLETION_CHECKLIST_KNOWN_KEYS}
+
+    # Registro estruturado (2026-07-08): detalhes opcionais em texto — mesma
+    # semântica não-bloqueante do ITEM 7. delivered_to indica a quem o pet foi
+    # entregue; delivered_to_name identifica o recebedor quando não foi o tutor;
+    # incident_description descreve a ocorrência quando incident_reported=True.
+    delivered_to = checklist.get("delivered_to")
+    if delivered_to in ("tutor", "other"):
+        normalized["delivered_to"] = delivered_to
+        if delivered_to == "other":
+            name = str(checklist.get("delivered_to_name") or "").strip()[:120]
+            if name:
+                normalized["delivered_to_name"] = name
+    incident_description = str(checklist.get("incident_description") or "").strip()[:2000]
+    if incident_description:
+        normalized["incident_description"] = incident_description
+    return normalized
 
 
 def _notify_admins_completion_review_pending(db: Session, walk: Walk, review: WalkCompletionReview, walker: User, resubmission: bool) -> None:

@@ -1298,9 +1298,30 @@ class WalkComplaintRequest(BaseModel):
 
 
 class WalkKitIssueReportRequest(BaseModel):
+    # Contrato tolerante (2026-07-08): o app envia missing_items como LISTA de
+    # chaves faltantes e "note"; payloads legados mandavam dict {chave: bool}.
+    # Aceitar ambos evita o 422 visto no teste real de 08/07.
     confirm_report: bool = False
-    missing_items: dict | None = None
+    missing_items: dict | list | None = None
     notes: str | None = None
+    note: str | None = None
+
+
+_KIT_ITEM_LABELS = {
+    "has_water": "Água",
+    "has_bowl": "Vasilha",
+    "has_bags": "Saquinhos",
+    "has_first_aid": "Primeiros socorros",
+}
+
+
+def _normalize_missing_kit_items(missing_items: dict | list | None) -> list[str]:
+    """Lista de chaves de itens faltantes a partir dos dois formatos aceitos."""
+    if isinstance(missing_items, list):
+        return [str(key) for key in missing_items if key]
+    if isinstance(missing_items, dict):
+        return [key for key, value in missing_items.items() if not value]
+    return []
 
 
 @router.post("/{walk_id}/complaint")
@@ -1326,7 +1347,9 @@ def create_walk_kit_issue_report(walk_id: str, payload: WalkKitIssueReportReques
     walk = _get_walk_for_user(walk_id, user, db)
     if not payload.confirm_report:
         raise HTTPException(status_code=400, detail="Confirme a ocorrencia antes de enviar.")
-    missing = ", ".join([key for key, value in (payload.missing_items or {}).items() if not value]) or "Itens essenciais do kit"
+    missing_keys = _normalize_missing_kit_items(payload.missing_items)
+    missing = ", ".join(_KIT_ITEM_LABELS.get(key, key) for key in missing_keys) or "Itens essenciais do kit"
+    note_text = (payload.notes or payload.note or "").strip()
     complaint_payload = ComplaintCreate(
         source="tutor",
         target_type="walker",
@@ -1335,8 +1358,8 @@ def create_walk_kit_issue_report(walk_id: str, payload: WalkKitIssueReportReques
         walk_id=walk.id,
         category="falta_cuidado",
         title="Ocorrencia de kit do passeador",
-        description=payload.notes or f"Tutor informou problema com kit: {missing}.",
+        description=note_text or f"Tutor informou problema com kit: {missing}.",
         evidences=[],
-        metadata={"origin": "kit_issue_report", "missing_items": payload.missing_items or {}},
+        metadata={"origin": "kit_issue_report", "missing_items": missing_keys},
     )
     return create_complaint(complaint_payload, user, db)

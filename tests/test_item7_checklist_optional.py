@@ -400,3 +400,69 @@ class TestCompletionReviewTenantScope:
             .one()
         )
         assert review.tenant_id == TENANT_ID
+
+
+# --------------------------------------------------------------------------- #
+# Registro estruturado (2026-07-08): campos de texto opcionais preservados no
+# checklist_json — entrega a quem + descrição de ocorrência.
+# --------------------------------------------------------------------------- #
+
+class TestCompletionStructuredFields:
+    def test_delivered_to_other_and_incident_description_preserved(self):
+        client, db = _build()
+        _make_walk(db)
+
+        r = client.post(
+            "/walker/walks/walk-chk-1/completion-report",
+            json={
+                "photo_url": "https://example.com/foto.jpg",
+                "notes": "Passeio finalizado",
+                "checklist": {
+                    "pet_delivered": True,
+                    "water_offered": True,
+                    "incident_reported": True,
+                    "delivered_to": "other",
+                    "delivered_to_name": "  Porteiro João  ",
+                    "incident_description": "Latiu para outro cão, sem ferimentos.",
+                },
+            },
+        )
+        assert r.status_code == 200, r.text
+        checklist = r.json()["review"]["checklist"]
+        assert checklist["pet_delivered"] is True
+        assert checklist["delivered_to"] == "other"
+        assert checklist["delivered_to_name"] == "Porteiro João"
+        assert checklist["incident_description"] == "Latiu para outro cão, sem ferimentos."
+
+    def test_delivered_to_tutor_omits_name(self):
+        client, db = _build()
+        _make_walk(db)
+
+        r = client.post(
+            "/walker/walks/walk-chk-1/completion-report",
+            json={
+                "photo_url": "https://example.com/foto.jpg",
+                "notes": "Tudo tranquilo",
+                "checklist": {"pet_delivered": True, "delivered_to": "tutor", "delivered_to_name": "ignorado"},
+            },
+        )
+        assert r.status_code == 200, r.text
+        checklist = r.json()["review"]["checklist"]
+        assert checklist["delivered_to"] == "tutor"
+        assert "delivered_to_name" not in checklist
+
+    def test_invalid_delivered_to_dropped(self):
+        from app.routes.walker import _normalize_completion_checklist
+        result = _normalize_completion_checklist({"checklist": {"delivered_to": "hacker", "delivered_to_name": "x"}})
+        assert "delivered_to" not in result
+        assert "delivered_to_name" not in result
+
+    def test_bools_unchanged_without_structured_fields(self):
+        from app.routes.walker import _normalize_completion_checklist
+        result = _normalize_completion_checklist({"checklist": {"pet_delivered": True}})
+        assert result == {
+            "pet_delivered": True,
+            "leash_returned": False,
+            "water_offered": False,
+            "incident_reported": False,
+        }

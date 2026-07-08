@@ -92,7 +92,11 @@ def max_plan_discount_percent(
     """
     margin = max(0.0, float(tenant_margin_percent))
     own_cap = max(0.0, float(commission_percent)) + margin
-    network_cap = max(0.0, float(network_take_percent)) + margin
+    # Rede indisponível pro tenant (take 0/N.A., ex.: plano Free) → o ramo rede
+    # não existe; só o próprio limita.
+    if float(network_take_percent) <= 0:
+        return to_float(q2(own_cap))
+    network_cap = float(network_take_percent) + margin
     return to_float(q2(min(own_cap, network_cap)))
 
 

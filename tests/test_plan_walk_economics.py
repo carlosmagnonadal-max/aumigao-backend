@@ -84,6 +84,8 @@ def test_max_discount_is_min_of_own_and_network():
     assert max_plan_discount_percent(5.0, 3.0, 10.0) == pytest.approx(8.0)
     # Nada configurado: 0.
     assert max_plan_discount_percent(0.0, 0.0, 18.0) == 0.0
+    # Rede indisponível (take 0, ex. Free): só o ramo próprio limita — 20+20=40.
+    assert max_plan_discount_percent(20.0, 20.0, 0.0) == pytest.approx(40.0)
 
 
 def test_network_branch_platform_absorbs_discount():

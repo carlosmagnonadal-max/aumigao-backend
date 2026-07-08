@@ -60,6 +60,13 @@ class WalkResponse(ORMModel):
     matching_started_at: datetime | None = None
     matching_finished_at: datetime | None = None
     no_walker_reason: str | None = None
+    # Decisão do tutor (teste real 08/07): SEM estes campos aqui o response_model
+    # DESCARTAVA o que o serializador mandava e o card reagendar/trocar/estorno
+    # nunca chegava ao app. payment_cutoff_at idem (countdown do prazo de pagamento).
+    tutor_decision_required: bool = False
+    decision_reason: str | None = None
+    is_exclusive_walker: bool = False
+    payment_cutoff_at: str | None = None
     pickup_region_label: str | None = None
     pickup_distance_label: str | None = None
     pickup_privacy_level: str | None = None

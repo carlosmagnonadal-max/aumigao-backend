@@ -421,3 +421,22 @@ def test_exclusive_walker_unavailable_routes_to_decision_menu():
     assert data["tutor_decision_required"] is True
     assert data["decision_reason"] == "exclusivo_nao_aceitou"
     assert data["is_exclusive_walker"] is True
+
+
+# ─────────── G: campos de decisão SOBREVIVEM ao response_model da rota ────────
+
+def test_list_walks_route_exposes_decision_fields():
+    """REGRESSÃO teste real 08/07 (2ª camada do bug): o serializer mandava os
+    campos de decisão, mas o response_model (WalkResponse) DESCARTAVA o que não
+    estava declarado no schema — o card reagendar/trocar/estorno nunca chegava
+    ao app. Passa pela ROTA de verdade (GET /walks) pra pegar o strip."""
+    test_app, db = _build_walks_app()
+    _make_walk(db)  # awaiting_tutor_reconfirmation + pagamento_apos_corte
+    r = TestClient(test_app).get("/walks")
+    assert r.status_code == 200, r.text
+    items = r.json()
+    assert len(items) == 1
+    item = items[0]
+    assert item["tutor_decision_required"] is True
+    assert item["decision_reason"] == "pagamento_apos_corte"
+    assert item["is_exclusive_walker"] is True

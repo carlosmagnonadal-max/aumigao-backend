@@ -67,14 +67,12 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
-def _parse_scheduled_at(value: str | None) -> datetime | None:
-    raw = (value or "").strip()
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
-    except ValueError:
-        return None
+def _walk_start(db: Session, walk: Walk) -> datetime | None:
+    """INÍCIO do passeio em UTC naive. scheduled_date é hora LOCAL do tenant —
+    ver app.lib.walk_time (bug 08/07: local tratado como UTC cancelava em 1 min)."""
+    from app.lib.walk_time import tenant_tz_name, walk_start_utc
+
+    return walk_start_utc(walk.scheduled_date, tenant_tz_name(db, walk.tenant_id))
 
 
 def _context_json(log: OperationalBetaLog) -> dict:
@@ -178,7 +176,7 @@ def _task_no_show_checkin(db: Session) -> int:
     )
     count = 0
     for walk in walks:
-        scheduled_at = _parse_scheduled_at(walk.scheduled_date)
+        scheduled_at = _walk_start(db, walk)
         if scheduled_at and now < scheduled_at + timedelta(minutes=grace_minutes):
             continue
         count += len(detect_reliability_events(walk, db))
@@ -221,7 +219,7 @@ def _task_stuck_completions(db: Session) -> int:
         .all()
     )
     for walk in walks:
-        scheduled_at = _parse_scheduled_at(walk.scheduled_date)
+        scheduled_at = _walk_start(db, walk)
         duration = int(walk.duration_minutes or 0)
         reference = scheduled_at or walk.created_at
         if not reference or now < reference + timedelta(minutes=duration + ride_progress_extra_minutes):
@@ -384,29 +382,6 @@ def _task_pet_reminder_alerts(db: Session) -> int:
     return task_pet_reminder_alerts(db)
 
 
-def _parse_walk_start(scheduled_date: str | None) -> datetime | None:
-    """Parseia o INÍCIO do passeio (naive UTC) a partir de walk.scheduled_date.
-
-    scheduled_date é uma string ISO tipo 'YYYY-MM-DDTHH:MM' (o app grava data+hora
-    juntas). Sem hora (só data), assume início de dia. Devolve None se não parseável
-    — nesse caso o corte de 45min não se aplica (só o timeout de 24h).
-    """
-    if not scheduled_date:
-        return None
-    raw = str(scheduled_date).strip()
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
-    except ValueError:
-        # Fallback: só a parte de data (sem hora) — início de dia.
-        date_part = raw.partition("T")[0]
-        try:
-            return datetime.fromisoformat(date_part).replace(tzinfo=None)
-        except ValueError:
-            return None
-
-
 def _cancel_pending_charge_for_walk(db: Session, walk_id: str) -> None:
     """Cancela no Asaas a cobrança PENDENTE do walk (best-effort) e marca o Payment
     local como `cancelado_regenerado`. Reusa o helper de mutação de cobrança (item B).
@@ -462,7 +437,9 @@ def _task_expire_unpaid_walks(db: Session) -> int:
     cancelled: list[tuple[str, str | None]] = []
     for walk in walks:
         timed_out = walk.created_at is not None and walk.created_at < timeout_cutoff
-        walk_start = _parse_walk_start(walk.scheduled_date)
+        # scheduled_date é hora LOCAL do tenant → converter pra UTC antes de comparar
+        # (sem isso, 10:30 locais viram "10:30 UTC" e o corte dispara 3h mais cedo).
+        walk_start = _walk_start(db, walk)
         past_cutoff = walk_start is not None and walk_start <= start_deadline
         if not (timed_out or past_cutoff):
             continue

@@ -24,20 +24,20 @@ def pet_first_name(full_name: Optional[str]) -> str:
     return parts[0] if parts else ""
 
 
-def compute_share_expiry(walk, *, grace_minutes: int = 120, now: Optional[datetime] = None) -> datetime:
-    """Fim previsto do passeio + folga.
+def compute_share_expiry(
+    walk, *, grace_minutes: int = 120, now: Optional[datetime] = None, tz_name: Optional[str] = None
+) -> datetime:
+    """Fim previsto do passeio + folga, em UTC naive (comparável a utcnow).
 
-    O modelo Walk não persiste started_at/ended_at — deriva de scheduled_date (str ISO)
-    + duration_minutes. Se scheduled_date não parsear, usa `now` (ou utcnow) como base.
+    O modelo Walk não persiste started_at/ended_at — deriva de scheduled_date
+    (hora LOCAL do tenant, convertida via app.lib.walk_time; sem a conversão o
+    link expirava ~3h mais cedo). Se scheduled_date não parsear, usa `now`
+    (ou utcnow) como base.
     """
+    from app.lib.walk_time import walk_start_utc
+
     duration = int(getattr(walk, "duration_minutes", 0) or 0)
-    base: Optional[datetime] = None
-    raw = getattr(walk, "scheduled_date", None)
-    if raw:
-        try:
-            base = datetime.fromisoformat(str(raw))
-        except (ValueError, TypeError):
-            base = None
+    base = walk_start_utc(getattr(walk, "scheduled_date", None), tz_name)
     if base is None:
         base = now or datetime.utcnow()
     return base + timedelta(minutes=duration + grace_minutes)

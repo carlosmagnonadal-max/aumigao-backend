@@ -543,28 +543,16 @@ def walk_payment_cutoff_minutes() -> int:
         return 45
 
 
-def _parse_walk_start_naive(scheduled_date: str | None) -> datetime | None:
-    """Início do passeio (naive UTC) a partir de walk.scheduled_date (ISO). None se
-    não parseável (nesse caso o corte não se aplica no webhook — libera normal)."""
-    if not scheduled_date:
-        return None
-    raw = str(scheduled_date).strip()
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
-    except ValueError:
-        date_part = raw.partition("T")[0]
-        try:
-            return datetime.fromisoformat(date_part).replace(tzinfo=None)
-        except ValueError:
-            return None
-
-
-def _walk_start_past_cutoff(scheduled_date: str | None) -> bool:
+def _walk_start_past_cutoff(scheduled_date: str | None, tz_name: str | None = None) -> bool:
     """True se o início do passeio está a menos de WALK_PAYMENT_CUTOFF_MINUTES de
-    agora (ou já passou). False quando a data não é parseável (não bloqueia)."""
-    start = _parse_walk_start_naive(scheduled_date)
+    agora (ou já passou). False quando a data não é parseável (não bloqueia).
+
+    scheduled_date é hora LOCAL do tenant (tz_name) — a conversão pra UTC vive em
+    app.lib.walk_time (bug 08/07: local-como-UTC desviava pagamento legítimo pra
+    'pagamento_apos_corte' em passeios a <3h45 do início)."""
+    from app.lib.walk_time import walk_start_utc
+
+    start = walk_start_utc(scheduled_date, tz_name)
     if start is None:
         return False
     return start <= datetime.utcnow() + timedelta(minutes=walk_payment_cutoff_minutes())
@@ -1684,7 +1672,11 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                     walk = db.get(Walk, payment.walk_id)
                     if walk:
                         op_status = getattr(walk, "operational_status", None)
-                        past_cutoff = _walk_start_past_cutoff(walk.scheduled_date)
+                        from app.lib.walk_time import tenant_tz_name
+
+                        past_cutoff = _walk_start_past_cutoff(
+                            walk.scheduled_date, tenant_tz_name(db, walk.tenant_id)
+                        )
                         if op_status == "ride_cancelled" or (op_status == "awaiting_payment" and past_cutoff):
                             walk.operational_status = "awaiting_tutor_reconfirmation"
                             walk.status = "Aguardando confirmação do tutor"

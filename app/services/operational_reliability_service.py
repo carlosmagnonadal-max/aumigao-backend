@@ -60,14 +60,11 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
-def _parse_scheduled_at(value: str | None) -> datetime | None:
-    raw = (value or "").strip()
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
-    except ValueError:
-        return None
+def _scheduled_start_utc(db: Session, walk: Walk) -> datetime | None:
+    """INÍCIO do passeio em UTC naive (scheduled_date é hora LOCAL do tenant)."""
+    from app.lib.walk_time import tenant_tz_name, walk_start_utc
+
+    return walk_start_utc(walk.scheduled_date, tenant_tz_name(db, walk.tenant_id))
 
 
 def _walk_status_key(walk: Walk) -> str:
@@ -136,7 +133,7 @@ def create_operational_event(
 
 
 def detect_reliability_events(walk: Walk, db: Session) -> list[WalkOperationalEvent]:
-    scheduled_at = _parse_scheduled_at(walk.scheduled_date)
+    scheduled_at = _scheduled_start_utc(db, walk)
     if not scheduled_at:
         return []
 
@@ -173,7 +170,7 @@ def detect_reliability_events(walk: Walk, db: Session) -> list[WalkOperationalEv
 
 
 def record_late_cancellation_if_applicable(walk: Walk, db: Session) -> WalkOperationalEvent | None:
-    scheduled_at = _parse_scheduled_at(walk.scheduled_date)
+    scheduled_at = _scheduled_start_utc(db, walk)
     if not scheduled_at or _walk_status_key(walk) not in CANCELLED_STATUSES:
         return None
 

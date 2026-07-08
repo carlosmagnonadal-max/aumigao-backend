@@ -40,9 +40,17 @@ WALK_ID = "walk-1"
 PET_ID = "pet-1"
 
 
+def _local_now() -> datetime:
+    # scheduled_date é hora de PAREDE local do tenant (default America/Bahia) —
+    # gerar com o relógio local, como o app grava (fix fuso 08/07).
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("America/Bahia")).replace(tzinfo=None)
+
+
 def _scheduled_now_iso() -> str:
     # Horario do passeio = agora (janela aberta: 30 min antes ate em progresso).
-    return datetime.utcnow().replace(microsecond=0).isoformat()
+    return _local_now().replace(microsecond=0).isoformat()
 
 
 def build(*, walk_overrides: dict | None = None, create_walk: bool = True):
@@ -213,7 +221,7 @@ def test_chat_blocked_when_status_not_allowed_403():
 
 def test_chat_blocked_too_early_before_window_403():
     # passeio agendado para daqui a 2h -> antes da abertura (30 min antes)
-    future = (datetime.utcnow() + timedelta(hours=2)).replace(microsecond=0).isoformat()
+    future = (_local_now() + timedelta(hours=2)).replace(microsecond=0).isoformat()
     test_app, db = build(walk_overrides={"scheduled_date": future})
     client = client_as(test_app, db, TUTOR_ID)
     r = client.get("/protected-chat/messages", params={"walk_id": WALK_ID})
@@ -223,7 +231,7 @@ def test_chat_blocked_too_early_before_window_403():
 
 def test_chat_blocked_after_completion_window_403():
     # ride_completed com horario muito no passado -> janela pos-conclusao fechada
-    past = (datetime.utcnow() - timedelta(hours=3)).replace(microsecond=0).isoformat()
+    past = (_local_now() - timedelta(hours=3)).replace(microsecond=0).isoformat()
     test_app, db = build(walk_overrides={"scheduled_date": past, "operational_status": "ride_completed", "status": "ride_completed"})
     client = client_as(test_app, db, TUTOR_ID)
     r = client.get("/protected-chat/messages", params={"walk_id": WALK_ID})

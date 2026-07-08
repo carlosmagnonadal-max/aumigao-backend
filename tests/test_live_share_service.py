@@ -24,8 +24,9 @@ def test_pet_first_name_takes_first_token():
 def test_compute_share_expiry_adds_duration_and_grace():
     walk = _Walk("2026-06-12T14:00:00", 45)
     exp = compute_share_expiry(walk, grace_minutes=120)
-    # 14:00 + 45min + 120min = 16:45
-    assert exp == datetime(2026, 6, 12, 16, 45, 0)
+    # scheduled_date é hora LOCAL (America/Bahia, UTC-3): 14:00 local = 17:00 UTC.
+    # 17:00 + 45min + 120min = 19:45 UTC (fix fuso 08/07).
+    assert exp == datetime(2026, 6, 12, 19, 45, 0)
 
 
 def test_compute_share_expiry_fallback_when_unparseable():

@@ -113,6 +113,8 @@ def test_profile_returns_data_with_reputation_and_score():
     assert "rating_count" in body
     assert "operational_score" in body
     assert "reliability_label" in body
+    # fix "E-mail nao informado": email vem do User autenticado, nao do WalkerProfile.
+    assert body["email"] == "walker@test.com"
 
 
 def test_profile_requires_auth_401():

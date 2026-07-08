@@ -75,7 +75,9 @@ def _create_share_link(walk_id: str, user: User, db: Session) -> dict:
         # also be in the past.  Clamp to at least now + grace (120 min) so the
         # link is always valid for at least the grace window from creation time.
         _grace = 120
-        computed_expiry = compute_share_expiry(walk)
+        from app.lib.walk_time import tenant_tz_name
+
+        computed_expiry = compute_share_expiry(walk, tz_name=tenant_tz_name(db, walk.tenant_id))
         expires_at = computed_expiry if computed_expiry > now else now + timedelta(minutes=_grace)
         link = WalkShareLink(
             id=str(uuid4()),

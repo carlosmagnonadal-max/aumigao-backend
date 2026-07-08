@@ -43,6 +43,9 @@ class WalkerProfileResponse(WalkerProfileBase, ORMModel):
     id: str
     user_id: str
     status: str
+    # E-mail vem do User autenticado (nao existe coluna email em WalkerProfile) —
+    # o GET /walker/profile injeta esse campo no dict de resposta.
+    email: str | None = None
     internal_notes: str = ""
     active_as_walker: bool = False
     approved_at: datetime | None = None

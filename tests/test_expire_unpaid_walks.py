@@ -9,6 +9,7 @@ from __future__ import annotations
 import app.models  # noqa: F401
 
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -20,6 +21,14 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.walk import Walk
 from app.services.operational_scheduler_service import _task_expire_unpaid_walks
+
+# scheduled_date é hora de PAREDE local do tenant (default America/Bahia) —
+# os horários dos testes são gerados no relógio local, como o app grava.
+_TZ = ZoneInfo("America/Bahia")
+
+
+def _local_now() -> datetime:
+    return datetime.now(_TZ).replace(tzinfo=None)
 
 
 def _setup():
@@ -35,7 +44,7 @@ def _setup():
 
 
 def _future_iso(hours: int = 6) -> str:
-    return (datetime.utcnow() + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M")
+    return (_local_now() + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M")
 
 
 def _walk(db, wid, op_status, age_hours, scheduled_date=None):
@@ -113,7 +122,7 @@ def test_cutoff_45min_expires_walk_near_start(monkeypatch):
     está a menos de 45min de agora é expirado — não dá mais tempo de executar."""
     Factory, db = _setup()
     # criado agora (2h), início a 10min → dentro do corte de 45min.
-    near_start = (datetime.utcnow() + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M")
+    near_start = (_local_now() + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M")
     _walk(db, "near", "awaiting_payment", age_hours=1, scheduled_date=near_start)
     # início bem no futuro (6h) → NÃO deve expirar.
     _walk(db, "far", "awaiting_payment", age_hours=1)
@@ -129,12 +138,29 @@ def test_cutoff_45min_expires_walk_near_start(monkeypatch):
         db2.close()
 
 
+def test_regression_local_time_nao_e_utc_bug_2026_07_08():
+    """REGRESSÃO do bug de 08/07/2026: passeio criado às 9:21 locais com início
+    às 10:30 locais (69min no futuro) era cancelado em 1 minuto porque '10:30'
+    era comparado como UTC (12:22 UTC > 10:30 'UTC'). Com a conversão de fuso
+    (America/Bahia), o passeio está FORA do corte de 45min e NÃO pode expirar."""
+    Factory, db = _setup()
+    start_69 = (_local_now() + timedelta(minutes=69)).strftime("%Y-%m-%dT%H:%M")
+    _walk(db, "carlos", "awaiting_payment", age_hours=0, scheduled_date=start_69)
+    assert _run(db) == 0
+    db2 = Factory()
+    db2.info["rls_tenant"] = "*"
+    try:
+        assert db2.get(Walk, "carlos").operational_status == "awaiting_payment"
+    finally:
+        db2.close()
+
+
 def test_cutoff_respects_env_override(monkeypatch):
     """WALK_PAYMENT_CUTOFF_MINUTES configurável: com 90min, um início a 60min já
     entra no corte (antes de 45min não entraria)."""
     monkeypatch.setenv("WALK_PAYMENT_CUTOFF_MINUTES", "90")
     Factory, db = _setup()
-    start_60 = (datetime.utcnow() + timedelta(minutes=60)).strftime("%Y-%m-%dT%H:%M")
+    start_60 = (_local_now() + timedelta(minutes=60)).strftime("%Y-%m-%dT%H:%M")
     _walk(db, "w60", "awaiting_payment", age_hours=1, scheduled_date=start_60)
     assert _run(db) == 1
     db2 = Factory()

@@ -45,8 +45,16 @@ def _build():
     return test_app, db
 
 
+def _local_now() -> datetime:
+    # scheduled_date é hora de PAREDE local do tenant (default America/Bahia) —
+    # gerar com o relógio local, como o app grava (fix fuso 08/07).
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("America/Bahia")).replace(tzinfo=None)
+
+
 def _future_iso(hours: int = 6) -> str:
-    return (datetime.utcnow() + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M")
+    return (_local_now() + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M")
 
 
 def _walk(db, op_status, scheduled_date=None):
@@ -121,7 +129,7 @@ def test_webhook_race_confirmed_after_cutoff_goes_to_reconfirmation(monkeypatch)
     test_app, db = _build()
     # início a 10min de agora → dentro do corte de 45min → pós-corte.
     _walk(db, op_status="awaiting_payment",
-          scheduled_date=(datetime.utcnow() + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M"))
+          scheduled_date=(_local_now() + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M"))
     r = _webhook(TestClient(test_app))
     assert r.status_code == 200, r.text
     db.expire_all()

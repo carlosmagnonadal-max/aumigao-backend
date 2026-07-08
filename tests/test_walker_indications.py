@@ -302,13 +302,14 @@ def test_migration_0098_chains_on_0097():
 
 
 def test_migration_0098_single_head():
+    # O que importa aqui é NÃO ter fork de heads. Fixar o nome do head atual
+    # quebrava a cada migration nova (0099-0103 já passaram por cima).
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     heads = list(script.get_heads())
     assert len(heads) == 1, f"Múltiplos heads: {heads}"
-    assert heads[0] == "0098_walker_indications"
 
 
 def test_migration_0098_rls_in_file():

@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import unicodedata
@@ -8,9 +9,11 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
+from app.constants import KIT_ITEM_DEFINITIONS
 from app.models.pet import Pet
 from app.models.walk import Walk
 from app.models.walker_availability_exception import WalkerAvailabilityException
+from app.models.walker_kit_submission import WalkerKitSubmission
 from app.models.walker_profile import WalkerProfile
 from app.schemas.matching import MatchingWalkerRequest
 from app.services.badge_service import generate_badges, generate_display_reason
@@ -20,6 +23,10 @@ from app.services.reputation_service import DEFAULT_WALKER_PHOTO, calculate_hybr
 from app.services.walker_availability_service import _covers
 from app.services.walker_trust_service import compute_walker_trust
 from app.services.tenant_feature_runtime_service import is_tenant_feature_enabled
+
+# Sentinel para diferenciar "kit_row nao informado pelo chamador" (dispara query
+# individual de fallback) de "kit_row=None resolvido" (walker sem kit aprovado).
+_KIT_ROW_UNSET = object()
 
 NEARBY_NEIGHBORHOODS = {
     "pituba": {"itaigara", "caminho das arvores", "costa azul", "amaralina"},
@@ -185,6 +192,59 @@ def risk_visibility_adjustment(risk_level: str) -> float:
     return 0.0
 
 
+def _batch_approved_kits(walker_ids: list[str], db: Session) -> dict[str, WalkerKitSubmission]:
+    """Uma query para os kits APROVADOS de todos os walkers do pool (evita N+1 em
+    rank_walkers, seguindo o padrao de _bg_flag_on resolvido 1x por ranking).
+    FAIL-OPEN (dict vazio) se a tabela nao existir no contexto de teste."""
+    if not walker_ids:
+        return {}
+    try:
+        rows = (
+            db.query(WalkerKitSubmission)
+            .filter(
+                WalkerKitSubmission.walker_user_id.in_(walker_ids),
+                WalkerKitSubmission.audit_status == "approved",
+            )
+            .all()
+        )
+    except Exception as _kit_exc:
+        logger.warning(
+            "matching_kit_batch_load_failed reason=%s — kits omitidos do payload",
+            type(_kit_exc).__name__,
+        )
+        db.rollback()
+        return {}
+    return {row.walker_user_id: row for row in rows}
+
+
+def _matching_kit_payload(kit_row: WalkerKitSubmission | None) -> dict:
+    """Kit aprovado exposto ao TUTOR no matching (T2 — 'as fotos aprovadas ficarao
+    visiveis para o tutor', prometido na tela de envio do kit). So expoe algo
+    quando existe uma submission com audit_status='approved'; sem isso, o tutor
+    ve approved=False e items=[] (sem null-check extra no front)."""
+    if kit_row is None:
+        return {"approved": False, "items": []}
+    try:
+        submitted_items = json.loads(kit_row.items_json or "{}")
+    except (TypeError, ValueError):
+        submitted_items = {}
+    if not isinstance(submitted_items, dict):
+        submitted_items = {}
+
+    items = []
+    for definition in KIT_ITEM_DEFINITIONS:
+        state = submitted_items.get(definition["key"], {})
+        if not isinstance(state, dict) or not state.get("available"):
+            continue
+        photo_url = next(
+            (url for url in (state.get("photo_urls") or []) if isinstance(url, str) and url.strip().lower().startswith(("http://", "https://"))),
+            None,
+        )
+        items.append({"key": definition["key"], "label": definition["label"], "photo_url": photo_url})
+
+    return {"approved": True, "items": items}
+
+
 def get_eligible_walkers(request: MatchingWalkerRequest, db: Session, tenant_id: str | None = None) -> list[WalkerProfile]:
     query = db.query(WalkerProfile).filter(
         WalkerProfile.status == "active",
@@ -254,7 +314,13 @@ def get_eligible_walkers(request: MatchingWalkerRequest, db: Session, tenant_id:
     return eligible
 
 
-def matched_walker_payload(profile: WalkerProfile, request: MatchingWalkerRequest, db: Session, bg_flag_on: bool | None = None) -> dict:
+def matched_walker_payload(
+    profile: WalkerProfile,
+    request: MatchingWalkerRequest,
+    db: Session,
+    bg_flag_on: bool | None = None,
+    kit_row: WalkerKitSubmission | None = _KIT_ROW_UNSET,
+) -> dict:
     summary = reputation_summary(profile.user_id, db)
     proximity_score, distance_km = calculate_proximity_score(profile, request)
     rating_score = calculate_rating_score(summary)
@@ -282,6 +348,30 @@ def matched_walker_payload(profile: WalkerProfile, request: MatchingWalkerReques
     _bg_status = getattr(profile, "background_check_status", "none") or "none"
     antecedentes_verificados = bool(bg_flag_on) and _bg_status == "verified"
 
+    # T2: kit aprovado exposto ao tutor. `kit_row` vem do rank_walkers ja resolvido
+    # em lote (1 query p/ pool inteiro); o fallback individual atende chamadas
+    # diretas (operational_matching_service, etc.) que nao pre-carregam. FAIL-OPEN
+    # (kit=vazio) se a tabela nao existir no contexto de teste, para nao quebrar
+    # fixtures que montam so um subconjunto de tabelas.
+    if kit_row is _KIT_ROW_UNSET:
+        try:
+            kit_row = (
+                db.query(WalkerKitSubmission)
+                .filter(
+                    WalkerKitSubmission.walker_user_id == profile.user_id,
+                    WalkerKitSubmission.audit_status == "approved",
+                )
+                .first()
+            )
+        except Exception as _kit_exc:
+            logger.warning(
+                "matching_kit_load_failed walker_id=%s reason=%s — kit omitido do payload",
+                profile.user_id, type(_kit_exc).__name__,
+            )
+            db.rollback()
+            kit_row = None
+    kit = _matching_kit_payload(kit_row)
+
     return {
         "walker_id": profile.user_id,
         "name": identity["name"],
@@ -291,6 +381,8 @@ def matched_walker_payload(profile: WalkerProfile, request: MatchingWalkerReques
         "total_walks": summary["total_walks"],
         "level": summary["level"],
         "trust": trust,
+        # Kit de passeio aprovado (agua, saquinhos etc.) — visivel ao tutor (T2).
+        "kit": kit,
         # Selo de antecedentes verificados (BG-7): booleano gateado por flag de tenant.
         "antecedentes_verificados": antecedentes_verificados,
         "distance_km": distance_km,
@@ -413,7 +505,12 @@ def rank_walkers(request: MatchingWalkerRequest, db: Session, debug: bool = Fals
     # tenant_id do body e controlado pelo cliente e nao decide a flag sozinho.
     _bg_tenant = tenant_id if tenant_id is not None else getattr(request, "tenant_id", None)
     _bg_flag_on = is_tenant_feature_enabled(db, "background_checks", tenant_id=_bg_tenant)
-    items = [matched_walker_payload(profile, request, db, bg_flag_on=_bg_flag_on) for profile in profiles]
+    # T2: kits aprovados do pool inteiro em 1 query (evita N+1 — mesmo padrao do bg_flag_on).
+    _kits_by_walker = _batch_approved_kits([profile.user_id for profile in profiles], db)
+    items = [
+        matched_walker_payload(profile, request, db, bg_flag_on=_bg_flag_on, kit_row=_kits_by_walker.get(profile.user_id))
+        for profile in profiles
+    ]
     best_rating = max((item["rating_average"] for item in items), default=0)
     most_walks = max((item["total_walks"] for item in items), default=0)
     items.sort(
@@ -455,6 +552,8 @@ def rank_walkers(request: MatchingWalkerRequest, db: Session, debug: bool = Fals
             "display_reason": item["display_reason"],
             "can_select": item["can_select"],
             "trust": item["trust"],
+            # T2: kit aprovado (agua, saquinhos etc.) visivel ao tutor na escolha do passeio.
+            "kit": item["kit"],
             # BG-7: booleano gateado por flag de tenant — sem dados sensiveis de certidoes.
             "antecedentes_verificados": item["antecedentes_verificados"],
         }

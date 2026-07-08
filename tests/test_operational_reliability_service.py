@@ -32,9 +32,13 @@ def _db():
 def _walk(db, *, scheduled_offset_min=0, status="ride_scheduled",
           operational_status=None, walker_id="walker1", tutor_id="tutor1",
           assigned_walker_id=None, scheduled_date=None):
-    """Cria um Walk. scheduled_offset_min: minutos a partir de utcnow (negativo = passado)."""
+    """Cria um Walk. scheduled_offset_min: minutos a partir de AGORA (negativo = passado).
+    scheduled_date é hora de PAREDE local do tenant (default America/Bahia) — fix fuso 08/07."""
     if scheduled_date is None:
-        scheduled_at = datetime.utcnow() + timedelta(minutes=scheduled_offset_min)
+        from zoneinfo import ZoneInfo
+
+        local_now = datetime.now(ZoneInfo("America/Bahia")).replace(tzinfo=None)
+        scheduled_at = local_now + timedelta(minutes=scheduled_offset_min)
         scheduled_date = scheduled_at.replace(microsecond=0).isoformat()
     walk = Walk(
         id=str(uuid4()),
@@ -66,16 +70,20 @@ def _count(db, walk_id, event_type):
 # --------------------------------------------------------------------------- #
 # _parse_scheduled_at
 # --------------------------------------------------------------------------- #
-def test_parse_scheduled_at_handles_z_suffix_and_strips_tz():
-    parsed = svc._parse_scheduled_at("2026-06-09T10:00:00Z")
-    assert parsed == datetime(2026, 6, 9, 10, 0, 0)
+def test_scheduled_start_utc_converte_hora_local_do_tenant():
+    # fix fuso 08/07: _parse_scheduled_at deu lugar a _scheduled_start_utc
+    # (app.lib.walk_time). String naive = hora LOCAL (default America/Bahia).
+    db = _db()
+    walk = _walk(db, scheduled_date="2026-06-09T10:00:00")
+    parsed = svc._scheduled_start_utc(db, walk)
+    assert parsed == datetime(2026, 6, 9, 13, 0, 0)
     assert parsed.tzinfo is None
 
 
-def test_parse_scheduled_at_invalid_and_empty_returns_none():
-    assert svc._parse_scheduled_at(None) is None
-    assert svc._parse_scheduled_at("   ") is None
-    assert svc._parse_scheduled_at("nao-e-data") is None
+def test_scheduled_start_utc_invalid_and_empty_returns_none():
+    db = _db()
+    assert svc._scheduled_start_utc(db, _walk(db, scheduled_date="   ")) is None
+    assert svc._scheduled_start_utc(db, _walk(db, scheduled_date="nao-e-data")) is None
 
 
 # --------------------------------------------------------------------------- #

@@ -973,13 +973,19 @@ def reschedule_selected_walker_walk(
         raise HTTPException(status_code=400, detail="Esta remarcacao permite alterar apenas data e horario.")
 
     scheduled_date = str(payload.scheduled_date or "").strip()
-    scheduled_at = _parse_scheduled_at(scheduled_date)
-    if scheduled_at <= datetime.utcnow():
-        raise HTTPException(status_code=400, detail="Escolha um horario futuro para remarcar.")
+    _parse_scheduled_at(scheduled_date)  # valida formato (400 se inválido)
 
     walk = db.get(Walk, walk_id)
     if not walk:
         raise HTTPException(status_code=404, detail="Passeio nao encontrado")
+
+    # scheduled_date é hora LOCAL do tenant → converter pra UTC antes de comparar
+    # (sem isso, horários locais válidos eram rejeitados como "no passado").
+    from app.lib.walk_time import tenant_tz_name, walk_start_utc
+
+    scheduled_at_utc = walk_start_utc(scheduled_date, tenant_tz_name(db, walk.tenant_id))
+    if scheduled_at_utc is None or scheduled_at_utc <= datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Escolha um horario futuro para remarcar.")
     if str(walk.tutor_id) != str(user.id):
         raise HTTPException(status_code=403, detail="Apenas o tutor dono do passeio pode remarcar.")
     if walk.operational_status != "awaiting_tutor_reconfirmation":
@@ -1054,9 +1060,12 @@ class TutorDecisionRequest(BaseModel):
     walk_time: str | None = None
 
 
-def _tutor_decision_new_scheduled_date(scheduled_date: str | None, walk_time: str | None) -> str:
+def _tutor_decision_new_scheduled_date(
+    scheduled_date: str | None, walk_time: str | None, tz_name: str | None = None
+) -> str:
     """Monta o novo scheduled_date ISO a partir de data (+hora opcional) e valida que
-    o INÍCIO respeita o corte de 45min a partir de agora."""
+    o INÍCIO respeita o corte de 45min a partir de agora. A string é hora LOCAL do
+    tenant (tz_name) — a comparação converte pra UTC (app.lib.walk_time)."""
     date_part = str(scheduled_date or "").strip()
     if not date_part:
         raise HTTPException(status_code=422, detail="Informe a nova data do passeio.")
@@ -1068,9 +1077,12 @@ def _tutor_decision_new_scheduled_date(scheduled_date: str | None, walk_time: st
         combined = f"{date_part}T{time_part}"
     else:
         combined = date_part
-    start = _parse_scheduled_at(combined)
+    _parse_scheduled_at(combined)  # valida formato (400 se inválido)
+    from app.lib.walk_time import walk_start_utc
+
+    start_utc = walk_start_utc(combined, tz_name)
     cutoff_minutes = _walk_payment_cutoff_minutes_local()
-    if start <= datetime.utcnow() + timedelta(minutes=cutoff_minutes):
+    if start_utc is None or start_utc <= datetime.utcnow() + timedelta(minutes=cutoff_minutes):
         raise HTTPException(
             status_code=422,
             detail=f"Escolha um horário com pelo menos {cutoff_minutes} minutos de antecedência.",
@@ -1120,7 +1132,11 @@ async def tutor_decision(
     confirmed_payment = _confirmed_payment_for_walk(db, walk.id)
 
     if action == "reschedule":
-        new_scheduled = _tutor_decision_new_scheduled_date(payload.scheduled_date, payload.walk_time)
+        from app.lib.walk_time import tenant_tz_name
+
+        new_scheduled = _tutor_decision_new_scheduled_date(
+            payload.scheduled_date, payload.walk_time, tenant_tz_name(db, walk.tenant_id)
+        )
         previous = walk.scheduled_date
         walk.scheduled_date = new_scheduled
         walk.no_walker_reason = None

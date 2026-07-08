@@ -47,7 +47,11 @@ PET_ID = "pet-0046"
 
 
 def _scheduled_now_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat()
+    # scheduled_date é hora de PAREDE local do tenant (America/Bahia) —
+    # gerar com relógio local pra janela do chat estar aberta (fix fuso 08/07).
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("America/Bahia")).replace(tzinfo=None, microsecond=0).isoformat()
 
 
 # ---------------------------------------------------------------------------

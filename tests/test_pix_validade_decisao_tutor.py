@@ -292,7 +292,11 @@ def test_tutor_decision_reschedule_unpaid_goes_awaiting_payment(monkeypatch):
 def test_tutor_decision_reschedule_rejects_too_soon(monkeypatch):
     test_app, db = _build_walks_app()
     _make_walk(db)
-    soon = (datetime.utcnow() + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M")
+    # scheduled_date é hora de PAREDE local (America/Bahia) — fix fuso 08/07.
+    from zoneinfo import ZoneInfo
+
+    _local_now = datetime.now(ZoneInfo("America/Bahia")).replace(tzinfo=None)
+    soon = (_local_now + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M")
     r = TestClient(test_app).post("/walks/w1/tutor-decision",
                                   json={"action": "reschedule", "scheduled_date": soon.split("T")[0],
                                         "walk_time": soon.split("T")[1]})

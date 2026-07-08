@@ -58,16 +58,11 @@ def _normalize_role(role: str | None) -> str:
     return normalized
 
 
-def _parse_scheduled_at(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    normalized = str(value).strip()
-    if not normalized:
-        return None
-    try:
-        return datetime.fromisoformat(normalized.replace("Z", "+00:00")).replace(tzinfo=None)
-    except ValueError:
-        return None
+def _scheduled_start_utc(db: Session, walk: Walk) -> datetime | None:
+    """INÍCIO do passeio em UTC naive (scheduled_date é hora LOCAL do tenant)."""
+    from app.lib.walk_time import tenant_tz_name, walk_start_utc
+
+    return walk_start_utc(walk.scheduled_date, tenant_tz_name(db, walk.tenant_id))
 
 
 def _walk_status(walk: Walk) -> str:
@@ -88,7 +83,7 @@ def _accepted_walker_id(walk: Walk) -> str | None:
     return walk.assigned_walker_id or walk.walker_id
 
 
-def _assert_chat_available(walk: Walk, user: User) -> str:
+def _assert_chat_available(walk: Walk, user: User, db: Session) -> str:
     participant_role = _participant_role(walk, user)
     status = _walk_status(walk)
 
@@ -101,7 +96,7 @@ def _assert_chat_available(walk: Walk, user: User) -> str:
     if status not in ALLOWED_CHAT_STATUSES:
         raise HTTPException(status_code=403, detail="Chat disponivel apenas durante a janela operacional do passeio.")
 
-    scheduled_at = _parse_scheduled_at(walk.scheduled_date)
+    scheduled_at = _scheduled_start_utc(db, walk)
     if not scheduled_at:
         raise HTTPException(status_code=403, detail="Chat indisponivel ate confirmacao do horario do passeio.")
 
@@ -200,7 +195,7 @@ def _mark_walk_messages_read(walk_id: str, user_id: str, db: Session) -> int:
 def list_messages(walk_id: str, user: User, db: Session) -> dict:
     walk = _get_walk_or_404(db, walk_id)
     _assert_protected_chat_feature(walk, user, db)
-    _assert_chat_available(walk, user)
+    _assert_chat_available(walk, user, db)
     messages = (
         db.query(ProtectedChatMessage)
         .filter(ProtectedChatMessage.walk_id == walk.id)
@@ -231,7 +226,7 @@ def list_messages(walk_id: str, user: User, db: Session) -> dict:
 def mark_messages_read(walk_id: str, user: User, db: Session) -> dict:
     walk = _get_walk_or_404(db, walk_id)
     _assert_protected_chat_feature(walk, user, db)
-    _assert_chat_available(walk, user)
+    _assert_chat_available(walk, user, db)
     marked = _mark_walk_messages_read(walk.id, user.id, db)
     return {"marked": marked}
 
@@ -239,7 +234,7 @@ def mark_messages_read(walk_id: str, user: User, db: Session) -> dict:
 def create_message(payload: ProtectedChatMessageCreate, user: User, db: Session) -> dict:
     walk = _get_walk_or_404(db, payload.walk_id)
     _assert_protected_chat_feature(walk, user, db)
-    participant_role = _assert_chat_available(walk, user)
+    participant_role = _assert_chat_available(walk, user, db)
     body = payload.body.strip()
     if not body:
         raise HTTPException(status_code=400, detail="Mensagem vazia.")

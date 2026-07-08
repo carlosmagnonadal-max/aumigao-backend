@@ -55,3 +55,20 @@ WALK_COMPLETED_STATUSES: frozenset[str] = frozenset({
     "finished",
     "ride_completed",
 })
+
+# ---------------------------------------------------------------------------
+# Itens do "kit" do passeador (agua, vasilha, saquinhos etc.) — fonte única (T2)
+# ---------------------------------------------------------------------------
+# Movido de routes/walker.py para cá: era duplicado seria necessário para expor
+# o kit aprovado no payload de matching (services/matching_service.py), que não
+# pode importar de routes/walker.py (ciclo: walker.py -> operational_matching_
+# service.py -> matching_service.py -> walker.py). Referenciado também por
+# routes/admin.py (aprovação do kit).
+KIT_ITEM_DEFINITIONS: list[dict] = [
+    {"key": "water", "label": "Agua", "description": "Garrafa lacrada ou propria para hidratacao."},
+    {"key": "bowl", "label": "Vasilha para agua", "description": "Vasilha ou pote portatil para oferecer agua."},
+    {"key": "bags", "label": "Saquinho para necessidades", "description": "Saquinhos higienicos suficientes para o passeio."},
+    {"key": "first_aid", "label": "Primeiros socorros", "description": "Kit simples para pequenas ocorrencias."},
+    {"key": "towel", "label": "Toalha/pano", "description": "Pano limpo para secar patas ou pequenas sujeiras."},
+    {"key": "premium_treats", "label": "Itens premium", "description": "Petiscos autorizados e outros itens de conforto."},
+]

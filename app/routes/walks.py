@@ -33,6 +33,7 @@ from app.services.tenant_plan_service import tenant_feature_enabled
 from app.services.operational_matching_service import (
     LEGACY_STATUS_TO_OPERATIONAL,
     RIDE_SCHEDULED,
+    TUTOR_DECISION_REASONS,
     log_event,
     process_expired_attempts,
     serialize_operational_walk,
@@ -164,6 +165,17 @@ def _serialize_walk_list_item(
         "matching_started_at": walk.matching_started_at,
         "matching_finished_at": walk.matching_finished_at,
         "no_walker_reason": walk.no_walker_reason,
+        # Campos da decisão do tutor (teste real 08/07): o app monta o card
+        # "reagendar/trocar/estorno" a partir da LISTA — sem estes campos aqui
+        # (só existiam no serializador full) o card nunca aparecia.
+        "tutor_decision_required": (
+            walk.operational_status == "awaiting_tutor_reconfirmation"
+            and walk.no_walker_reason in TUTOR_DECISION_REASONS
+        ),
+        "decision_reason": (
+            walk.no_walker_reason if walk.no_walker_reason in TUTOR_DECISION_REASONS else None
+        ),
+        "is_exclusive_walker": (walk.walker_selection_mode or "auto") == "only_selected",
         "matching_attempts": [],
         "operational_logs": [],
         "created_at": walk.created_at,

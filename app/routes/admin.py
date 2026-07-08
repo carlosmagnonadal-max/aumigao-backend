@@ -29,6 +29,7 @@ from app.schemas.tenant_payment_config import TenantPaymentConfigResponse, Tenan
 from app.dependencies.tenant_scope import apply_tenant_filter, ensure_tenant_access, get_admin_tenant_scope
 from app.models.payment import Payment
 from app.models.pet import Pet
+from app.models.legal_acceptance import LegalAcceptance
 from app.models.user import User
 from app.models.audit_log import AuditLog
 from app.models.admin_operational_event import AdminOperationalEvent
@@ -1215,6 +1216,60 @@ def get_admin_user(
     scope = get_admin_tenant_scope(admin, db)
     ensure_tenant_access(user.tenant_id, scope)
     return _serialize_admin_user(user)
+
+
+# Ordem fixa de expansao: cada linha de LegalAcceptance pode conter varios
+# documentos aceitos no MESMO evento (colunas de versao independentes). O
+# "type" espelha o catalogo de app/routes/legal.py (LEGAL_DOCUMENTS_BY_ROLE).
+_LEGAL_ACCEPTANCE_DOC_COLUMNS: list[tuple[str, str]] = [
+    ("terms_version", "terms"),
+    ("privacy_version", "privacy"),
+    ("cancellation_version", "cancellation"),
+    ("lgpd_version", "lgpd-consent"),
+    ("geolocation_version", "geolocation-consent"),
+]
+
+
+def _serialize_legal_acceptances(rows: list[LegalAcceptance]) -> list[dict]:
+    items: list[dict] = []
+    for row in rows:
+        scope = "tenant" if row.tenant_id else "platform"
+        for column, doc_type in _LEGAL_ACCEPTANCE_DOC_COLUMNS:
+            version = getattr(row, column, "") or ""
+            if not version:
+                continue
+            items.append({
+                "id": f"{row.id}:{doc_type}",
+                "acceptance_id": row.id,
+                "document_type": doc_type,
+                "version": version,
+                "scope": scope,
+                "tenant_id": row.tenant_id,
+                "user_role": row.user_role,
+                "accepted_at": row.accepted_at,
+            })
+    return items
+
+
+@router.get("/users/{user_id}/legal-acceptances")
+@api_router.get("/users/{user_id}/legal-acceptances")
+def get_admin_user_legal_acceptances(
+    user_id: str,
+    admin: User = Depends(require_permission("users.read")),
+    db: Session = Depends(get_db),
+):
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario nao encontrado")
+    scope = get_admin_tenant_scope(admin, db)
+    ensure_tenant_access(user.tenant_id, scope)
+    rows = (
+        db.query(LegalAcceptance)
+        .filter(LegalAcceptance.user_id == user_id)
+        .order_by(LegalAcceptance.accepted_at.desc())
+        .all()
+    )
+    return _serialize_legal_acceptances(rows)
 
 
 @router.get("/audit-logs")

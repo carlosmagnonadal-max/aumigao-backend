@@ -705,8 +705,8 @@ def _balance_by_tenant(user: User, db: Session) -> dict[str | None, dict]:
 
     # Créditos: pagamentos de walk vinculados ao walker (via Walk.walker_id)
     # que possuem walker_amount calculado.
-    credit_payments = (
-        db.query(Payment)
+    credit_rows = (
+        db.query(Payment, Walk.status, Walk.operational_status)
         .join(Walk, Payment.walk_id == Walk.id)
         .filter(
             Walk.walker_id == user.id,
@@ -714,7 +714,16 @@ def _balance_by_tenant(user: User, db: Session) -> dict[str | None, dict]:
         )
         .all()
     )
-    for p in credit_payments:
+    for p, _walk_status, _walk_op_status in credit_rows:
+        # Regra do dono (teste real 08/07): ganho do passeador SÓ existe com o
+        # passeio CONCLUÍDO. Com o gate paga-primeiro (R7), o Payment confirma
+        # ANTES do aceite — sem esta trava a carteira mostrava R$4,20
+        # "disponível" pra passeio que a passeadora nem tinha recebido na fila.
+        if (
+            str(_walk_status or "") not in _WALK_COMPLETED_STATUSES
+            and str(_walk_op_status or "") not in _WALK_COMPLETED_STATUSES
+        ):
+            continue
         b = _bucket(p.tenant_id)
         val = float(p.walker_amount or 0)
         if p.status in _PAID_PAYMENT_STATUSES_CONST:
@@ -785,8 +794,11 @@ def _available_balance(user: User, db: Session) -> float:
     """
     # Pagamentos pagos com split calculado (walker_amount IS NOT NULL).
     # Status de pagamento CONFIRMADO — inclui variantes do Asaas (PAID_PAYMENT_STATUSES).
-    payments_with_split = (
-        db.query(Payment)
+    # Regra do dono (teste real 08/07): além do pagamento confirmado, o PASSEIO
+    # precisa estar CONCLUÍDO — pagamento antecipado (gate R7) não é saldo do
+    # walker antes do aceite+conclusão.
+    _split_rows = (
+        db.query(Payment, Walk.status, Walk.operational_status)
         .join(Walk, Payment.walk_id == Walk.id)
         .filter(
             Walk.walker_id == user.id,
@@ -795,6 +807,11 @@ def _available_balance(user: User, db: Session) -> float:
         )
         .all()
     )
+    payments_with_split = [
+        p for p, _ws, _wos in _split_rows
+        if str(_ws or "") in _WALK_COMPLETED_STATUSES
+        or str(_wos or "") in _WALK_COMPLETED_STATUSES
+    ]
 
     # Conjunto de walk_id que já têm Payment pago com split — usados para excluir
     # esses walks do fallback de walk.price (evita dupla contagem).

@@ -448,6 +448,23 @@ def create_walk(payload: WalkCreate, request: Request, user: User = Depends(get_
 
             _iwp = individual_pricing_svc.get_or_create_config(db, tenant_id)
             data["price"] = {30: _iwp.price_30, 45: _iwp.price_45, 60: _iwp.price_60}[data["duration_minutes"]]
+            # Desconto "levar até o ponto de encontro" (decisão 07/07/2026): a
+            # âncora embute o passeador buscando em casa; quando o TUTOR faz o
+            # deslocamento, cai o flat configurado pelo tenant (default 0).
+            # Passeio de plano não é afetado: resolve_plan_walk_split ancora na
+            # tabela de pricing e ignora walk.price.
+            _meeting_point_values = {
+                "levar até ponto de encontro",
+                "levar até o ponto de encontro",
+                "meeting_point",
+                "ponto de encontro",
+            }
+            _mp_discount = float(getattr(_iwp, "meeting_point_discount", 0) or 0)
+            if (
+                _mp_discount > 0
+                and str(_pickup_method or "").strip().lower() in _meeting_point_values
+            ):
+                data["price"] = max(0.0, round(data["price"] - _mp_discount, 2))
 
         walker_selection_mode = (
             "only_selected"

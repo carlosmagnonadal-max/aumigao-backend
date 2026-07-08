@@ -46,11 +46,12 @@ class TenantSharedWalkConfig(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     tenant_id: Mapped[str] = mapped_column(String, ForeignKey("tenants.id"), nullable=False, unique=True, index=True)
     # Preço cobrado por pet (mutável por tenant) — mantido para compatibilidade.
-    price_per_pet: Mapped[float] = mapped_column(Money, nullable=False, default=29.90)
+    # Defaults = ~20% off por pet vs a âncora individual de 07/07/2026.
+    price_per_pet: Mapped[float] = mapped_column(Money, nullable=False, default=32.90)
     # Preço por duração (white label, Etapa 2). Fallback = price_per_pet.
-    price_30: Mapped[float] = mapped_column(Money, nullable=False, default=29.90)
-    price_45: Mapped[float] = mapped_column(Money, nullable=False, default=39.50)
-    price_60: Mapped[float] = mapped_column(Money, nullable=False, default=49.90)
+    price_30: Mapped[float] = mapped_column(Money, nullable=False, default=32.90)
+    price_45: Mapped[float] = mapped_column(Money, nullable=False, default=43.90)
+    price_60: Mapped[float] = mapped_column(Money, nullable=False, default=55.90)
     # Limites configuráveis pelo admin do tenant.
     max_pets_same_tutor: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     max_tutors: Mapped[int] = mapped_column(Integer, nullable=False, default=2)

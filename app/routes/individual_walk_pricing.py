@@ -50,6 +50,7 @@ def _config_response(config) -> IndividualWalkPricingResponse:
         price_30=config.price_30,
         price_45=config.price_45,
         price_60=config.price_60,
+        meeting_point_discount=getattr(config, "meeting_point_discount", 0) or 0,
         active=config.active,
     )
 

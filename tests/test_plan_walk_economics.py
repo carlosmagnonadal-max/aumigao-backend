@@ -73,12 +73,14 @@ def test_zero_slices_remaining_goes_to_platform():
 
 
 def test_max_discount_is_min_of_own_and_network():
-    """Piso dinâmico: min(comissão+margem, take de rede)."""
-    # Aumigão: 10 + 8,2 = 18,2 vs rede 18 → 18.
-    assert max_plan_discount_percent(10.0, 8.2, 18.0) == pytest.approx(18.0)
-    # Tenant Pro margem gorda: 10 + 25 = 35 vs rede 18 → 18 (rede limita).
-    assert max_plan_discount_percent(10.0, 25.0, 18.0) == pytest.approx(18.0)
-    # Enterprise (comissão 5, rede 10) margem 3: 8 vs 10 → 8 (fatia própria limita).
+    """Piso dinâmico: min(comissão+margem, rede+margem) = margem + min(c, rede)."""
+    # Ambos os ramos co-financiados pela margem: 8,2 + min(10, 18) = 18,2.
+    assert max_plan_discount_percent(10.0, 8.2, 18.0) == pytest.approx(18.2)
+    # Margem gorda: 25 + min(10, 18) = 35.
+    assert max_plan_discount_percent(10.0, 25.0, 18.0) == pytest.approx(35.0)
+    # Enterprise REAL do aumigao (comissão 5, rede 10, margem 25): 25 + 5 = 30.
+    assert max_plan_discount_percent(5.0, 25.0, 10.0) == pytest.approx(30.0)
+    # Margem 3, comissão 5, rede 10: 3 + 5 = 8 (fatia própria limita).
     assert max_plan_discount_percent(5.0, 3.0, 10.0) == pytest.approx(8.0)
     # Nada configurado: 0.
     assert max_plan_discount_percent(0.0, 0.0, 18.0) == 0.0

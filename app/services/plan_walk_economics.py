@@ -80,16 +80,19 @@ def max_plan_discount_percent(
     tenant_margin_percent: float,
     network_take_percent: float,
 ) -> float:
-    """Piso dinâmico (princípio 3): min(comissão + margem, take de rede).
+    """Piso dinâmico (princípio 3): min(comissão + margem, take de rede + margem).
 
-    - Ramo próprio: o desconto é co-financiado pelas fatias de plataforma e
-      tenant → cabe até (comissão + margem).
-    - Ramo rede: o desconto sai do take de rede da plataforma → cabe até ele.
+    Em AMBOS os ramos o desconto é co-financiado pelas fatias de plataforma e
+    tenant (o passeador recebe pela âncora e sai da conta):
+    - Ramo próprio: cabe até (comissão própria + margem).
+    - Ramo rede:    cabe até (take de rede + margem).
     Como o mix é imprevisível (plano vendido antecipado), vale o MENOR dos dois:
-    qualquer mix futuro fica não-negativo pra todo elo.
+    qualquer mix futuro fica não-negativo pra todo elo. Equivale a
+    margem + min(comissão, take de rede).
     """
-    own_cap = max(0.0, float(commission_percent)) + max(0.0, float(tenant_margin_percent))
-    network_cap = max(0.0, float(network_take_percent))
+    margin = max(0.0, float(tenant_margin_percent))
+    own_cap = max(0.0, float(commission_percent)) + margin
+    network_cap = max(0.0, float(network_take_percent)) + margin
     return to_float(q2(min(own_cap, network_cap)))
 
 

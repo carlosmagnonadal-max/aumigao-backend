@@ -68,3 +68,12 @@ def test_experience_default_null_means_not_reported():
     walk = db.get(Walk, "walk-exp-1")
     assert walk.did_pee is None
     assert walk.did_poop is None
+
+
+def test_walk_response_declares_report_fields():
+    """Gotcha do response_model: sem declarar, o Pydantic descarta o que o
+    serializador emite. Estes campos alimentam o relatório do tutor."""
+    from app.schemas.walk import WalkResponse
+
+    for field in ("completion_review", "did_pee", "did_poop"):
+        assert field in WalkResponse.model_fields, field

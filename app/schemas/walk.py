@@ -71,6 +71,10 @@ class WalkResponse(ORMModel):
     # Declarados aqui senao o response_model DESCARTA (gotcha 08/07).
     did_pee: bool | None = None
     did_poop: bool | None = None
+    # Relatorio de finalizacao do passeador (foto/observacao/registro + status da
+    # revisao). O serializador ja emitia; sem declarar aqui o response_model
+    # DESCARTAVA e o tutor via a tela de finalizacao VAZIA (teste real 08/07).
+    completion_review: dict | None = None
     pickup_region_label: str | None = None
     pickup_distance_label: str | None = None
     pickup_privacy_level: str | None = None

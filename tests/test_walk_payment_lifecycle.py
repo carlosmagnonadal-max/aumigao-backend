@@ -90,6 +90,10 @@ def test_gate_on(monkeypatch):
 
 
 def test_webhook_confirmed_releases_awaiting_walk(monkeypatch):
+    """Sem nenhum passeador elegível na base: o webhook libera o walk E dispara o
+    matching de verdade (fix 08/07 — antes ficava órfão em pending_walker_confirmation
+    sem NENHUMA attempt; o passeador nunca recebia a solicitação). Sem candidato,
+    o matching resolve para no_walker_found → fluxo de recovery notifica o tutor."""
     monkeypatch.setenv("ASAAS_WEBHOOK_TOKEN", "segredo")
     test_app, db = _build()
     _walk(db, op_status="awaiting_payment")
@@ -97,8 +101,48 @@ def test_webhook_confirmed_releases_awaiting_walk(monkeypatch):
     assert r.status_code == 200, r.text
     db.expire_all()
     walk = db.get(Walk, "walk-1")
-    assert walk.operational_status == "pending_walker_confirmation"  # liberado p/ matching
+    # op_status no_walker_found prova que o matching RODOU (antes ficava órfão em
+    # pending_walker_confirmation). Não assertamos matching_started_at aqui: sob
+    # SQLite o record_operational_log interno provoca rollback implícito que
+    # descarta esse campo (artefato de teste; em Postgres persiste).
+    assert walk.operational_status == "no_walker_found"  # sem candidato → recovery
+
+
+def test_webhook_confirmed_dispara_matching_e_cria_attempt(monkeypatch):
+    """REGRESSÃO do bug do teste real 08/07: pagamento confirmado com passeador
+    escolhido tem que gerar WalkMatchingAttempt pendente (a solicitação que
+    aparece na fila do passeador). Antes do fix: zero attempts, passeio órfão."""
+    from app.models.tenant_walker_access import TenantWalkerAccess
+    from app.models.walker_profile import WalkerProfile
+    from app.services.operational_matching_service import WalkMatchingAttempt
+
+    monkeypatch.setenv("ASAAS_WEBHOOK_TOKEN", "segredo")
+    test_app, db = _build()
+    db.add(User(id="walker-1", email="w@x.com", password_hash="x", role="walker",
+                tenant_id=TENANT_ID, is_active=True))
+    db.add(WalkerProfile(id="wp-1", user_id="walker-1", status="active", active_as_walker=True))
+    db.add(TenantWalkerAccess(id="twa-1", tenant_id=TENANT_ID, walker_user_id="walker-1",
+                              status="active", access_type="shared_network", requirements_met=True))
+    db.commit()
+    db.add(Walk(id="walk-1", tutor_id=TUTOR_ID, tenant_id=TENANT_ID, pet_id="pet-1",
+                scheduled_date=_future_iso(), duration_minutes=30, status="aguardando_pagamento",
+                price=100.0, operational_status="awaiting_payment",
+                walker_id="walker-1", assigned_walker_id="walker-1", walker_selection_mode="auto"))
+    db.add(Payment(id="pay-1", tenant_id=TENANT_ID, tutor_id=TUTOR_ID, amount=100.0, walk_id="walk-1",
+                   status="pagamento_sandbox_criado", provider="asaas_sandbox", provider_payment_id="prov-1"))
+    db.commit()
+
+    r = _webhook(TestClient(test_app))
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    walk = db.get(Walk, "walk-1")
+    assert walk.operational_status == "pending_walker_confirmation"
     assert walk.status == "Agendado"
+    assert walk.matching_started_at is not None
+    attempts = db.query(WalkMatchingAttempt).filter(WalkMatchingAttempt.walk_id == "walk-1").all()
+    assert len(attempts) == 1
+    assert attempts[0].walker_id == "walker-1"
+    assert attempts[0].status == "pending"
 
 
 def test_webhook_confirmed_noop_when_walk_not_awaiting(monkeypatch):

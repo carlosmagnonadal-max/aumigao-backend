@@ -1705,8 +1705,29 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                         elif op_status == "awaiting_payment":
                             walk.operational_status = "pending_walker_confirmation"
                             walk.status = "Agendado"
+                            walk.no_walker_reason = None
                             db.add(walk)
                             logger.info("asaas_webhook.walk_liberado walk_id=%s payment_id=%s", walk.id, payment.id)
+                            # BUG teste real 08/07: liberar o walk SEM start_matching deixava
+                            # o passeio órfão — nenhuma WalkMatchingAttempt criada, passeador
+                            # nunca recebia a solicitação na fila. start_matching cria a
+                            # tentativa (walker escolhido ou ranking), seta expiração de
+                            # confirmação e notifica tutor+walker. Best-effort: falha aqui
+                            # não pode derrubar o webhook (pagamento já está rastreado).
+                            # Commit ANTES do matching: dinheiro/liberação persistidos primeiro
+                            # (record_operational_log dentro do matching pode provocar rollback
+                            # implícito sob SQLite — mesmo padrão do scheduler).
+                            db.commit()
+                            try:
+                                from app.services.operational_matching_service import start_matching
+                                start_matching(walk, db)
+                                db.commit()
+                            except Exception:
+                                db.rollback()
+                                logger.exception(
+                                    "asaas_webhook.start_matching_failed walk_id=%s payment_id=%s",
+                                    walk.id, payment.id,
+                                )
 
                 # Fase 3: estorno/chargeback de um pagamento com walk_id anula o ganho do passeador.
                 # Cobre apenas passeio AVULSO (Payment.walk_id preenchido).

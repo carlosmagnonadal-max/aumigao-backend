@@ -1638,6 +1638,37 @@ def approve_walker(walker_id: str, request: Request, payload: dict | None = None
     user = db.get(User, profile.user_id)
     if user:
         user.role = "walker"
+    # Vínculo de matching com o tenant-CASA (teste real 08/07): sem uma linha
+    # ATIVA em tenant_walker_access o matching considera o passeador INELEGÍVEL
+    # no próprio tenant onde se cadastrou (passeio morre em no_walker_found).
+    # Aprovar = entrar no pool do tenant de origem. Idempotente (unique
+    # tenant+walker); requisitos dados como cumpridos — quem aprova É o tenant.
+    if user and user.tenant_id:
+        from app.models.tenant_walker_access import TenantWalkerAccess
+
+        _home_access = (
+            db.query(TenantWalkerAccess)
+            .filter(
+                TenantWalkerAccess.tenant_id == user.tenant_id,
+                TenantWalkerAccess.walker_user_id == profile.user_id,
+            )
+            .first()
+        )
+        if not _home_access:
+            db.add(TenantWalkerAccess(
+                tenant_id=user.tenant_id,
+                walker_user_id=profile.user_id,
+                access_type="tenant_exclusive",
+                status="active",
+                requirements_met=True,
+                initiated_by="tenant",
+                invited_at=datetime.utcnow(),
+                responded_at=datetime.utcnow(),
+            ))
+        elif _home_access.status != "active":
+            _home_access.status = "active"
+            _home_access.responded_at = datetime.utcnow()
+            db.add(_home_access)
     mark_referral_approved(profile.user_id, db, commit=False)
     record_admin_operational_event(
         db,

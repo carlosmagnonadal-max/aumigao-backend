@@ -131,6 +131,41 @@ def test_approve_walker_happy_path():
     assert db.get(User, CAND_USER_ID).role == "walker"
 
 
+def test_approve_walker_cria_vinculo_matching_tenant_casa():
+    """REGRESSÃO teste real 08/07: aprovar passeador nascido num tenant precisa
+    criar TenantWalkerAccess ATIVO no tenant-casa — sem isso o matching o
+    considera inelegível e o passeio morre em no_walker_found."""
+    from app.models.tenant import Tenant
+    from app.models.tenant_walker_access import TenantWalkerAccess
+
+    client, db = build(profile_status="under_review")
+    db.add(Tenant(id="casa-1", name="Casa", slug="casa", status="active", plan="pro"))
+    db.get(User, CAND_USER_ID).tenant_id = "casa-1"
+    db.commit()
+
+    r = client.post(f"/admin/walkers/{CAND_ID}/approve")
+    assert r.status_code == 200, r.text
+    access = (
+        db.query(TenantWalkerAccess)
+        .filter(TenantWalkerAccess.tenant_id == "casa-1",
+                TenantWalkerAccess.walker_user_id == CAND_USER_ID)
+        .first()
+    )
+    assert access is not None
+    assert access.status == "active"
+    assert access.requirements_met is True
+
+    # Idempotente: aprovar de novo NÃO duplica o vínculo.
+    r2 = client.post(f"/admin/walkers/{CAND_ID}/approve")
+    assert r2.status_code == 200, r2.text
+    total = (
+        db.query(TenantWalkerAccess)
+        .filter(TenantWalkerAccess.walker_user_id == CAND_USER_ID)
+        .count()
+    )
+    assert total == 1
+
+
 def test_approve_walker_requires_permission():
     client, db = build()
     set_user(client, db, TUTOR_ID)

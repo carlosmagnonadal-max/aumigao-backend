@@ -156,6 +156,9 @@ def _serialize_walk_list_item(
         "address_snapshot": walk.address_snapshot if can_see_full else "",
         "notes": walk.notes if can_see_full else "",
         "pickup_privacy_level": "full" if can_see_full else "coarse",
+        # Mig 0104: experiencia do passeio (xixi/coco) tambem na listagem leve.
+        "did_pee": walk.did_pee,
+        "did_poop": walk.did_poop,
         "current_attempt": walk.current_attempt,
         "current_matching_attempt": walk.current_attempt,
         "max_attempts": walk.max_attempts,

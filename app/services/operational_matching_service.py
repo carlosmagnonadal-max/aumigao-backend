@@ -480,6 +480,9 @@ def serialize_operational_walk(
         "destination_lat": (walk.destination_lat if can_see_full else None),
         "destination_lng": (walk.destination_lng if can_see_full else None),
         "pickup_privacy_level": "full" if can_see_full else "coarse",
+        # Mig 0104: experiencia do passeio (xixi/coco) - visivel a todos os papeis.
+        "did_pee": walk.did_pee,
+        "did_poop": walk.did_poop,
         "current_attempt": walk.current_attempt,
         "current_matching_attempt": walk.current_attempt,
         "max_attempts": walk.max_attempts,

@@ -67,6 +67,10 @@ class WalkResponse(ORMModel):
     decision_reason: str | None = None
     is_exclusive_walker: bool = False
     payment_cutoff_at: str | None = None
+    # Mig 0104: experiencia do passeio (xixi/coco) registrada pelo passeador.
+    # Declarados aqui senao o response_model DESCARTA (gotcha 08/07).
+    did_pee: bool | None = None
+    did_poop: bool | None = None
     pickup_region_label: str | None = None
     pickup_distance_label: str | None = None
     pickup_privacy_level: str | None = None

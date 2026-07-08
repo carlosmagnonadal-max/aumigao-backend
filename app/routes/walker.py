@@ -2977,10 +2977,8 @@ def update_walk_experience(
 
     Retorno: walk completo com did_pee / did_poop injetados.
 
-    NOTA: a tabela `walks` não possui colunas `did_pee` / `did_poop`. Os valores
-    são recebidos, logados e devolvidos no JSON de retorno para compatibilidade com
-    o frontend, mas NÃO são persistidos no banco. Melhoria futura: adicionar colunas
-    via migration controlada.
+    Mig 0104: os valores agora SÃO persistidos em colunas reais da tabela walks
+    (antes só eram logados e ecoados — o tutor perdia os eventos a cada reload).
     """
     _require_active_walker(user, db)
     walk = _get_walk_for_walker(walk_id, user, db)
@@ -2994,13 +2992,15 @@ def update_walk_experience(
     did_pee = bool(payload.did_pee) if payload else False
     did_poop = bool(payload.did_poop) if payload else False
 
+    walk.did_pee = did_pee
+    walk.did_poop = did_poop
+
     log_event(
         db,
         walk.id,
         "walk_experience_updated",
         actor_type=user.role,
         actor_id=user.id,
-        # Logado para rastreabilidade; sem coluna dedicada — melhoria futura
         metadata={"did_pee": did_pee, "did_poop": did_poop},
     )
     db.commit()

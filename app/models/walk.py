@@ -38,6 +38,10 @@ class Walk(Base):
     meeting_point: Mapped[str | None] = mapped_column(String(500), nullable=True)
     meeting_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
     meeting_lng: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Mig 0104: experiência do passeio registrada pelo passeador.
+    # NULL = não informado; False = informado como "não fez".
+    did_pee: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    did_poop: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     operational_status: Mapped[str] = mapped_column(String, default="ride_scheduled", index=True)
     walker_selection_mode: Mapped[str] = mapped_column(String, default="auto")

@@ -126,7 +126,10 @@ def test_create_review_happy_path():
     assert body["review"]["tutor_id"] == TUTOR_ID
     assert sorted(body["review"]["tags"]) == ["caring", "punctual"]
     # persistiu de fato
-    assert db.query(WalkReview).filter(WalkReview.walk_id == walk.id).count() == 1
+    row = db.query(WalkReview).filter(WalkReview.walk_id == walk.id).one()
+    # RLS (bug 09/07): linha SEM tenant_id viola a policy de walk_reviews em prod
+    # (500 idêntico ao da gorjeta). SQLite não tem RLS — asserção pega a origem.
+    assert row.tenant_id == TENANT_ID
 
 
 def test_create_review_drops_unknown_tags():

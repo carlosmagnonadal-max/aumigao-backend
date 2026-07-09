@@ -705,6 +705,8 @@ def create_walk_review(walk_id: str, payload: WalkReviewCreate, user: User = Dep
 
     review = WalkReview(
         id=str(uuid4()),
+        # RLS: linha sem tenant_id viola a policy de walk_reviews (500 em prod).
+        tenant_id=walk.tenant_id or user.tenant_id,
         walk_id=walk.id,
         tutor_id=user.id,
         walker_id=walk.walker_id or walk.assigned_walker_id,
@@ -801,6 +803,9 @@ async def create_walk_tip_checkout(walk_id: str, payload: WalkTipCheckoutCreate,
     tip_id = str(uuid4())
     tip = WalkTip(
         id=tip_id,
+        # RLS: linha sem tenant_id viola a policy de walk_tips (500 real 09/07 —
+        # a cobrança nascia no Asaas e o INSERT local morria).
+        tenant_id=walk.tenant_id or user.tenant_id,
         walk_id=walk.id,
         tutor_id=user.id,
         walker_id=walker_id,

@@ -252,6 +252,9 @@ class TestTipWindowAwaitingReview:
         assert resp.status_code == 200, resp.text
         tip = db.query(WalkTip).filter(WalkTip.walk_id == WALK_ID).first()
         assert tip is not None
+        # RLS (bug 09/07): WalkTip sem tenant_id viola a policy de walk_tips em
+        # prod (500 real no teste do Carlos). SQLite não tem RLS — pega a origem.
+        assert tip.tenant_id == TENANT_ID
 
     def test_tip_checkout_blocked_when_completion_rejected(self):
         db = _make_db()

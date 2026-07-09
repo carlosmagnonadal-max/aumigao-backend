@@ -306,6 +306,10 @@ def _walk_payload(walk: Walk, db: Session) -> dict:
         "pet_photo_url": _public_pet_photo_url(pet, pet_name),
         "breed": pet.breed if pet else "",
         "age": pet.age if pet else None,
+        # Ajuste 09/07: porte junto de raça/peso na solicitação — o passeador
+        # decide se o pet se enquadra no que ele atende (ex.: só porte pequeno).
+        "size": pet.size if pet else "",
+        "pet_size": pet.size if pet else "",
         "weight": pet.weight if pet else None,
         "tutor_id": walk.tutor_id,
         "tutor_name": tutor.full_name if tutor else "Tutor",

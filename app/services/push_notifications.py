@@ -209,22 +209,27 @@ def _push_notifications_enabled_for(db: Session, notification: Notification) -> 
     return tenant_feature_enabled(tenant, db, "push_notifications")
 
 
-def send_push_for_notification(db: Session, notification: Notification) -> None:
-    """Versao sincrona — usada pelo scheduler de retry (que ja tem sua propria sessao)."""
-    if not _push_notifications_enabled_for(db, notification):
-        return
-    if not _should_push(notification):
-        return
+# Alerta sonoro nivel 1 (decisao Carlos 08/07): solicitacoes de passeio tocam no
+# canal Android dedicado de importancia maxima; todo push critico sai com
+# priority=high (entrega imediata mesmo em Doze). Nivel 2 (som customizado +
+# entitlement time-sensitive iOS) exige BUILD EAS — anotado nas decisoes pre-build.
+WALK_REQUEST_NOTIFICATION_TYPES = {"walker_attempt_created", "new_walk"}
+ANDROID_WALK_REQUEST_CHANNEL = "walk-requests"
+ANDROID_DEFAULT_CHANNEL = "default"
 
-    token_rows = _tokens_for_notification(db, notification)
-    if not token_rows:
-        return
 
-    metadata = _metadata(notification)
-    messages = [
+def _build_push_messages(notification: Notification, metadata: dict[str, Any], token_rows: list[PushToken]) -> list[dict]:
+    channel_id = (
+        ANDROID_WALK_REQUEST_CHANNEL
+        if notification.type in WALK_REQUEST_NOTIFICATION_TYPES
+        else ANDROID_DEFAULT_CHANNEL
+    )
+    return [
         {
             "to": token_row.expo_push_token,
             "sound": "default",
+            "priority": "high",
+            "channelId": channel_id,
             "title": notification.title,
             "body": notification.message,
             "data": {
@@ -237,6 +242,21 @@ def send_push_for_notification(db: Session, notification: Notification) -> None:
         }
         for token_row in token_rows
     ]
+
+
+def send_push_for_notification(db: Session, notification: Notification) -> None:
+    """Versao sincrona — usada pelo scheduler de retry (que ja tem sua propria sessao)."""
+    if not _push_notifications_enabled_for(db, notification):
+        return
+    if not _should_push(notification):
+        return
+
+    token_rows = _tokens_for_notification(db, notification)
+    if not token_rows:
+        return
+
+    metadata = _metadata(notification)
+    messages = _build_push_messages(notification, metadata, token_rows)
 
     try:
         request = urllib.request.Request(
@@ -282,22 +302,7 @@ def send_push_for_notification_background(db: Session, notification: Notificatio
         return
 
     metadata = _metadata(notification)
-    messages = [
-        {
-            "to": token_row.expo_push_token,
-            "sound": "default",
-            "title": notification.title,
-            "body": notification.message,
-            "data": {
-                "notification_id": notification.id,
-                "type": notification.type,
-                "related_entity_type": notification.related_entity_type,
-                "related_entity_id": notification.related_entity_id,
-                **metadata,
-            },
-        }
-        for token_row in token_rows
-    ]
+    messages = _build_push_messages(notification, metadata, token_rows)
 
     # Copia dados escalares ANTES de submeter ao thread — a sessão ORM fecha quando o
     # request termina e acessar atributos de objetos ORM no thread causa DetachedInstanceError.

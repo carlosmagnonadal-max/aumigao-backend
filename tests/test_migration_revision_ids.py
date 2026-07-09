@@ -23,6 +23,8 @@ _GRANDFATHERED = frozenset({
     "0068_credit_ledger_cycle_reference",
     "0082_saas_subscription_unique_active",
     "0089_tutor_subscription_cancel_reason",
+    # 0099 ja esta aplicada em prod (Neon) — renomear quebraria o historico.
+    "0099_rls_support_tickets_user_own",
 })
 
 

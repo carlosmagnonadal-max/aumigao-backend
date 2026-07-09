@@ -668,6 +668,18 @@ _PROCESSING_PAYMENT_STATUSES: frozenset[str] = frozenset({
 #        _available_balance só descontava {pending, approved} (omitia paid).
 _WITHDRAWAL_DEDUCT_STATUSES: frozenset[str] = _PENDING_PAYMENT_STATUSES | frozenset({"paid"})
 
+# Regra do dono (08/07 noite): passeio FINALIZADO pelo walker (evidências
+# enviadas, aguardando revisão operacional) tem o ganho SEMPRE VISÍVEL como
+# "pendente" na carteira — nunca invisível ("fiz o passeio de graça?").
+# Vira "available" só na aprovação operacional; o saque (_available_balance)
+# continua exigindo conclusão aprovada.
+_WALK_REVIEW_PENDING_STATUSES: frozenset[str] = frozenset({
+    "awaiting_completion_review",
+    "completion_rejected",
+    "Aguardando validação da finalização",
+    "Finalização rejeitada",
+})
+
 
 def _balance_by_tenant(user: User, db: Session) -> dict[str | None, dict]:
     """Saldo do walker desagregado por tenant_id.
@@ -716,18 +728,24 @@ def _balance_by_tenant(user: User, db: Session) -> dict[str | None, dict]:
     )
     for p, _walk_status, _walk_op_status in credit_rows:
         # Regra do dono (teste real 08/07): ganho do passeador SÓ existe com o
-        # passeio CONCLUÍDO. Com o gate paga-primeiro (R7), o Payment confirma
-        # ANTES do aceite — sem esta trava a carteira mostrava R$4,20
-        # "disponível" pra passeio que a passeadora nem tinha recebido na fila.
-        if (
-            str(_walk_status or "") not in _WALK_COMPLETED_STATUSES
-            and str(_walk_op_status or "") not in _WALK_COMPLETED_STATUSES
-        ):
+        # passeio CONCLUÍDO — com uma gradação (08/07 noite): finalizado e
+        # AGUARDANDO REVISÃO aparece como "pendente" (visível, não sacável);
+        # aprovado vira "available". Passeio ainda não realizado segue fora
+        # (era o bug do R$4,20 "disponível" antes do aceite).
+        is_completed = (
+            str(_walk_status or "") in _WALK_COMPLETED_STATUSES
+            or str(_walk_op_status or "") in _WALK_COMPLETED_STATUSES
+        )
+        is_in_review = (
+            str(_walk_status or "") in _WALK_REVIEW_PENDING_STATUSES
+            or str(_walk_op_status or "") in _WALK_REVIEW_PENDING_STATUSES
+        )
+        if not is_completed and not is_in_review:
             continue
         b = _bucket(p.tenant_id)
         val = float(p.walker_amount or 0)
         if p.status in _PAID_PAYMENT_STATUSES_CONST:
-            b["available"] += val
+            b["available" if is_completed else "pending"] += val
         elif p.status in _UNSETTLED_CHARGE_STATUSES:
             # R7: cobrança do tutor ainda NÃO liquidada (sandbox/aguardando) → NÃO é
             # saldo do walker. Não entra em nenhum bucket (evita "pending" enganoso).
@@ -1408,6 +1426,40 @@ def earnings(user: User = Depends(get_current_user), db: Session = Depends(get_w
     # Fase 1 Passo 4 §B: adiciona tenant_id e tenant_name a cada item sem
     # remover nenhum campo existente (superset — zero-regressão).
     transactions = []
+    # 08/07 noite: passeios finalizados AGUARDANDO REVISÃO aparecem no extrato
+    # como "Pendente" (o app mapeia status != "paid" pra badge de pendência).
+    review_pending_walks = (
+        db.query(Walk)
+        .filter(
+            Walk.walker_id == user.id,
+            Walk.operational_status.in_(list(_WALK_REVIEW_PENDING_STATUSES)),
+        )
+        .order_by(Walk.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    for walk in review_pending_walks:
+        wpl = _walk_payload(walk, db)
+        _pay = (
+            db.query(Payment)
+            .filter(Payment.walk_id == walk.id, Payment.status.in_(_PAID_PAYMENT_STATUSES_CONST))
+            .order_by(Payment.created_at.desc())
+            .first()
+        )
+        _tx_amount = float(_pay.walker_amount) if (_pay and _pay.walker_amount is not None) else float(walk.price or 0)
+        transactions.append({
+            "id": f"walk-{walk.id}",
+            "type": "walk",
+            "description": "Passeio aguardando validação",
+            "pet_name": wpl["pet_name"],
+            "duration": wpl["duration"],
+            "date": wpl["date"],
+            "time": wpl["time"],
+            "amount": _tx_amount,
+            "status": "pending",
+            "tenant_id": _pay.tenant_id if _pay else getattr(walk, "tenant_id", None),
+            "tenant_name": _get_tenant_name(_pay.tenant_id if _pay else getattr(walk, "tenant_id", None)),
+        })
     for walk in completed:
         wpl = _walk_payload(walk, db)
         # Tenta encontrar o Payment mais recente pago para obter tenant_id

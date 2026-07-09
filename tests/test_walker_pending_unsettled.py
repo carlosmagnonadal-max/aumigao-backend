@@ -38,9 +38,10 @@ def _db():
     return db
 
 
-def _walk_with_payment(db, wid, status):
+def _walk_with_payment(db, wid, status, walk_status="Agendado", operational_status="ride_scheduled"):
     db.add(Walk(id=wid, tutor_id=TUTOR, walker_id=WALKER, tenant_id=T1, pet_id="p",
-                status="Agendado", price=50.0, scheduled_date="2026-07-01", duration_minutes=30))
+                status=walk_status, operational_status=operational_status,
+                price=50.0, scheduled_date="2026-07-01", duration_minutes=30))
     db.add(Payment(id=str(uuid4()), tutor_id=TUTOR, walk_id=wid, tenant_id=T1,
                    amount=50.0, status=status, provider="asaas", walker_amount=40.0))
     db.commit()
@@ -57,15 +58,62 @@ def test_unsettled_charge_not_in_pending():
     assert entry["processing"] == 0.0
 
 
-def test_generic_pending_still_counts_as_pending():
+# Regra do dono (08/07): ganho só existe com trabalho feito.
+#   agendado/em fila  → INVISÍVEL (era o bug do R$4,20 antes do aceite)
+#   finalizado aguardando revisão → PENDENTE (visível, não sacável)
+#   revisão aprovada (concluído)  → DISPONÍVEL
+
+def test_paid_but_walk_not_done_is_invisible():
     db = _db()
-    _walk_with_payment(db, "w-pend", "pending")
+    _walk_with_payment(db, "w-paid-sched", "paid")  # walk ainda Agendado
+    buckets = _balance_by_tenant(db.get(User, WALKER), db)
+    entry = buckets.get(T1, {"available": 0.0, "pending": 0.0})
+    assert entry["available"] == 0.0
+    assert entry["pending"] == 0.0
+
+
+def test_paid_and_awaiting_review_shows_as_pending():
+    db = _db()
+    _walk_with_payment(
+        db, "w-review", "paid",
+        walk_status="Aguardando validação da finalização",
+        operational_status="awaiting_completion_review",
+    )
     buckets = _balance_by_tenant(db.get(User, WALKER), db)
     assert buckets[T1]["pending"] == 40.0
+    assert buckets[T1]["available"] == 0.0
 
 
-def test_paid_still_available():
+def test_paid_and_completion_rejected_stays_pending():
     db = _db()
-    _walk_with_payment(db, "w-paid", "paid")
+    _walk_with_payment(
+        db, "w-rejected", "paid",
+        walk_status="Finalização rejeitada",
+        operational_status="completion_rejected",
+    )
+    buckets = _balance_by_tenant(db.get(User, WALKER), db)
+    assert buckets[T1]["pending"] == 40.0
+    assert buckets[T1]["available"] == 0.0
+
+
+def test_paid_and_completed_is_available():
+    db = _db()
+    _walk_with_payment(
+        db, "w-done", "paid",
+        walk_status="Finalizado",
+        operational_status="ride_completed",
+    )
     buckets = _balance_by_tenant(db.get(User, WALKER), db)
     assert buckets[T1]["available"] == 40.0
+    assert buckets[T1]["pending"] == 0.0
+
+
+def test_generic_pending_payment_on_completed_walk_counts_as_pending():
+    db = _db()
+    _walk_with_payment(
+        db, "w-pend-done", "pending",
+        walk_status="Finalizado",
+        operational_status="ride_completed",
+    )
+    buckets = _balance_by_tenant(db.get(User, WALKER), db)
+    assert buckets[T1]["pending"] == 40.0

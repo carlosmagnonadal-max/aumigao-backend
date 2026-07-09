@@ -213,15 +213,35 @@ def coarse_pickup_payload(walk: Walk) -> dict:
     }
 
 
+# Papéis reais de passeador no banco: o app cadastra como "passeador"; "walker"
+# existe por legado. BUG 09/07: a regra exigia == "walker" e NENHUM passeador
+# real recebia o endereço do tutor (operação inviável).
+_WALKER_ROLES = {"walker", "passeador"}
+
+# Endereço completo só DEPOIS do aceite (privacidade no matching) e durante toda
+# a execução — incluindo pet_handover_confirmed (walker na porta) e os status
+# pós-passeio (histórico/finalização em revisão).
+_ADDRESS_RELEASE_STATUSES = {
+    WALKER_ACCEPTED,
+    RIDE_SCHEDULED,
+    WALKER_ARRIVING,
+    "pet_handover_confirmed",
+    RIDE_IN_PROGRESS,
+    RIDE_COMPLETED,
+    "awaiting_completion_review",
+    "completion_rejected",
+}
+
+
 def should_release_address(walk: Walk, user: User | None) -> bool:
     if not user:
         return False
     if user.role in {"admin", "super_admin"} or walk.tutor_id == user.id:
         return True
     return (
-        user.role == "walker"
+        (user.role or "") in _WALKER_ROLES
         and walk.walker_id == user.id
-        and walk.operational_status in {WALKER_ACCEPTED, RIDE_SCHEDULED, WALKER_ARRIVING, RIDE_IN_PROGRESS, RIDE_COMPLETED}
+        and walk.operational_status in _ADDRESS_RELEASE_STATUSES
     )
 
 

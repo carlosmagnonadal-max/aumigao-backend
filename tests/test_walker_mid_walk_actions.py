@@ -183,9 +183,10 @@ def test_check_in_wrong_walker(setup):
 
 def test_pet_handover_happy_path(setup):
     db = setup
-    _add_walk(db, op_status="walker_arriving", status="Indo buscar o pet")
+    walk = _add_walk(db, op_status="walker_arriving", status="Indo buscar o pet")
     client = _build_app(db)
-    resp = client.post(f"/walker/walks/{WALK_ID}/pet-handover")
+    # Código de Coleta (mig 0105): handover exige o código que o tutor informa.
+    resp = client.post(f"/walker/walks/{WALK_ID}/pet-handover", json={"security_code": walk.security_code})
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["confirmed"] is True
@@ -328,7 +329,7 @@ def test_active_walk_walker_arriving_counts(setup):
 
 def test_full_mid_walk_flow(setup):
     db = setup
-    _add_walk(db, op_status="walker_accepted")
+    walk = _add_walk(db, op_status="walker_accepted")
     client = _build_app(db)
 
     # 1. Check-in
@@ -336,8 +337,8 @@ def test_full_mid_walk_flow(setup):
     assert r1.status_code == 200
     assert r1.json()["operational_status"] == "walker_arriving"
 
-    # 2. Pet handover
-    r2 = client.post(f"/walker/walks/{WALK_ID}/pet-handover")
+    # 2. Pet handover — com o Código de Coleta (mig 0105) informado pelo tutor
+    r2 = client.post(f"/walker/walks/{WALK_ID}/pet-handover", json={"security_code": walk.security_code})
     assert r2.status_code == 200
     assert r2.json()["operational_status"] == "pet_handover_confirmed"
 

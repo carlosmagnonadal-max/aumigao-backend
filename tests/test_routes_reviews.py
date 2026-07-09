@@ -98,6 +98,20 @@ def _approve_completion(db, walk):
     db.commit()
 
 
+def _submit_completion(db, walk, *, status="pending_review"):
+    """Finalização ENVIADA pelo walker mas ainda não decidida pelo admin."""
+    db.add(WalkCompletionReview(
+        id=str(uuid4()),
+        tenant_id=TENANT_ID,
+        walk_id=walk.id,
+        walker_user_id=WALKER_ID,
+        tutor_user_id=TUTOR_ID,
+        status=status,
+        reviewed_at=None,
+    ))
+    db.commit()
+
+
 # ---------------- criar review: HAPPY PATH ----------------
 def test_create_review_happy_path():
     client, db = build()
@@ -125,6 +139,27 @@ def test_create_review_drops_unknown_tags():
 
 
 # ---------------- criar review: GATING ----------------
+def test_create_review_allowed_while_awaiting_completion_review():
+    """Decisão Carlos 09/07: a NOTA já pode ser dada em 'Em validação' —
+    finalização enviada pelo walker, revisão do admin ainda pendente."""
+    client, db = build()
+    walk = _make_walk(db, operational_status="awaiting_completion_review")
+    _submit_completion(db, walk)  # pending_review, sem decisão do admin
+    r = client.post(f"/walks/{walk.id}/review", json={"rating": 5, "comment": "Ótimo!"})
+    assert r.status_code == 200, r.text
+    assert r.json()["review"]["rating"] == 5
+    assert db.query(WalkReview).filter(WalkReview.walk_id == walk.id).count() == 1
+
+
+def test_create_review_blocked_when_completion_rejected():
+    """Finalização REJEITADA pelo admin não abre janela de avaliação."""
+    client, db = build()
+    walk = _make_walk(db, operational_status="awaiting_completion_review")
+    _submit_completion(db, walk, status="rejected")
+    r = client.post(f"/walks/{walk.id}/review", json={"rating": 5})
+    assert r.status_code == 409
+
+
 def test_create_review_requires_approved_completion_review():
     """operational_status ja eh ride_completed, mas falta o completion review aprovado."""
     client, db = build()

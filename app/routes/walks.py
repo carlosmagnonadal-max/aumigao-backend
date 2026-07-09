@@ -57,7 +57,10 @@ from app.services.walker_cr_rules import CR_EARN
 
 router = APIRouter(prefix="/walks", tags=["walks"])
 logger = logging.getLogger(__name__)
-REVIEWABLE_COMPLETION_STATUSES = {"ride_completed"}
+# Decisão Carlos 09/07: a nota do tutor abre já em "Em validação" (finalização
+# enviada pelo walker); a GORJETA continua exigindo aprovação do admin (dinheiro).
+REVIEWABLE_COMPLETION_STATUSES = {"ride_completed", "awaiting_completion_review"}
+REJECTED_COMPLETION_REVIEW_STATUSES = {"rejected", "completion_rejected"}
 TIP_STATUSES = {"pending", "paid", "failed", "cancelled"}
 TIP_PROVIDER = "internal_mock"
 
@@ -669,18 +672,18 @@ def create_walk_review(walk_id: str, payload: WalkReviewCreate, user: User = Dep
         if _review_tenant and not tenant_feature_enabled(_review_tenant, db, "reviews"):
             raise HTTPException(status_code=403, detail="Avaliações não estão habilitadas para este tenant.")
     if walk.operational_status not in REVIEWABLE_COMPLETION_STATUSES:
-        raise HTTPException(status_code=409, detail="Avaliação disponível apenas após finalização operacional aprovada.")
+        raise HTTPException(status_code=409, detail="Avaliação disponível após o envio da finalização do passeio.")
     if not walk.walker_id and not walk.assigned_walker_id:
         raise HTTPException(status_code=400, detail="Avaliação exige passeador atribuído ao passeio.")
 
     completion_review = (
         db.query(WalkCompletionReview)
-        .filter(WalkCompletionReview.walk_id == walk.id, WalkCompletionReview.status == "approved")
-        .order_by(WalkCompletionReview.reviewed_at.desc())
+        .filter(WalkCompletionReview.walk_id == walk.id)
+        .order_by(WalkCompletionReview.created_at.desc())
         .first()
     )
-    if not completion_review:
-        raise HTTPException(status_code=409, detail="Avaliação exige finalização aprovada pela revisão operacional.")
+    if not completion_review or (completion_review.status or "").lower() in REJECTED_COMPLETION_REVIEW_STATUSES:
+        raise HTTPException(status_code=409, detail="Avaliação exige finalização enviada pela revisão operacional.")
 
     existing_review = db.query(WalkReview).filter(WalkReview.walk_id == walk.id).first()
     if existing_review:

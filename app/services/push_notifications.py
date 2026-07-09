@@ -170,6 +170,10 @@ def _do_send(messages: list[dict], notification_id: str, notification_type: str,
                             message=str(ticket.get("message") or error_code),
                             context={"notification_id": notification_id, "type": notification_type, "expo_error": error_code},
                         )
+            LOGGER.info(
+                "push notification sent notification_id=%s type=%s tokens=%d",
+                notification_id, notification_type, len(token_strings),
+            )
         except Exception as exc:
             LOGGER.warning("push notification skipped notification_id=%s error=%s", notification_id, exc)
             record_operational_exception(
@@ -272,6 +276,10 @@ def send_push_for_notification(db: Session, notification: Notification) -> None:
             except Exception:
                 payload = {}
             _handle_expo_response(db, notification, token_rows, payload)
+        LOGGER.info(
+            "push notification sent notification_id=%s type=%s tokens=%d",
+            notification.id, notification.type, len(token_rows),
+        )
     except Exception as exc:
         LOGGER.warning("push notification skipped notification_id=%s error=%s", notification.id, exc)
         record_operational_exception(

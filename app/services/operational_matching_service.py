@@ -491,12 +491,14 @@ def serialize_operational_walk(
     if can_see_full and not _snapshot and not (walk.meeting_point or "").strip():
         _snapshot = tutor_profile_address_snapshot(db, walk.tutor_id)
     address_payload = {"address_snapshot": _snapshot, "notes": walk.notes} if can_see_full else coarse_pickup_payload(walk)
-    # Código de Coleta (mig 0105): SÓ tutor dono e admins. O walker NUNCA recebe —
-    # o valor de prova vem de quem entrega o pet falar o código no handover.
+    # Código Aumigo (mig 0105, INVERTIDO 09/07): protege o TUTOR — o passeador
+    # informa o código na porta e o tutor confere no app. Tutor/admin veem
+    # sempre; o walker ATRIBUÍDO recebe só após o aceite (mesma janela do
+    # endereço), pra poder informar. Pré-aceite não vaza.
     _pickup_admin_roles = {"admin", "super_admin", "superadmin"}
     can_see_pickup_code = include_private or bool(
         user and (user.id == walk.tutor_id or (user.role or "") in _pickup_admin_roles)
-    )
+    ) or should_release_address(walk, user)
     pet_photo_url = (pet.photo_url if pet else "") or ""
     if pet_photo_url.startswith(("file://", "content://", "blob:")):
         pet_photo_url = ""

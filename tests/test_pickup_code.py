@@ -66,12 +66,14 @@ def _users(db):
     return tutor, walker, admin
 
 
-def test_serializer_shows_code_to_tutor_and_admin_only():
+def test_serializer_shows_code_to_tutor_and_admin_always():
+    """Tutor (dono) e admin veem o código em qualquer status — o tutor precisa
+    dele pra CONFERIR o que o passeador informar (inversão 09/07)."""
     db = _db()
     tutor, walker, admin = _users(db)
     from app.models.pet import Pet
     db.add(Pet(id="p1", tutor_id="t1", name="Rex"))
-    walk = _walk(walker_id="w1")
+    walk = _walk(walker_id="w1", operational_status="pending_walker_confirmation")
     db.add(walk)
     db.commit()
 
@@ -81,6 +83,7 @@ def test_serializer_shows_code_to_tutor_and_admin_only():
 
     assert as_tutor["security_code"] == walk.security_code
     assert as_admin["security_code"] == walk.security_code
+    # Pré-aceite o walker ainda NÃO vê (só depois do aceite — ver testes abaixo).
     assert as_walker["security_code"] is None
 
 
@@ -120,56 +123,46 @@ def _seed_handover(db, *, code="1234", feature_on=True):
     return walk
 
 
-def test_handover_blocked_with_wrong_code():
-    db = _db()
-    walk = _seed_handover(db, code="1234")
-    client = _handover_app(db)
-    r = client.post(f"/walker/walks/{walk.id}/pet-handover", json={"security_code": "9999"})
-    assert r.status_code == 409, r.text
-    db.refresh(walk)
-    assert walk.operational_status == "walker_arriving"  # não avançou
+# INVERSÃO (decisão Carlos 09/07 tarde): o código protege o TUTOR — é o
+# PASSEADOR quem informa o código ao tutor, que confere no app dele antes de
+# entregar o pet. O pet-handover NÃO exige mais digitação (o app walker antigo
+# pode mandar security_code — o backend aceita e ignora).
 
 
-def test_handover_blocked_without_code():
+def test_handover_passes_without_code():
     db = _db()
     walk = _seed_handover(db, code="1234")
     client = _handover_app(db)
     r = client.post(f"/walker/walks/{walk.id}/pet-handover", json={})
-    assert r.status_code == 409
-
-
-def test_handover_passes_with_correct_code():
-    db = _db()
-    walk = _seed_handover(db, code="1234")
-    client = _handover_app(db)
-    r = client.post(f"/walker/walks/{walk.id}/pet-handover", json={"security_code": "1234"})
     assert r.status_code == 200, r.text
     db.refresh(walk)
     assert walk.operational_status == "pet_handover_confirmed"
 
 
-def test_handover_grandfathers_walk_without_code():
-    db = _db()
-    walk = _seed_handover(db, code=None)
-    client = _handover_app(db)
-    r = client.post(f"/walker/walks/{walk.id}/pet-handover", json={})
-    assert r.status_code == 200, r.text
-
-
-def test_handover_skips_validation_when_feature_off():
-    db = _db()
-    walk = _seed_handover(db, code="1234", feature_on=False)
-    client = _handover_app(db)
-    r = client.post(f"/walker/walks/{walk.id}/pet-handover", json={})
-    assert r.status_code == 200, r.text
-
-
-def test_handover_locks_after_5_failed_attempts():
+def test_handover_ignores_legacy_code_payload():
+    """OTA walker antiga ainda envia security_code — não pode travar nem errado."""
     db = _db()
     walk = _seed_handover(db, code="1234")
     client = _handover_app(db)
-    for _ in range(5):
-        assert client.post(f"/walker/walks/{walk.id}/pet-handover", json={"security_code": "0000"}).status_code == 409
-    # 6ª tentativa: mesmo com o código CERTO, bloqueado — exige suporte/admin.
-    r = client.post(f"/walker/walks/{walk.id}/pet-handover", json={"security_code": "1234"})
-    assert r.status_code == 423
+    r = client.post(f"/walker/walks/{walk.id}/pet-handover", json={"security_code": "9999"})
+    assert r.status_code == 200, r.text
+
+
+def test_assigned_walker_sees_code_after_accept():
+    """Inversão: o walker atribuído RECEBE o código (pra informar ao tutor)."""
+    db = _db()
+    walk = _seed_handover(db, code="1234")  # walker_arriving, atribuído a w1
+    walker = db.get(User, "w1")
+    data = serialize_operational_walk(walk, db, user=walker)
+    assert data["security_code"] == "1234"
+
+
+def test_walker_does_not_see_code_before_accept():
+    """Pré-aceite o código NÃO vai — evita vazar antes do matching fechar."""
+    db = _db()
+    walk = _seed_handover(db, code="1234")
+    walk.operational_status = "pending_walker_confirmation"
+    db.commit()
+    walker = db.get(User, "w1")
+    data = serialize_operational_walk(walk, db, user=walker)
+    assert data["security_code"] is None

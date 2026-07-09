@@ -2883,56 +2883,10 @@ def pet_handover(
             detail=f"Transicao invalida: pet-handover nao permitido no status '{walk.operational_status}'.",
         )
 
-    # ── Código de Coleta (decisão Carlos 09/07): prova de entrega presencial ──
-    # Flag por tenant (kill switch no admin); walk sem código = grandfathered.
-    from app.services.admin_operational_event_service import record_admin_operational_event
-    from app.services.tenant_plan_service import tenant_feature_enabled
-    _pc_tenant = db.get(Tenant, walk.tenant_id) if walk.tenant_id else None
-    _pc_required = (
-        tenant_feature_enabled(_pc_tenant, db, "pickup_code_required") if _pc_tenant else True
-    )
-    if _pc_required and walk.security_code:
-        _failed_attempts = (
-            db.query(WalkOperationalLog)
-            .filter(
-                WalkOperationalLog.walk_id == walk.id,
-                WalkOperationalLog.event_type == "pickup_code_failed",
-            )
-            .count()
-        )
-        if _failed_attempts >= 5:
-            raise HTTPException(
-                status_code=423,
-                detail="Código de coleta bloqueado por excesso de tentativas. Fale com o suporte.",
-            )
-        _provided = (payload.security_code or "").strip() if payload else ""
-        if _provided != walk.security_code:
-            log_event(
-                db,
-                walk.id,
-                "pickup_code_failed",
-                actor_type=user.role,
-                actor_id=user.id,
-                metadata={"note": "Código de coleta incorreto no pet-handover.", "attempt": _failed_attempts + 1},
-            )
-            if _failed_attempts + 1 >= 5:
-                record_admin_operational_event(
-                    db,
-                    event_type="pickup_code_locked",
-                    entity_type="walk",
-                    entity_id=walk.id,
-                    severity="warning",
-                    title="Codigo de coleta bloqueado",
-                    description="5 tentativas incorretas de codigo de coleta no pet-handover.",
-                    actor=user,
-                    source="walker.pet_handover",
-                    metadata={"walk_id": walk.id, "walker_user_id": user.id},
-                )
-            db.commit()
-            raise HTTPException(
-                status_code=409,
-                detail="Código de coleta incorreto. Peça o código de 4 dígitos a quem está entregando o pet.",
-            )
+    # ── Código Aumigo (INVERTIDO — decisão Carlos 09/07 tarde): o código protege
+    # o TUTOR. É o PASSEADOR quem informa o código; o tutor confere no app dele
+    # antes de entregar o pet. O handover NÃO exige digitação — o security_code
+    # que o app walker antigo (OTA 520c1f90) ainda envia é aceito e IGNORADO.
 
     walk.operational_status = "pet_handover_confirmed"
     walk.status = "Indo buscar o pet"
@@ -2945,7 +2899,8 @@ def pet_handover(
         actor_id=user.id,
         metadata={
             "note": "Pet entregue ao passeador; passeio prestes a iniciar.",
-            "pickup_code_validated": bool(_pc_required and walk.security_code),
+            # Auditoria da transição legada: registra se o app ainda mandou código.
+            "legacy_code_provided": bool(payload and (payload.security_code or "").strip()),
         },
     )
     db.commit()

@@ -434,6 +434,12 @@ def serialize_operational_walk(
     walk_date, _, walk_time = (walk.scheduled_date or "").partition("T")
     can_see_full = include_private or should_release_address(walk, user)
     address_payload = {"address_snapshot": walk.address_snapshot, "notes": walk.notes} if can_see_full else coarse_pickup_payload(walk)
+    # Código de Coleta (mig 0105): SÓ tutor dono e admins. O walker NUNCA recebe —
+    # o valor de prova vem de quem entrega o pet falar o código no handover.
+    _pickup_admin_roles = {"admin", "super_admin", "superadmin"}
+    can_see_pickup_code = include_private or bool(
+        user and (user.id == walk.tutor_id or (user.role or "") in _pickup_admin_roles)
+    )
     pet_photo_url = (pet.photo_url if pet else "") or ""
     if pet_photo_url.startswith(("file://", "content://", "blob:")):
         pet_photo_url = ""
@@ -473,6 +479,8 @@ def serialize_operational_walk(
         "meeting_point": (walk.meeting_point if can_see_full else None),
         "meeting_lat": (walk.meeting_lat if can_see_full else None),
         "meeting_lng": (walk.meeting_lng if can_see_full else None),
+        # Código de Coleta: gate de papel (tutor/admin) — null pro walker.
+        "security_code": (walk.security_code if can_see_pickup_code else None),
         # mig 0101: destino do Pet Tour (modality=pet_tour) com coordenadas.
         # Mesma regra de privacidade do meeting_point: sem can_see_full → null.
         "modality": getattr(walk, "modality", "standard") or "standard",

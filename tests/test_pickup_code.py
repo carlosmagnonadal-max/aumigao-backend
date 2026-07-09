@@ -50,3 +50,35 @@ def test_security_codes_vary_between_walks():
         db.refresh(w)
         codes.add(w.security_code)
     assert len(codes) > 1  # gerador aleatório, não constante
+
+
+# ---------------- Task 2: serialização com gate de papel ----------------
+from app.models.user import User  # noqa: E402
+from app.services.operational_matching_service import serialize_operational_walk  # noqa: E402
+
+
+def _users(db):
+    tutor = User(id="t1", email="t@x.com", password_hash="x", role="cliente")
+    walker = User(id="w1", email="w@x.com", password_hash="x", role="passeador")
+    admin = User(id="a1", email="a@x.com", password_hash="x", role="super_admin")
+    db.add_all([tutor, walker, admin])
+    db.commit()
+    return tutor, walker, admin
+
+
+def test_serializer_shows_code_to_tutor_and_admin_only():
+    db = _db()
+    tutor, walker, admin = _users(db)
+    from app.models.pet import Pet
+    db.add(Pet(id="p1", tutor_id="t1", name="Rex"))
+    walk = _walk(walker_id="w1")
+    db.add(walk)
+    db.commit()
+
+    as_tutor = serialize_operational_walk(walk, db, user=tutor)
+    as_walker = serialize_operational_walk(walk, db, user=walker)
+    as_admin = serialize_operational_walk(walk, db, user=admin)
+
+    assert as_tutor["security_code"] == walk.security_code
+    assert as_admin["security_code"] == walk.security_code
+    assert as_walker["security_code"] is None

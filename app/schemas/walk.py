@@ -71,6 +71,9 @@ class WalkResponse(ORMModel):
     # Declarados aqui senao o response_model DESCARTA (gotcha 08/07).
     did_pee: bool | None = None
     did_poop: bool | None = None
+    # Mig 0105: Código de Coleta. Declarado aqui senão o response_model DESCARTA
+    # (gotcha 08/07). Null para o walker (gate de papel no serializador).
+    security_code: str | None = None
     # Relatorio de finalizacao do passeador (foto/observacao/registro + status da
     # revisao). O serializador ja emitia; sem declarar aqui o response_model
     # DESCARTAVA e o tutor via a tela de finalizacao VAZIA (teste real 08/07).

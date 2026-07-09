@@ -122,6 +122,33 @@ def _make_walks_app(db):
     return TestClient(test_app)
 
 
+def _add_walk_awaiting_review(db, *, review_status="pending_review"):
+    """Walk com finalização ENVIADA pelo walker, revisão do admin ainda pendente."""
+    from app.models.pet import Pet
+    db.add(Pet(id="pet-f7", tutor_id=TUTOR_ID, tenant_id=TENANT_ID, name="Rex"))
+    walk = Walk(
+        id=WALK_ID,
+        tutor_id=TUTOR_ID,
+        walker_id=WALKER_USER_ID,
+        tenant_id=TENANT_ID,
+        pet_id="pet-f7",
+        scheduled_date="2026-07-01",
+        duration_minutes=30,
+        status="Aguardando validação da finalização",
+        operational_status="awaiting_completion_review",
+        price=80.0,
+    )
+    db.add(walk)
+    db.add(WalkCompletionReview(
+        id="wcr-f7",
+        walk_id=WALK_ID,
+        walker_user_id=WALKER_USER_ID,
+        tutor_user_id=TUTOR_ID,
+        status=review_status,
+    ))
+    db.commit()
+
+
 def _make_payments_app(db):
     test_app = FastAPI()
     test_app.include_router(payments_module.router)
@@ -210,6 +237,28 @@ class TestTipCheckoutAsaas:
         tip = db.query(WalkTip).filter(WalkTip.walk_id == WALK_ID).first()
         assert tip.provider == "internal_mock"
         assert tip.provider_payment_id is None
+
+
+class TestTipWindowAwaitingReview:
+    """Decisão Carlos 09/07: gorjeta abre junto com a nota, em 'Em validação' —
+    atrás da validação manual (que pode levar 24h) o impulso de dar gorjeta morre."""
+
+    def test_tip_checkout_allowed_while_awaiting_completion_review(self):
+        db = _make_db()
+        _add_walk_awaiting_review(db)
+        client = _make_walks_app(db)
+        # Sem config Asaas → fallback internal_mock; o que importa é o GATE passar.
+        resp = client.post(f"/walks/{WALK_ID}/tip-checkout", json={"amount": 10.0})
+        assert resp.status_code == 200, resp.text
+        tip = db.query(WalkTip).filter(WalkTip.walk_id == WALK_ID).first()
+        assert tip is not None
+
+    def test_tip_checkout_blocked_when_completion_rejected(self):
+        db = _make_db()
+        _add_walk_awaiting_review(db, review_status="rejected")
+        client = _make_walks_app(db)
+        resp = client.post(f"/walks/{WALK_ID}/tip-checkout", json={"amount": 10.0})
+        assert resp.status_code == 409
 
 
 # ---------------------------------------------------------------------------

@@ -57,8 +57,9 @@ from app.services.walker_cr_rules import CR_EARN
 
 router = APIRouter(prefix="/walks", tags=["walks"])
 logger = logging.getLogger(__name__)
-# Decisão Carlos 09/07: a nota do tutor abre já em "Em validação" (finalização
-# enviada pelo walker); a GORJETA continua exigindo aprovação do admin (dinheiro).
+# Decisão Carlos 09/07: nota E gorjeta abrem já em "Em validação" (finalização
+# enviada pelo walker) — atrás da validação manual do admin o impulso morre.
+# A gorjeta vai por split Asaas 100% direto ao walker; rejeição bloqueia ambas.
 REVIEWABLE_COMPLETION_STATUSES = {"ride_completed", "awaiting_completion_review"}
 REJECTED_COMPLETION_REVIEW_STATUSES = {"rejected", "completion_rejected"}
 TIP_STATUSES = {"pending", "paid", "failed", "cancelled"}
@@ -759,10 +760,16 @@ async def create_walk_tip_checkout(walk_id: str, payload: WalkTipCheckoutCreate,
         _tip_tenant = db.get(Tenant, _tip_tenant_id)
         if _tip_tenant and not tenant_feature_enabled(_tip_tenant, db, "tips"):
             raise HTTPException(status_code=403, detail="Gorjetas não estão habilitadas para esta operação.")
-    if walk.operational_status != "ride_completed":
-        raise HTTPException(status_code=409, detail="Gorjeta disponível apenas após finalização operacional aprovada.")
-    if not _approved_completion_review_exists(walk.id, db):
-        raise HTTPException(status_code=409, detail="Gorjeta exige finalização aprovada pela revisão operacional.")
+    if walk.operational_status not in REVIEWABLE_COMPLETION_STATUSES:
+        raise HTTPException(status_code=409, detail="Gorjeta disponível após o envio da finalização do passeio.")
+    _tip_completion_review = (
+        db.query(WalkCompletionReview)
+        .filter(WalkCompletionReview.walk_id == walk.id)
+        .order_by(WalkCompletionReview.created_at.desc())
+        .first()
+    )
+    if not _tip_completion_review or (_tip_completion_review.status or "").lower() in REJECTED_COMPLETION_REVIEW_STATUSES:
+        raise HTTPException(status_code=409, detail="Gorjeta exige finalização enviada pela revisão operacional.")
 
     walker_id = walk.walker_id or walk.assigned_walker_id
     if not walker_id:

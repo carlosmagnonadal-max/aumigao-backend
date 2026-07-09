@@ -124,6 +124,7 @@ class TestTenantFeatureEnabled:
             "walker_boosts", "home_pickup", "push_notifications",
             "transactional_emails", "support_tickets",
             "recurring_plans",  # migrou para default-ON
+            "pickup_code_required",  # Código de Coleta (mig 0105) — default-ON c/ kill switch
         }
         assert expected == DEFAULT_ON_FEATURE_KEYS
 

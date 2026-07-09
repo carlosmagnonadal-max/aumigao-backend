@@ -35,6 +35,9 @@ PRODUCT_RUNTIME_FEATURE_KEYS = (
     "reviews",
     "walker_boosts",
     "home_pickup",
+    # Código de Coleta no pet-handover (mig 0105). Default-ON; o app do walker
+    # consulta via useTenantFeature para decidir se abre o sheet de 4 dígitos.
+    "pickup_code_required",
     "push_notifications",
     "transactional_emails",
     "support_tickets",

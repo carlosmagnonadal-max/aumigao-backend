@@ -22,6 +22,9 @@ DEFAULT_ON_FEATURE_KEYS: frozenset[str] = frozenset({
     "reviews",
     "walker_boosts",
     "home_pickup",
+    # Código de Coleta obrigatório no pet-handover (kill switch: desligar aqui
+    # restaura o handover sem código na hora — mig 0105).
+    "pickup_code_required",
     "push_notifications",
     "transactional_emails",
     "support_tickets",

@@ -1,3 +1,4 @@
+import secrets
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
@@ -5,6 +6,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 from app.models.types import Money
+
+
+def _generate_pickup_code() -> str:
+    """Código de Coleta: 4 dígitos, com zeros à esquerda (ex.: '0042')."""
+    return f"{secrets.randbelow(10000):04d}"
 
 
 class Walk(Base):
@@ -42,6 +48,10 @@ class Walk(Base):
     # NULL = não informado; False = informado como "não fez".
     did_pee: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     did_poop: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Mig 0105: Código de Coleta — prova de entrega presencial do pet.
+    # Default no ORM cobre TODOS os caminhos de criação (avulso, pet tour,
+    # compartilhado, créditos). NULL = walk antigo (grandfathered no handover).
+    security_code: Mapped[str | None] = mapped_column(String(4), nullable=True, default=_generate_pickup_code)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     operational_status: Mapped[str] = mapped_column(String, default="ride_scheduled", index=True)
     walker_selection_mode: Mapped[str] = mapped_column(String, default="auto")

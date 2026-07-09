@@ -192,19 +192,43 @@ def _response_time(sent_at: datetime | None, responded_at: datetime | None) -> i
     return max(0, int((responded_at - sent_at).total_seconds()))
 
 
-def _walk_neighborhood(walk: Walk) -> str:
+_CEP_RE = _re.compile(r"\bCEP[:\s]*[\d.\-]+", _re.IGNORECASE)
+
+
+def _snapshot_locality(walk: Walk) -> tuple[str, str]:
+    """Extrai (bairro, cidade/UF) do address_snapshot — NUNCA rua/número/CEP/ref.
+
+    Formato canônico (tutor_profile_address_snapshot):
+    "Rua X, 123 (compl) — Bairro, Cidade/UF · CEP 00000-000 · Ref: ...".
+    Legado: "Rua X, 123 — Bairro" ou "Rua X, 123, Bairro".
+    """
     raw = (walk.address_snapshot or "").replace("\n", " ")
-    pieces = [piece.strip() for piece in raw.split("-") if piece.strip()]
+    # Descarta os segmentos "· CEP ..." / "· Ref: ..." e CEP embutido em legado.
+    main = _CEP_RE.sub("", raw.split("·")[0]).strip(" ,-—")
+    if "—" in main:
+        locality = [b.strip() for b in main.split("—")[-1].split(",") if b.strip()]
+        if locality:
+            return locality[0], ", ".join(locality[1:])
+    pieces = [piece.strip() for piece in main.split(" - ") if piece.strip()]
     if len(pieces) >= 2:
-        return pieces[-1]
-    comma_pieces = [piece.strip() for piece in raw.split(",") if piece.strip()]
+        return pieces[-1], ""
+    comma_pieces = [piece.strip() for piece in main.split(",") if piece.strip()]
     if len(comma_pieces) >= 3:
-        return comma_pieces[-1]
-    return raw or "Regiao de retirada"
+        return comma_pieces[-1], ""
+    return main, ""
+
+
+def _walk_neighborhood(walk: Walk) -> str:
+    # O matching compara bairro por IGUALDADE normalizada — só o bairro, sem cidade.
+    neighborhood, _ = _snapshot_locality(walk)
+    return neighborhood or "Regiao de retirada"
 
 
 def coarse_pickup_payload(walk: Walk) -> dict:
-    region = _walk_neighborhood(walk)
+    # Rótulo do card de aceite (pré-liberação): bairro + cidade dão contexto
+    # suficiente pro passeador decidir, sem expor rua/número/CEP do tutor.
+    neighborhood, city = _snapshot_locality(walk)
+    region = ", ".join(b for b in [neighborhood, city] if b) or "Regiao de retirada"
     return {
         "pickup_region_label": region,
         "pickup_distance_label": "Distancia aproximada em calculo",

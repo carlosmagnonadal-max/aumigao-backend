@@ -137,3 +137,66 @@ def test_serializer_no_profile_fallback_before_accept():
     db.commit()
     data = serialize_operational_walk(walk, db, user=walker)
     assert data["address_snapshot"] == ""
+
+
+# ---------------- rótulo COARSE pré-aceite: BAIRRO, nunca rua/CEP ----------------
+# BUG 09/07 (parte 3): o snapshot canônico ("Rua X, 123 (ap) — Bairro, Cidade/UF
+# · CEP ... · Ref: ...") quebrava a heurística antiga do _walk_neighborhood — o
+# passeador via "Salvador/BA · CEP 41760150" no card de aceite em vez do bairro.
+
+CANONICAL_SNAPSHOT = "Av. Paralela, 3500 (ap 101) — Trobogy, Salvador/BA · CEP 41760-150 · Ref: Portaria azul"
+
+
+def _coarse_label(snapshot):
+    from app.services.operational_matching_service import coarse_pickup_payload
+    walk = _walk("pending_walker_confirmation")
+    walk.address_snapshot = snapshot
+    return coarse_pickup_payload(walk)["pickup_region_label"]
+
+
+def test_coarse_label_shows_bairro_from_canonical_snapshot():
+    label = _coarse_label(CANONICAL_SNAPSHOT)
+    assert "Trobogy" in label
+    assert "CEP" not in label
+    assert "41760" not in label
+    assert "Paralela" not in label
+    assert "3500" not in label
+    assert "Portaria" not in label
+
+
+def test_coarse_label_includes_city_for_context():
+    assert _coarse_label(CANONICAL_SNAPSHOT) == "Trobogy, Salvador/BA"
+
+
+def test_coarse_label_legacy_emdash_snapshot():
+    assert _coarse_label("Rua das Flores, 123 — Pituba") == "Pituba"
+
+
+def test_coarse_label_legacy_comma_snapshot():
+    assert _coarse_label("Rua das Flores, 123, Pituba") == "Pituba"
+
+
+def test_matching_neighborhood_is_bare_bairro():
+    """O matching compara bairro por igualdade — precisa vir SEM cidade/UF."""
+    from app.services.operational_matching_service import _walk_neighborhood
+    walk = _walk("pending_walker_confirmation")
+    walk.address_snapshot = CANONICAL_SNAPSHOT
+    assert _walk_neighborhood(walk) == "Trobogy"
+
+
+def test_serializer_coarse_region_label_pre_accept():
+    """O card de aceite (via serializer) mostra o bairro, não cidade+CEP."""
+    db = _db()
+    walker = _walker("passeador")
+    db.add_all([
+        walker,
+        User(id="t1", email="t@x.com", password_hash="x", role="cliente"),
+        Pet(id="p1", tutor_id="t1", name="Rex"),
+    ])
+    walk = _walk("pending_walker_confirmation")
+    walk.address_snapshot = CANONICAL_SNAPSHOT
+    db.add(walk)
+    db.commit()
+    data = serialize_operational_walk(walk, db, user=walker)
+    assert data["pickup_region_label"] == "Trobogy, Salvador/BA"
+    assert data["address_snapshot"] == ""

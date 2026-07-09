@@ -497,6 +497,13 @@ def create_walk(payload: WalkCreate, request: Request, user: User = Depends(get_
             walker_selection_mode,
         )
 
+        # Snapshot do endereço de coleta (bug 09/07): o app envia address_snapshot=""
+        # fixo — sem isto o walk nasce sem endereço e o passeador não tem onde buscar
+        # o pet. Só quando é busca em casa (com ponto de encontro o snapshot fica vazio).
+        if not str(data.get("address_snapshot") or "").strip() and not str(data.get("meeting_point") or "").strip():
+            from app.services.operational_matching_service import tutor_profile_address_snapshot
+            data["address_snapshot"] = tutor_profile_address_snapshot(db, user.id)
+
         walk = Walk(
             id=str(uuid4()),
             tutor_id=user.id,

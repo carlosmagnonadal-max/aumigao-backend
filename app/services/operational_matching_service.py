@@ -233,6 +233,38 @@ _ADDRESS_RELEASE_STATUSES = {
 }
 
 
+def tutor_profile_address_snapshot(db: Session, tutor_id: str | None) -> str:
+    """Compõe o endereço de coleta a partir do PERFIL do tutor (cadastro step-2).
+
+    BUG 09/07: o app agendava com address_snapshot="" fixo — o walk nascia sem
+    endereço mesmo com o perfil completo. Usado na criação do walk (snapshot) e
+    como fallback de serialização para walks antigos com snapshot vazio.
+    """
+    if not tutor_id:
+        return ""
+    from app.models.tutor_profile import TutorProfile
+
+    profile = db.query(TutorProfile).filter(TutorProfile.user_id == tutor_id).first()
+    if not profile or not (profile.street or "").strip():
+        return ""
+    line = (profile.street or "").strip()
+    if (profile.number or "").strip():
+        line += f", {profile.number.strip()}"
+    if (profile.complement or "").strip():
+        line += f" ({profile.complement.strip()})"
+    locality_bits = [b for b in [(profile.neighborhood or "").strip()] if b]
+    city_state = "/".join(b for b in [(profile.city or "").strip(), (profile.state or "").strip()] if b)
+    if city_state:
+        locality_bits.append(city_state)
+    if locality_bits:
+        line += " — " + ", ".join(locality_bits)
+    if (profile.cep or "").strip():
+        line += f" · CEP {profile.cep.strip()}"
+    if (profile.reference_point or "").strip():
+        line += f" · Ref: {profile.reference_point.strip()}"
+    return line
+
+
 def should_release_address(walk: Walk, user: User | None) -> bool:
     if not user:
         return False
@@ -453,7 +485,12 @@ def serialize_operational_walk(
     walker_rating_avg = _walker_rep["rating_average"] if _walker_rep and _walker_rep["reviews_count"] > 0 else None
     walk_date, _, walk_time = (walk.scheduled_date or "").partition("T")
     can_see_full = include_private or should_release_address(walk, user)
-    address_payload = {"address_snapshot": walk.address_snapshot, "notes": walk.notes} if can_see_full else coarse_pickup_payload(walk)
+    _snapshot = (walk.address_snapshot or "").strip()
+    # Fallback (bug 09/07): walks antigos nasceram com snapshot vazio — compõe do
+    # perfil do tutor. Só com liberação (can_see_full) e sem ponto de encontro.
+    if can_see_full and not _snapshot and not (walk.meeting_point or "").strip():
+        _snapshot = tutor_profile_address_snapshot(db, walk.tutor_id)
+    address_payload = {"address_snapshot": _snapshot, "notes": walk.notes} if can_see_full else coarse_pickup_payload(walk)
     # Código de Coleta (mig 0105): SÓ tutor dono e admins. O walker NUNCA recebe —
     # o valor de prova vem de quem entrega o pet falar o código no handover.
     _pickup_admin_roles = {"admin", "super_admin", "superadmin"}

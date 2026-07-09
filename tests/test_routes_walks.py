@@ -292,3 +292,28 @@ def test_tip_checkout_requires_auth_401():
     client.app.dependency_overrides.pop(get_current_user, None)
     r = client.post(f"/walks/{walk.id}/tip-checkout", json={"amount": 10.0})
     assert r.status_code == 401
+
+
+def test_create_walk_snapshots_tutor_profile_address_when_empty():
+    """BUG 09/07: o app envia address_snapshot="" fixo — a criação deve tirar o
+    snapshot do endereço do PERFIL do tutor (cadastro step-2) na hora."""
+    from app.models.tutor_profile import TutorProfile
+    client, db = build()
+    db.add(TutorProfile(
+        id="tp-test", user_id=TUTOR_ID, cep="41760150", street="Av. Paralela",
+        number="3500", neighborhood="Trobogy", city="Salvador", state="BA",
+    ))
+    db.commit()
+    r = client.post("/walks", json=_walk_create_payload(address_snapshot=""))
+    assert r.status_code == 200, r.text
+    walk = db.get(Walk, r.json()["id"])
+    assert "Av. Paralela" in (walk.address_snapshot or "")
+    assert "Trobogy" in (walk.address_snapshot or "")
+
+
+def test_create_walk_keeps_explicit_address_snapshot():
+    client, db = build()
+    r = client.post("/walks", json=_walk_create_payload())
+    assert r.status_code == 200, r.text
+    walk = db.get(Walk, r.json()["id"])
+    assert walk.address_snapshot == "Rua A, 100 - Centro"

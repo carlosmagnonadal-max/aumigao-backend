@@ -85,3 +85,55 @@ def test_serializer_gives_address_to_passeador_after_accept():
     data = serialize_operational_walk(walk, db, user=walker)
     assert data["address_snapshot"] == "Rua das Flores, 123 — Pituba"
     assert data["pickup_privacy_level"] == "full"
+
+
+# ---------------- snapshot vazio: fallback pro endereço do PERFIL do tutor ----------------
+# BUG 09/07 (parte 2): o app agenda com address_snapshot="" fixo — o walk nascia
+# SEM endereço mesmo com o perfil do tutor completo (cadastro step-2 coleta tudo).
+
+
+def _tutor_profile(db):
+    from app.models.tutor_profile import TutorProfile
+    db.add(TutorProfile(
+        id="tp1", user_id="t1", cep="41760150", street="Av. Paralela", number="3500",
+        complement="ap 101", neighborhood="Trobogy", city="Salvador", state="BA",
+        reference_point="Portaria azul",
+    ))
+    db.commit()
+
+
+def test_serializer_falls_back_to_tutor_profile_address_when_snapshot_empty():
+    db = _db()
+    walker = _walker("passeador")
+    db.add_all([
+        walker,
+        User(id="t1", email="t@x.com", password_hash="x", role="cliente"),
+        Pet(id="p1", tutor_id="t1", name="Rex"),
+    ])
+    _tutor_profile(db)
+    walk = _walk("walker_accepted")
+    walk.address_snapshot = ""
+    db.add(walk)
+    db.commit()
+    data = serialize_operational_walk(walk, db, user=walker)
+    assert "Av. Paralela" in data["address_snapshot"]
+    assert "3500" in data["address_snapshot"]
+    assert "Trobogy" in data["address_snapshot"]
+
+
+def test_serializer_no_profile_fallback_before_accept():
+    """Pré-aceite continua coarse mesmo com snapshot vazio + perfil completo."""
+    db = _db()
+    walker = _walker("passeador")
+    db.add_all([
+        walker,
+        User(id="t1", email="t@x.com", password_hash="x", role="cliente"),
+        Pet(id="p1", tutor_id="t1", name="Rex"),
+    ])
+    _tutor_profile(db)
+    walk = _walk("pending_walker_confirmation")
+    walk.address_snapshot = ""
+    db.add(walk)
+    db.commit()
+    data = serialize_operational_walk(walk, db, user=walker)
+    assert data["address_snapshot"] == ""

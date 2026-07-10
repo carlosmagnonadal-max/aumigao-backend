@@ -22,6 +22,7 @@ from app.models.walk_tip import WalkTip
 from app.models.user import User
 from app.models.pet import Pet
 from app.models.tenant import Tenant
+from app.models.walker_profile import WalkerProfile
 from app.models.pet_tour import PET_TOUR_MODALITY
 from app.services.pet_tour_service import validate_booking as validate_pet_tour_booking
 from app.schemas.walk import WalkCreate, WalkResponse, WalkUpdateStatus
@@ -52,6 +53,7 @@ from app.constants import PAID_PAYMENT_STATUSES as _PAID_PAYMENT_STATUSES
 from app.constants import WALK_COMPLETED_STATUSES as COMPLETED_WALK_STATUSES
 from app.constants import WALK_COMPLETED_STATUSES as DIRECT_COMPLETION_STATUSES
 from app.services.recurring_plan_service import consume_credit_if_available, refund_credit_for_walk
+from app.utils.url_utils import normalize_media_url
 
 # ── CR / gamificação (Fase 4) ────────────────────────────────────────────────
 import app.services.walker_cr_service as _cr_svc
@@ -128,6 +130,7 @@ def _serialize_walk_list_item(
     tutor: User | None,
     walker: User | None,
     user: User,
+    walker_photo_url: str | None = None,
 ) -> dict:
     walker_id = walk.walker_id or walk.assigned_walker_id
     walk_date, _, walk_time = (walk.scheduled_date or "").partition("T")
@@ -149,6 +152,13 @@ def _serialize_walk_list_item(
         "tutor_name": (tutor.full_name if tutor else None) or (tutor.email if tutor else None),
         "client_name": (tutor.full_name if tutor else None) or (tutor.email if tutor else None),
         "walker_name": (walker.full_name if walker else None) or (walker.email if walker else None),
+        # R14.2: foto do passeador designado (mesmo formato/chaves que /walker/public
+        # expõe — normalizeWalkerAvatarSource do app procura qualquer uma destas).
+        # Item usado por passeios.tsx (aba Agendados) na listagem leve.
+        # NAO usar a chave "photo_url" aqui: o app reaproveita esse nome pra foto de
+        # FINALIZACAO do passeio (ver nota em app/schemas/walk.py:WalkResponse).
+        "walker_photo_url": walker_photo_url,
+        "profile_photo_url": walker_photo_url,
         "scheduled_date": walk.scheduled_date,
         "walk_date": walk_date or None,
         "walk_time": walk_time[:5] if walk_time else None,
@@ -200,9 +210,24 @@ def _walk_list_query(db: Session):
     )
 
 
-def _serialize_walk_list(rows: list[tuple[Walk, Pet | None, User | None, User | None]], user: User) -> list[dict]:
+def _serialize_walk_list(
+    rows: list[tuple[Walk, Pet | None, User | None, User | None]], user: User, db: Session
+) -> list[dict]:
+    # R14.2: 1 query para a foto de todos os passeadores da pagina (evita N+1).
+    # Rating NÃO entra aqui de proposito: nenhuma tela consome walker_rating_avg
+    # a partir da listagem leve (só o detalhe via GET /walks/{id} usa).
+    walker_ids = {
+        wid for walk, _, _, _ in rows if (wid := (walk.walker_id or walk.assigned_walker_id))
+    }
+    photo_by_walker_id: dict[str, str | None] = {}
+    if walker_ids:
+        profiles = db.query(WalkerProfile).filter(WalkerProfile.user_id.in_(walker_ids)).all()
+        photo_by_walker_id = {p.user_id: normalize_media_url(p.profile_photo_url) for p in profiles}
     return [
-        _serialize_walk_list_item(walk, pet, tutor, walker, user)
+        _serialize_walk_list_item(
+            walk, pet, tutor, walker, user,
+            walker_photo_url=photo_by_walker_id.get(walk.walker_id or walk.assigned_walker_id),
+        )
         for walk, pet, tutor, walker in rows
     ]
 
@@ -355,7 +380,7 @@ def list_walks(
     elif user.role not in {"admin", "super_admin"}:
         query = query.filter(Walk.tutor_id == user.id)
     rows = query.order_by(Walk.created_at.desc()).limit(limit).all()
-    return _serialize_walk_list(rows, user)
+    return _serialize_walk_list(rows, user, db)
 
 def _require_payment_before_matching() -> bool:
     """R7: gate de produto (fail-closed). Quando ligado, o walk só entra no fluxo

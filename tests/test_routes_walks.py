@@ -31,6 +31,8 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.walk import Walk
 from app.models.walk_completion_review import WalkCompletionReview
+from app.models.walk_review import WalkReview
+from app.models.walker_profile import WalkerProfile
 from app.routes import walks
 from app.services.tenant_seed_service import DEFAULT_TENANT_SLUG
 
@@ -108,6 +110,34 @@ def _seed_completed_walk(db, *, approved_review: bool = True, walker_id: str | N
     return walk
 
 
+def _seed_walker_profile(db, *, user_id: str = WALKER_ID, photo_url: str | None = "https://cdn.aumigao.app/walkers/foto.jpg"):
+    profile = WalkerProfile(
+        id=str(uuid4()),
+        user_id=user_id,
+        full_name="Passeador Teste",
+        profile_photo_url=photo_url,
+        status="active",
+        active_as_walker=True,
+    )
+    db.add(profile)
+    db.commit()
+    return profile
+
+
+def _seed_walk_review(db, *, walk_id: str, rating: int, walker_id: str = WALKER_ID, tutor_id: str = TUTOR_ID):
+    review = WalkReview(
+        id=str(uuid4()),
+        tenant_id=TENANT_ID,
+        walk_id=walk_id,
+        tutor_id=tutor_id,
+        walker_id=walker_id,
+        rating=rating,
+    )
+    db.add(review)
+    db.commit()
+    return review
+
+
 # --------------------------------------------------------------- create -----
 def test_create_walk_defers_matching_to_pending_confirmation():
     client, _ = build()
@@ -173,6 +203,35 @@ def test_list_walks_requires_auth_401():
     assert r.status_code == 401
 
 
+def test_list_walks_lightweight_exposes_walker_photo_url():
+    # R14.2: listagem leve (full=false, default) precisa da foto pra aba
+    # Agendados do app do tutor (passeios.tsx renderiza item.walkerPhotoUrl).
+    client, db = build()
+    _seed_walker_profile(db)
+    walk = _seed_completed_walk(db, approved_review=False, operational_status="ride_scheduled")
+    listed = client.get("/walks").json()
+    item = next(w for w in listed if w["id"] == walk.id)
+    assert item["walker_photo_url"] == "https://cdn.aumigao.app/walkers/foto.jpg"
+    assert item["profile_photo_url"] == "https://cdn.aumigao.app/walkers/foto.jpg"
+    # Nao deve vazar sob a chave "photo_url" (reservada pra foto de finalizacao do passeio).
+    assert "photo_url" not in item
+
+
+def test_list_walks_no_walker_assigned_photo_is_none():
+    client, db = build()
+    walk = Walk(
+        id=str(uuid4()), tutor_id=TUTOR_ID, tenant_id=TENANT_ID, pet_id=PET_ID,
+        scheduled_date="2026-07-03T10:00:00", duration_minutes=30, price=20.0,
+        status="Agendado", operational_status="pending_walker_confirmation",
+    )
+    db.add(walk)
+    db.commit()
+    listed = client.get("/walks").json()
+    item = next(w for w in listed if w["id"] == walk.id)
+    assert item["walker_photo_url"] is None
+    assert item["profile_photo_url"] is None
+
+
 def test_list_walks_only_returns_own_walks_for_tutor():
     client, db = build()
     # passeio do tutor logado
@@ -186,6 +245,52 @@ def test_list_walks_only_returns_own_walks_for_tutor():
     listed = client.get("/walks").json()
     tutor_ids = {w["tutor_id"] for w in listed}
     assert tutor_ids == {TUTOR_ID}
+
+
+# ------------------------------------------------------- detail (foto/nota) -----
+def test_get_walk_exposes_walker_photo_and_rating():
+    # R14.2/R14.6: GET /walks/{id} eh o endpoint que a tela de pagamento e a
+    # tela do passeio do tutor consomem (getWalkById) — precisa expor a foto
+    # e a media/contagem de avaliacao do passeador designado.
+    client, db = build()
+    _seed_walker_profile(db)
+    walk = _seed_completed_walk(db, approved_review=False, operational_status="ride_scheduled")
+    # 2 reviews em OUTROS passeios do mesmo passeador -> media 4.5, contagem 2.
+    other_walk_1 = _seed_completed_walk(db, approved_review=False, operational_status="ride_completed")
+    other_walk_2 = _seed_completed_walk(db, approved_review=False, operational_status="ride_completed")
+    _seed_walk_review(db, walk_id=other_walk_1.id, rating=4)
+    _seed_walk_review(db, walk_id=other_walk_2.id, rating=5)
+
+    r = client.get(f"/walks/{walk.id}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["walker_photo_url"] == "https://cdn.aumigao.app/walkers/foto.jpg"
+    assert body["profile_photo_url"] == "https://cdn.aumigao.app/walkers/foto.jpg"
+    assert body["walker_rating_avg"] == 4.5
+    assert body["walker_rating_count"] == 2
+    # Nao deve vazar sob "photo_url" (colide com a foto de finalizacao do passeio
+    # que o app do tutor guarda nesta mesma chave — ver schemas/walk.py).
+    assert "photo_url" not in body
+
+
+def test_get_walk_walker_rating_none_when_no_reviews():
+    client, db = build()
+    _seed_walker_profile(db)
+    walk = _seed_completed_walk(db, approved_review=False, operational_status="ride_scheduled")
+    body = client.get(f"/walks/{walk.id}").json()
+    assert body["walker_rating_avg"] is None
+    assert body["walker_rating_count"] == 0
+
+
+def test_get_walk_normalizes_local_device_photo_url():
+    # Foto local do device (file://) nao eh renderizavel no app — normalize_media_url
+    # descarta (mesma regra do /walker/public), senao normalizeWalkerAvatarSource
+    # rejeitaria a URI e a foto continuaria sumindo mesmo com o campo exposto.
+    client, db = build()
+    _seed_walker_profile(db, photo_url="file:///data/user/0/local/photo.jpg")
+    walk = _seed_completed_walk(db, approved_review=False, operational_status="ride_scheduled")
+    body = client.get(f"/walks/{walk.id}").json()
+    assert body["walker_photo_url"] == ""
 
 
 # --------------------------------------------------------------- status -----

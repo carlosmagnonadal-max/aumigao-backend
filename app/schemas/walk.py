@@ -39,6 +39,19 @@ class WalkResponse(ORMModel):
     tutor_name: str | None = None
     client_name: str | None = None
     walker_name: str | None = None
+    # R14.2/R14.6: foto e avaliacao do passeador designado. Sem declarar aqui o
+    # response_model DESCARTA (mesmo gotcha de completion_review/security_code
+    # acima) e o app do tutor nunca via a foto nem a nota na tela do passeio.
+    # NAO declarar "photo_url" aqui: o app do tutor ja usa essa chave pro
+    # payload da FOTO DE FINALIZACAO do passeio (evidencia enviada pelo
+    # passeador, colapsada com completion_review.photo_url em passeio/[id].tsx)
+    # — se ela virasse a foto do passeador, normalizeWalkerAvatarSource (que
+    # olha photo_url primeiro) mostraria a selfie do passeador no lugar da
+    # evidencia. walker_photo_url/profile_photo_url bastam pro normalizer.
+    walker_photo_url: str | None = None
+    profile_photo_url: str | None = None
+    walker_rating_avg: float | None = None
+    walker_rating_count: int | None = None
     scheduled_date: str
     walk_date: str | None = None
     walk_time: str | None = None

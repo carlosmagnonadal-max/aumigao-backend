@@ -37,8 +37,8 @@ from app.services.operational_observability_service import record_operational_ex
 from app.services.operational_reliability_service import serialize_operational_event
 from app.services.walker_operational_score_service import calculate_walker_operational_score
 from app.services.walker_network_matching_service import get_matching_pool_for_tenant, is_walker_eligible_for_tenant
-from app.services.reputation_service import reputation_summary as _reputation_summary
 from app.routes.notifications import NotificationCreate, _create_notification
+from app.utils.url_utils import normalize_media_url
 
 logger = logging.getLogger(__name__)
 
@@ -483,7 +483,11 @@ def serialize_operational_walk(
       if walker_id
       else None
     )
-    walker_photo_url = (walker_profile.profile_photo_url if walker_profile else "") or ""
+    # R14.2: normaliza igual ao /walker/public (_public_walker_avatar_url) — descarta
+    # URLs locais do device (file:/content:/blob:) e corrige host Railway legado.
+    # Sem isso o app do tutor recebia o valor cru do banco e normalizeWalkerAvatarSource
+    # descartava por não ser um URI renderizável.
+    walker_photo_url = normalize_media_url(walker_profile.profile_photo_url if walker_profile else None) or ""
     attempts = (
         db.query(WalkMatchingAttempt)
         .filter(WalkMatchingAttempt.walk_id == walk.id)
@@ -528,9 +532,23 @@ def serialize_operational_walk(
     )
     visible_tip = paid_tip or latest_tip
     walker_operational_score = calculate_walker_operational_score(walker_id, db) if walker_id else None
-    # BUG 1 fix: rating médio do walker atribuído ao passeio, reutilizando reputation_summary
-    _walker_rep = _reputation_summary(walker_id, db) if walker_id else None
-    walker_rating_avg = _walker_rep["rating_average"] if _walker_rep and _walker_rep["reviews_count"] > 0 else None
+    # R14.6: rating do passeador via WalkReview — MESMA fonte que /walker/public usa
+    # (walker.py::_walk_review_reputation_summary), pra não mostrar "avaliação
+    # indisponível" no app quando o walker já tem nota pública visível na vitrine.
+    # (Antes usava reputation_service.reputation_summary, que lê WalkerReview —
+    # tabela separada e tipicamente vazia — e o campo nem chegava ao app porque
+    # o response_model descartava por falta de declaração no schema.)
+    if walker_id:
+        _walker_reviews = db.query(WalkReview).filter(WalkReview.walker_id == walker_id).all()
+        walker_rating_count = len(_walker_reviews)
+        walker_rating_avg = (
+            round(sum(r.rating for r in _walker_reviews) / walker_rating_count, 2)
+            if walker_rating_count
+            else None
+        )
+    else:
+        walker_rating_count = None
+        walker_rating_avg = None
     walk_date, _, walk_time = (walk.scheduled_date or "").partition("T")
     can_see_full = include_private or should_release_address(walk, user)
     _snapshot = (walk.address_snapshot or "").strip()
@@ -567,6 +585,7 @@ def serialize_operational_walk(
         "photo_url": walker_photo_url,
         "walker_operational_score": walker_operational_score,
         "walker_rating_avg": walker_rating_avg,
+        "walker_rating_count": walker_rating_count,
         "scheduled_date": walk.scheduled_date,
         "walk_date": walk_date or None,
         "walk_time": (walk_time[:5] if walk_time else None),

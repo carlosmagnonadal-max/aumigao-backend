@@ -10,10 +10,16 @@ from sqlalchemy.orm import Session
 
 from app.models.notification import Notification
 from app.models.operational_beta_log import OperationalBetaLog
-from app.models.walk import Walk
+from app.models.walk import Walk, WalkMatchingAttempt
 from app.models.walk_completion_review import WalkCompletionReview
 from app.models.walk_location_ping import WalkLocationPing
-from app.services.operational_matching_service import process_expired_attempts
+from app.services.operational_matching_service import (
+    AUTO_REMATCHING,
+    PENDING_ATTEMPT,
+    PENDING_WALKER_CONFIRMATION,
+    notify_walker_walk_event,
+    process_expired_attempts,
+)
 from app.services.operational_observability_service import (
     record_operational_exception,
     record_operational_log,
@@ -137,6 +143,111 @@ def _run_task(session_factory, name: str, task) -> int:
 
 def _task_matching_expiration(db: Session) -> int:
     return process_expired_attempts(db, commit=False)
+
+
+# Camada 2 do som (10/07): a tentativa de matching PENDENTE toca UM push
+# (walker_attempt_created/new_walk) na criação; se o passeador não ouvir, silêncio
+# até expirar. Reenvia o MESMO push crítico (canal walk-requests, whitelisted) em
+# cadência a cada 5min, até 3 lembretes por tentativa.
+WALK_REQUEST_REMINDER_INTERVAL_MINUTES = 5
+WALK_REQUEST_REMINDER_MAX_COUNT = 3
+
+
+def _walk_when_label(walk: Walk) -> str:
+    """'de DD/MM às HH:MM' a partir de scheduled_date (hora de parede LOCAL do
+    tenant — NÃO precisa converter timezone aqui, é só rótulo de exibição)."""
+    from app.lib.walk_time import parse_wall_time
+
+    parsed = parse_wall_time(walk.scheduled_date)
+    if not parsed:
+        return "agendado"
+    return f"de {parsed.strftime('%d/%m')} às {parsed.strftime('%H:%M')}"
+
+
+def _walk_request_reminders_sent(db: Session, attempt_id: str, within_minutes: int = 40) -> int:
+    """Conta lembretes já enviados para esta tentativa (dedupe SEM migration nova:
+    reusa OperationalBetaLog, mesmo padrão de _recent_log_exists, mas contando —
+    não só checando existência — para respeitar o teto de 3)."""
+    cutoff = _utcnow() - timedelta(minutes=within_minutes)
+    rows = (
+        db.query(OperationalBetaLog)
+        .filter(
+            OperationalBetaLog.event_type == "walk_request_reminder_sent",
+            OperationalBetaLog.source == "scheduler.walk_reminders",
+            OperationalBetaLog.created_at >= cutoff,
+        )
+        .all()
+    )
+    return sum(1 for row in rows if str(_context_json(row).get("attempt_id") or "") == str(attempt_id))
+
+
+def _task_walk_request_reminders(db: Session) -> int:
+    now = _utcnow()
+    due_cutoff = now - timedelta(minutes=WALK_REQUEST_REMINDER_INTERVAL_MINUTES)
+    attempts = (
+        db.query(WalkMatchingAttempt)
+        .filter(
+            WalkMatchingAttempt.status == PENDING_ATTEMPT,
+            WalkMatchingAttempt.expires_at > now,
+            WalkMatchingAttempt.sent_at <= due_cutoff,
+        )
+        .order_by(WalkMatchingAttempt.sent_at.asc())
+        .limit(100)
+        .all()
+    )
+    count = 0
+    for attempt in attempts:
+        walk = db.get(Walk, attempt.walk_id)
+        # Mesmo guard de process_expired_attempts: só re-alerta enquanto o walk
+        # segue de fato em matching (nunca aceito/cancelado/reagendado).
+        if not walk or walk.operational_status not in {PENDING_WALKER_CONFIRMATION, AUTO_REMATCHING}:
+            continue
+
+        reminders_sent = _walk_request_reminders_sent(db, attempt.id)
+        if reminders_sent >= WALK_REQUEST_REMINDER_MAX_COUNT:
+            continue
+        reminder_number = reminders_sent + 1
+        due_at = attempt.sent_at + timedelta(minutes=WALK_REQUEST_REMINDER_INTERVAL_MINUTES * reminder_number)
+        if now < due_at:
+            continue
+
+        notify_walker_walk_event(
+            db,
+            walk,
+            attempt.walker_id,
+            title="Solicitação aguardando resposta",
+            message=f"Solicitação aguardando: passeio {_walk_when_label(walk)} ainda precisa de resposta.",
+            # Reusa o mesmo tipo whitelisted do push original (canal walk-requests,
+            # som crítico) — ver push_notifications.WALK_REQUEST_NOTIFICATION_TYPES.
+            notification_type="new_walk",
+            priority="high",
+            action="walker_attempt_created",
+            metadata={
+                "attempt_number": attempt.attempt_number,
+                "reminder_number": reminder_number,
+                "expires_at": attempt.expires_at,
+            },
+        )
+        # Persiste a notificação/push ANTES do log-guard. record_operational_log
+        # chama inspect() que, sob SQLite+StaticPool, provoca rollback implícito
+        # da conexão — sem este commit o push poderia ser descartado por um log
+        # best-effort (mesmo gotcha documentado em _task_expire_unpaid_walks).
+        db.commit()
+        record_operational_log(
+            db,
+            event_type="walk_request_reminder_sent",
+            severity="info",
+            source="scheduler.walk_reminders",
+            message=f"Lembrete {reminder_number}/{WALK_REQUEST_REMINDER_MAX_COUNT} de solicitação pendente enviado.",
+            context={
+                "attempt_id": attempt.id,
+                "walk_id": walk.id,
+                "walker_id": attempt.walker_id,
+                "reminder_number": reminder_number,
+            },
+        )
+        count += 1
+    return count
 
 
 def _task_recovery_signals(db: Session) -> int:
@@ -520,6 +631,9 @@ def _run_operational_scheduler_cycle_locked(session_factory) -> dict:
 
     tasks = {
         "matching_expiration": _task_matching_expiration,
+        # Camada 2 do som (10/07): roda LOGO DEPOIS de matching_expiration, no
+        # mesmo ciclo, para nunca re-alertar uma tentativa que acabou de expirar.
+        "walk_request_reminders": _task_walk_request_reminders,
         "recovery_signals": _task_recovery_signals,
         "no_show_checkin": _task_no_show_checkin,
         "stuck_completions": _task_stuck_completions,

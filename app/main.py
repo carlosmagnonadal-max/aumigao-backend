@@ -576,6 +576,8 @@ app.include_router(admin_accounts.router)
 app.include_router(admin_accounts.api_router)
 # Alertas de custo (10/07): CRUD do tenant, junto dos demais routers de admin.
 app.include_router(cost_alerts.api_router)
+# Fase 2 (10/07): orçamento do TUTOR, mesmo módulo — router com prefixo /cost-alerts.
+app.include_router(cost_alerts.router)
 app.include_router(support_tickets.router)
 app.include_router(support_tickets.api_router)
 app.include_router(support_tickets.user_router)

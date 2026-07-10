@@ -105,7 +105,7 @@ def _get_owned_alert(db: Session, tenant_id: str, alert_id: str) -> CostAlert:
 def _serialize(db: Session, alert: CostAlert, *, with_status: bool = True, tz_name: str | None = None) -> dict:
     from decimal import Decimal
     from app.lib.walk_time import tenant_tz_name
-    from app.services.cost_alert_service import forecast_amount, period_window, tenant_spend
+    from app.services.cost_alert_service import forecast_amount, period_window, tenant_spend, tutor_spend
 
     data = {
         "id": alert.id, "tenant_id": alert.tenant_id, "name": alert.name,
@@ -120,7 +120,10 @@ def _serialize(db: Session, alert: CostAlert, *, with_status: bool = True, tz_na
     if with_status:
         tz = tz_name or tenant_tz_name(db, alert.tenant_id)
         start, end, period_key, elapsed = period_window(alert.period, datetime.utcnow(), tz)
-        spend = tenant_spend(db, alert.tenant_id, alert.scope, start, end)
+        if alert.owner_type == "tutor" and alert.owner_user_id:
+            spend = tutor_spend(db, alert.owner_user_id, alert.scope, start, end)
+        else:
+            spend = tenant_spend(db, alert.tenant_id, alert.scope, start, end)
         projected = forecast_amount(spend, elapsed)
         budget = Decimal(str(alert.budget_amount))
         percent = float(spend / budget * 100) if budget else 0.0
@@ -250,6 +253,169 @@ def alert_events(alert_id: str, tenant_id: str | None = Query(None),
     _require_admin(user)
     target = _resolve_tenant_id(user, db, tenant_id)
     alert = _get_owned_alert(db, target, alert_id)
+    events = (
+        db.query(CostAlertEvent)
+        .filter(CostAlertEvent.alert_id == alert.id)
+        .order_by(CostAlertEvent.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    return [
+        {
+            "id": e.id, "period_key": e.period_key, "threshold": e.threshold,
+            "kind": e.kind, "config_version": e.config_version,
+            "spend_amount": float(e.spend_amount), "budget_amount": float(e.budget_amount),
+            "channels": json.loads(e.channels_json or "[]"),
+            "delivery": json.loads(e.delivery_json or "{}"),
+            "created_at": e.created_at,
+        }
+        for e in events
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# Fase 2: orçamento do TUTOR (app). Mesmo motor/CostAlert; owner_type="tutor".
+# Escopo próprio: "total" ou "pet:{id}" (o pet precisa ser do próprio tutor).
+# --------------------------------------------------------------------------- #
+
+router = APIRouter(prefix="/cost-alerts", tags=["cost-alerts-tutor"])
+
+
+class TutorCostAlertPayload(CostAlertPayload):
+    @field_validator("scope")
+    @classmethod
+    def _scope(cls, v):
+        if v == "total" or v.startswith("pet:"):
+            return v
+        raise ValueError("Escopo inválido. Use 'total' ou 'pet:{id}'.")
+
+
+def _require_tutor(user: User):
+    if user.role not in ("cliente", "tutor"):
+        raise HTTPException(status_code=403, detail="Acesso restrito a tutores.")
+
+
+def _validate_pet_scope(db: Session, user: User, scope: str) -> None:
+    """Escopo pet:{id} só é aceito se o pet existir e for do próprio tutor."""
+    if not scope.startswith("pet:"):
+        return
+    from app.models.pet import Pet
+    pet_id = scope.split(":", 1)[1]
+    pet = db.get(Pet, pet_id)
+    if not pet or pet.tutor_id != user.id:
+        raise HTTPException(status_code=422, detail="Pet não encontrado ou não pertence ao tutor.")
+
+
+def _get_owned_tutor_alert(db: Session, user_id: str, alert_id: str) -> CostAlert:
+    alert = db.get(CostAlert, alert_id)
+    if not alert or alert.owner_type != "tutor" or alert.owner_user_id != user_id:
+        raise HTTPException(status_code=404, detail="Alerta não encontrado.")
+    return alert
+
+
+@router.get("")
+def list_tutor_alerts(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_tutor(user)
+    alerts = (
+        db.query(CostAlert)
+        .filter(CostAlert.owner_type == "tutor", CostAlert.owner_user_id == user.id)
+        .order_by(CostAlert.created_at.desc())
+        .all()
+    )
+    from app.lib.walk_time import tenant_tz_name
+    tz_name = tenant_tz_name(db, user.tenant_id)
+    return [_serialize(db, alert, tz_name=tz_name) for alert in alerts]
+
+
+@router.post("", status_code=201)
+def create_tutor_alert(
+    payload: TutorCostAlertPayload,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_tutor(user)
+    _validate_pet_scope(db, user, payload.scope)
+    alert = CostAlert(
+        id=str(uuid.uuid4()), tenant_id=user.tenant_id, owner_type="tutor", owner_user_id=user.id,
+        name=payload.name.strip(), scope=payload.scope,
+        budget_amount=payload.budget_amount, period=payload.period,
+        thresholds_json=json.dumps(payload.thresholds),
+        evaluation=payload.evaluation, channels_json=json.dumps(payload.channels),
+    )
+    db.add(alert)
+    db.commit()
+    db.refresh(alert)
+    return _serialize(db, alert)
+
+
+@router.put("/{alert_id}")
+def update_tutor_alert(
+    alert_id: str,
+    payload: TutorCostAlertPayload,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_tutor(user)
+    alert = _get_owned_tutor_alert(db, user.id, alert_id)
+    _validate_pet_scope(db, user, payload.scope)
+    new_thresholds = json.dumps(payload.thresholds)
+    config_changed = (
+        float(alert.budget_amount) != float(payload.budget_amount)
+        or alert.period != payload.period
+        or alert.scope != payload.scope
+        or alert.evaluation != payload.evaluation
+        or (alert.thresholds_json or "[]") != new_thresholds
+    )
+    alert.name = payload.name.strip()
+    alert.scope = payload.scope
+    alert.budget_amount = payload.budget_amount
+    alert.period = payload.period
+    alert.thresholds_json = new_thresholds
+    alert.evaluation = payload.evaluation
+    alert.channels_json = json.dumps(payload.channels)
+    if config_changed:
+        alert.config_version = int(alert.config_version or 1) + 1
+    db.commit()
+    db.refresh(alert)
+    return _serialize(db, alert)
+
+
+@router.post("/{alert_id}/pause")
+def pause_tutor_alert(alert_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_tutor(user)
+    alert = _get_owned_tutor_alert(db, user.id, alert_id)
+    alert.status = ALERT_STATUS_PAUSED
+    db.commit()
+    db.refresh(alert)
+    return _serialize(db, alert, with_status=False)
+
+
+@router.post("/{alert_id}/resume")
+def resume_tutor_alert(alert_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_tutor(user)
+    alert = _get_owned_tutor_alert(db, user.id, alert_id)
+    alert.status = ALERT_STATUS_ACTIVE
+    db.commit()
+    db.refresh(alert)
+    return _serialize(db, alert, with_status=False)
+
+
+@router.delete("/{alert_id}", status_code=204)
+def delete_tutor_alert(alert_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_tutor(user)
+    alert = _get_owned_tutor_alert(db, user.id, alert_id)
+    db.query(CostAlertEvent).filter(CostAlertEvent.alert_id == alert.id).delete()
+    db.delete(alert)
+    db.commit()
+
+
+@router.get("/{alert_id}/events")
+def tutor_alert_events(alert_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_tutor(user)
+    alert = _get_owned_tutor_alert(db, user.id, alert_id)
     events = (
         db.query(CostAlertEvent)
         .filter(CostAlertEvent.alert_id == alert.id)

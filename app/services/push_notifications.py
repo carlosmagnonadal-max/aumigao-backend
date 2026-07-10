@@ -46,7 +46,14 @@ CRITICAL_NOTIFICATION_TYPES = {
     # Alertas de custo (10/07): orçamento do tenant cruzou threshold.
     "cost_alert",
 }
-CRITICAL_WALK_STATUS_ACTIONS = {"walker_accepted", "ride_in_progress"}
+CRITICAL_WALK_STATUS_ACTIONS = {
+    "walker_accepted",
+    "ride_in_progress",
+    # Mig 0107 — motor de cancelamento: o walker designado nunca era notificado
+    # de cancelamento em NENHUM caminho (tutor/admin/expiração); sem esta
+    # entrada o push não sairia mesmo com a notificação in-app já criada.
+    "ride_cancelled",
+}
 
 # ThreadPoolExecutor module-level para envio fire-and-forget.
 # daemon=True: threads nao impedem shutdown do processo.

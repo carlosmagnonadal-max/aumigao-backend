@@ -68,6 +68,44 @@ def accrue_walker_earning(db: Session, walk, split: dict) -> "WalkerEarning | No
     return earning
 
 
+def accrue_cancellation_compensation(db: Session, walk, walker_id: str, amount: float) -> "WalkerEarning | None":
+    """Cria (idempotente) o ganho PENDENTE do walker por compensação de cancelamento
+    tardio (mig 0107 — cancel_walk_service).
+
+    Diferente de accrue_walker_earning: `amount` é a compensação (taxa retida ×
+    walker_share%), NÃO o preço do passeio — o walk foi CANCELADO, não concluído,
+    então gross == amount e platform_amount == 0 (a plataforma não fica com
+    margem aqui; o que sobrou da taxa retida fica com o tenant/plataforma via a
+    própria retenção do estorno parcial, contabilizada no Payment). SEM
+    commission_entry: comissão mede serviço prestado — aqui não houve.
+
+    Idempotente pelo walk_id UNIQUE de WalkerEarning: um walk cancelado nunca é
+    concluído depois, então nunca colide com um accrue_walker_earning legítimo.
+    payable_at usa a cadência semanal normal a partir de AGORA (não da
+    scheduled_date — o "serviço" que gera a compensação é o próprio cancelamento).
+    Não faz commit (caller comita).
+    """
+    if amount <= 0:
+        return None
+    existing = db.query(WalkerEarning).filter(WalkerEarning.walk_id == walk.id).first()
+    if existing:
+        return existing
+    now = datetime.now(timezone.utc)
+    earning = WalkerEarning(
+        id=str(uuid4()),
+        walker_id=walker_id,
+        tenant_id=walk.tenant_id,
+        walk_id=walk.id,
+        gross=amount,
+        platform_amount=0.0,
+        amount=amount,
+        status=WE_ACCRUED,
+        payable_at=compute_payable_at(now),
+    )
+    db.add(earning)
+    return earning
+
+
 def network_earnings_by_tenant(db: Session, walker_id: str, now: datetime | None = None) -> dict:
     """Agrega o ledger do passeador por tenant_id.
 

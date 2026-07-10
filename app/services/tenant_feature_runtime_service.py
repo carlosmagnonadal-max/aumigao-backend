@@ -107,9 +107,22 @@ def get_tenant_feature_runtime(
     for feature_key in PRODUCT_RUNTIME_FEATURE_KEYS:
         features[feature_key] = tenant_feature_enabled(resolved_tenant, db, feature_key)
 
+    # Mig 0107 — motor de cancelamento: política real do tenant (substitui o
+    # hardcode 24h/50% do app, ver frontend/constants/cancellationPolicy.ts).
+    # Reusa o MESMO getter (com fallback de fábrica) que o motor de cancelamento
+    # usa para decidir o estorno — fonte única de verdade.
+    from app.services.cancel_walk_service import get_tenant_cancellation_config
+
+    cancellation_config = get_tenant_cancellation_config(db, resolved_tenant.id)
+
     return {
         "tenant_id": resolved_tenant.id,
         "features": features,
+        "cancellation_policy": {
+            "free_window_minutes": cancellation_config.free_window_minutes,
+            "late_fee_percent": cancellation_config.late_fee_percent,
+            "auto_refund_enabled": cancellation_config.auto_refund_on_cancel,
+        },
     }
 
 

@@ -473,15 +473,20 @@ async def cancel_asaas_charge(provider: str | None, provider_payment_id: str | N
         return False
 
 
-async def refund_asaas_charge(provider: str | None, provider_payment_id: str | None) -> bool:
+async def refund_asaas_charge(provider: str | None, provider_payment_id: str | None, value: float | None = None) -> bool:
     """POST /payments/{id}/refund — estorna uma cobrança CONFIRMADA no Asaas.
 
-    Usado na decisão do tutor (ação `refund`). O status final do Payment e os
-    voids são tratados pelo webhook PAYMENT_REFUNDED existente. Best-effort com
-    log; devolve False em falha para o caller sinalizar erro claro ao tutor.
+    `value`: None = estorno TOTAL (payload `{}`, comportamento histórico e
+    inalterado — usado pela decisão do tutor ação `refund`). Informado = estorno
+    PARCIAL do valor exato em reais (motor de cancelamento — mig 0107, taxa
+    tardia retida). O status final do Payment é tratado pelo webhook
+    PAYMENT_REFUNDED (total) / PAYMENT_PARTIALLY_REFUNDED (parcial) existente.
+    Best-effort com log; devolve False em falha para o caller sinalizar erro
+    claro (o cancelamento em si NUNCA deve ser bloqueado por essa falha).
     """
     if not _is_asaas_provider_charge(provider, provider_payment_id):
         return False
+    payload: dict = {} if value is None else {"value": round(float(value), 2)}
     try:
         cfg = _get_asaas_config()
         async with httpx.AsyncClient(
@@ -489,19 +494,22 @@ async def refund_asaas_charge(provider: str | None, provider_payment_id: str | N
             headers=asaas_headers(cfg["api_key"], mode="live" if cfg["is_live"] else "sandbox"),
             timeout=20,
         ) as client:
-            resp = await client.post(f"/payments/{provider_payment_id}/refund", json={})
+            resp = await client.post(f"/payments/{provider_payment_id}/refund", json=payload)
             if resp.status_code >= 400:
                 logger.warning(
-                    "refund_asaas_charge: Asaas retornou status_http=%s provider_payment_id=%s",
-                    resp.status_code, provider_payment_id,
+                    "refund_asaas_charge: Asaas retornou status_http=%s provider_payment_id=%s value=%s",
+                    resp.status_code, provider_payment_id, value,
                 )
                 return False
-            logger.info("refund_asaas_charge: refund solicitado provider_payment_id=%s", provider_payment_id)
+            logger.info(
+                "refund_asaas_charge: refund solicitado provider_payment_id=%s value=%s",
+                provider_payment_id, value,
+            )
             return True
     except Exception as exc:
         logger.warning(
-            "refund_asaas_charge: falha ao estornar provider_payment_id=%s: %s",
-            provider_payment_id, exc,
+            "refund_asaas_charge: falha ao estornar provider_payment_id=%s value=%s: %s",
+            provider_payment_id, value, exc,
         )
         return False
 
@@ -926,6 +934,19 @@ _WALKER_EARNING_VOID_EVENTS = {
     "PAYMENT_CHARGEBACK_DISPUTE",
     "PAYMENT_REVERSED",
 }
+
+# Mig 0107 — motor de cancelamento: estorno PARCIAL (taxa tardia retida) via
+# refund_asaas_charge(..., value=...). Ao contrário do estorno TOTAL, o Asaas
+# NÃO tira o payment de RECEIVED/CONFIRMED (o valor cobrado continua "recebido",
+# só uma parte volta ao pagador) — por isso este evento NÃO entra em
+# _PAYMENT_REFUND_EVENTS (não flipa Payment.status) nem em
+# _WALKER_EARNING_VOID_EVENTS (não existe ganho de SERVIÇO a anular: o walk foi
+# cancelado, não concluído — a compensação do walker é criada pelo motor, não
+# por este webhook). Só confirma refund_status="done" (ver bloco do webhook).
+_PAYMENT_PARTIAL_REFUND_EVENTS = {"PAYMENT_PARTIALLY_REFUNDED"}
+# União usada para confirmar refund_status="done" no Payment (tanto total quanto
+# parcial) sem duplicar a checagem de evento pelo código abaixo.
+_REFUND_STATUS_CONFIRM_EVENTS = _PAYMENT_REFUND_EVENTS | _PAYMENT_PARTIAL_REFUND_EVENTS
 
 
 def resolve_payment_webhook_status(current_status: str | None, event: str | None, fallback_status: str | None) -> str | None:
@@ -1649,6 +1670,14 @@ def asaas_webhook(request: Request, payload: dict, db: Session = Depends(get_glo
                 status_changed = new_status != payment.status
                 if status_changed:
                     payment.status = new_status
+                    db.add(payment)
+
+                # Mig 0107 — motor de cancelamento: confirma refund_status="done" quando
+                # o Asaas consuma o estorno (total ou parcial). O motor já grava "pending"
+                # (ou "failed" se a chamada ao gateway falhou) no momento do pedido; aqui
+                # só fechamos o ciclo. Idempotente — reentrega do evento é no-op.
+                if event in _REFUND_STATUS_CONFIRM_EVENTS and payment.refund_status != "done":
+                    payment.refund_status = "done"
                     db.add(payment)
 
                 # F1.3: notificação de pagamento confirmado (idempotente)

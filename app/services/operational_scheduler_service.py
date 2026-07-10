@@ -494,6 +494,25 @@ def _task_expire_unpaid_walks(db: Session) -> int:
     return len(cancelled)
 
 
+def _task_cost_alerts(db: Session) -> int:
+    """Avalia alertas de custo. Guard de 15 min — orçamento não precisa de
+    cadência de 60s e a avaliação varre commission_entries por tenant."""
+    if _recent_log_exists(db, "cost_alerts_evaluated", "scheduler.cost_alerts", within_minutes=15):
+        return 0
+    from app.services.cost_alert_service import evaluate_cost_alerts
+
+    fired = evaluate_cost_alerts(db)
+    record_operational_log(
+        db,
+        event_type="cost_alerts_evaluated",
+        severity="info",
+        source="scheduler.cost_alerts",
+        message="Alertas de custo avaliados.",
+        context={"fired": fired},
+    )
+    return fired
+
+
 def _run_operational_scheduler_cycle_locked(session_factory) -> dict:
     SCHEDULER_STATE["scheduler_running"] = True
     SCHEDULER_STATE["last_scheduler_cycle_at"] = _utcnow().isoformat()
@@ -511,6 +530,8 @@ def _run_operational_scheduler_cycle_locked(session_factory) -> dict:
         "pet_reminder_alerts": _task_pet_reminder_alerts,
         # R7: cancela passeios não pagos após WALK_PAYMENT_TIMEOUT_HOURS (default 24h).
         "expire_unpaid_walks": _task_expire_unpaid_walks,
+        # Alertas de custo (10/07): orçamento do tenant × comissão medida.
+        "cost_alerts": _task_cost_alerts,
     }
     results = {name: _run_task(session_factory, name, task) for name, task in tasks.items()}
     SCHEDULER_STATE["tasks_executed"] = results

@@ -1,5 +1,6 @@
 """Avaliação de alertas: gasto real, dedupe por índice único, re-disparo por
 config_version/período novo, notificação in-app criada, push na whitelist."""
+import json
 from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine
@@ -101,3 +102,42 @@ def test_paused_alert_not_evaluated():
 def test_cost_alert_push_type_is_critical():
     from app.services.push_notifications import CRITICAL_NOTIFICATION_TYPES
     assert "cost_alert" in CRITICAL_NOTIFICATION_TYPES
+
+
+def test_email_delivery_reflects_real_failure(monkeypatch):
+    """Regressão: send_cost_alert_email engolia a exceção e sempre devolvia
+    None, então delivery_json marcava "sent" mesmo com o transporte quebrado.
+    Agora o retorno bool é honrado — falha real vira "failed", sem quebrar o
+    in_app (que usa outro canal)."""
+    import app.services.transactional_email_service as email_service
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("smtp indisponível")
+
+    monkeypatch.setattr(email_service, "_send_email", _boom)
+
+    db = _db()
+    _alert(db, budget=100.0, thresholds="[80]", evaluation="actual")
+    db.query(CostAlert).filter(CostAlert.id == "al-1").update({"channels_json": '["in_app", "email"]'})
+    db.commit()
+    _entry(db, amount=85.0, walk_id="w1")
+
+    assert evaluate_cost_alerts(db) == 1
+    event = db.query(CostAlertEvent).one()
+    delivery = json.loads(event.delivery_json)
+    assert delivery["email"] == "failed"
+    assert delivery["in_app"] == "sent"
+
+
+def test_refires_on_new_period_key():
+    """Prova a promessa da spec: o dedupe é por (alert_id, period_key, threshold,
+    kind, config_version) — uma virada de período (julho → agosto) libera novo
+    disparo mesmo com config_version e threshold iguais."""
+    db = _db()
+    _alert(db, budget=100.0, thresholds="[80]")
+    _entry(db, amount=85.0, walk_id="w1", created_at=datetime(2026, 7, 15))
+    assert evaluate_cost_alerts(db, now_utc=datetime(2026, 7, 20)) == 1
+    assert evaluate_cost_alerts(db, now_utc=datetime(2026, 7, 21)) == 0  # mesmo período → dedupe
+
+    _entry(db, amount=85.0, walk_id="w2", created_at=datetime(2026, 8, 5))
+    assert evaluate_cost_alerts(db, now_utc=datetime(2026, 8, 10)) == 1  # agosto = period_key novo

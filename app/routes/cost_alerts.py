@@ -102,7 +102,7 @@ def _get_owned_alert(db: Session, tenant_id: str, alert_id: str) -> CostAlert:
     return alert
 
 
-def _serialize(db: Session, alert: CostAlert, *, with_status: bool = True) -> dict:
+def _serialize(db: Session, alert: CostAlert, *, with_status: bool = True, tz_name: str | None = None) -> dict:
     from decimal import Decimal
     from app.lib.walk_time import tenant_tz_name
     from app.services.cost_alert_service import forecast_amount, period_window, tenant_spend
@@ -118,7 +118,7 @@ def _serialize(db: Session, alert: CostAlert, *, with_status: bool = True) -> di
         "created_at": alert.created_at, "updated_at": alert.updated_at,
     }
     if with_status:
-        tz = tenant_tz_name(db, alert.tenant_id)
+        tz = tz_name or tenant_tz_name(db, alert.tenant_id)
         start, end, period_key, elapsed = period_window(alert.period, datetime.utcnow(), tz)
         spend = tenant_spend(db, alert.tenant_id, alert.scope, start, end)
         projected = forecast_amount(spend, elapsed)
@@ -149,7 +149,11 @@ def list_alerts(
         .order_by(CostAlert.created_at.desc())
         .all()
     )
-    return [_serialize(db, alert) for alert in alerts]
+    # 1 tenant → 1 timezone: resolve uma vez em vez de por alerta (N+1 em tenant
+    # com vários alertas configurados).
+    from app.lib.walk_time import tenant_tz_name
+    tz_name = tenant_tz_name(db, target)
+    return [_serialize(db, alert, tz_name=tz_name) for alert in alerts]
 
 
 @api_router.post("", status_code=201)

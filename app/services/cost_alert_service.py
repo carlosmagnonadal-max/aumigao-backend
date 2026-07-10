@@ -181,10 +181,13 @@ def _notify_cost_alert(db: Session, alert: CostAlert, event: CostAlertEvent) -> 
     if "email" in channels:
         try:
             from app.services.transactional_email_service import send_cost_alert_email
-            for admin in admins:
-                if admin.email:
-                    send_cost_alert_email(admin.email, title, message, db=db, tenant_id=alert.tenant_id)
-            delivery["email"] = "sent"
+            results = [
+                send_cost_alert_email(admin.email, title, message, db=db, tenant_id=alert.tenant_id)
+                for admin in admins if admin.email
+            ]
+            # send_cost_alert_email nunca levanta (fire-safe) — o retorno é que
+            # diz se realmente saiu. "sent" só se TODOS os envios confirmaram.
+            delivery["email"] = "sent" if all(results) else "failed"
         except Exception:
             LOGGER.exception("cost_alert: falha email alert_id=%s", alert.id)
             delivery["email"] = "failed"
@@ -209,6 +212,11 @@ def evaluate_cost_alerts(db: Session, now_utc: datetime | None = None) -> int:
             start, end, period_key, elapsed = period_window(alert.period, now, tz)
             spend = tenant_spend(db, alert.tenant_id, alert.scope, start, end)
             budget = Decimal(str(alert.budget_amount))
+            if budget <= 0:
+                # Defesa contra alerta criado fora do Pydantic (fase 2/scripts) —
+                # a rota já valida budget_amount > 0, mas o modelo não impõe isso.
+                LOGGER.warning("cost_alert: budget invalido alert_id=%s budget=%s", alert.id, budget)
+                continue
             thresholds = [int(t) for t in json.loads(alert.thresholds_json or "[]")]
             hits = crossed_thresholds(
                 spend=spend, budget=budget, thresholds=thresholds,

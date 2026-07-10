@@ -7,10 +7,19 @@ testável sem DB. Dinheiro = Decimal fim-a-fim; períodos em fuso LOCAL do tenan
 """
 from __future__ import annotations
 
+import json
 import logging
+import uuid
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
+
+from sqlalchemy import func as sa_func
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.models.commission_entry import COMM_ACCRUED, COMM_BILLED, COMM_PAID, CommissionEntry
+from app.models.cost_alert import ALERT_STATUS_ACTIVE, CostAlert, CostAlertEvent
 
 LOGGER = logging.getLogger("aumigao.cost_alerts")
 
@@ -92,3 +101,148 @@ def crossed_thresholds(
         ):
             hits.append((threshold, "forecast"))
     return hits
+
+
+_SPEND_STATUSES = (COMM_ACCRUED, COMM_BILLED, COMM_PAID)  # void fica fora
+
+
+def tenant_spend(db: Session, tenant_id: str, scope: str, start_utc: datetime, end_utc: datetime) -> Decimal:
+    """Soma da comissão medida do tenant na janela, por escopo. Decimal sempre."""
+    query = (
+        db.query(sa_func.coalesce(sa_func.sum(CommissionEntry.amount), 0))
+        .filter(
+            CommissionEntry.tenant_id == tenant_id,
+            CommissionEntry.status.in_(_SPEND_STATUSES),
+            CommissionEntry.created_at >= start_utc,
+            CommissionEntry.created_at < end_utc,
+        )
+    )
+    if scope == "own_walkers":
+        query = query.filter(CommissionEntry.is_network.is_(False))
+    elif scope == "network":
+        query = query.filter(CommissionEntry.is_network.is_(True))
+    return Decimal(str(query.scalar() or 0)).quantize(_CENT, rounding=ROUND_HALF_UP)
+
+
+_PERIOD_LABEL = {"daily": "hoje", "weekly": "esta semana", "monthly": "este mês"}
+_SCOPE_LABEL = {"total": "custo total", "own_walkers": "passeadores próprios", "network": "rede compartilhada"}
+
+
+def _notify_cost_alert(db: Session, alert: CostAlert, event: CostAlertEvent) -> dict:
+    """Fan-out best-effort pelos canais do alerta. Retorna delivery por canal.
+    Falha de um canal não impede os outros nem o registro do evento."""
+    channels = json.loads(alert.channels_json or '["in_app"]')
+    if "in_app" not in channels:
+        channels.insert(0, "in_app")
+    percent = int(round(float(Decimal(str(event.spend_amount)) / Decimal(str(alert.budget_amount)) * 100)))
+    kind_label = "custo real" if event.kind == "actual" else "projeção"
+    title = f"💰 Alerta de custo: {alert.name} atingiu {event.threshold}%"
+    message = (
+        f"O {_SCOPE_LABEL.get(alert.scope, alert.scope)} {_PERIOD_LABEL.get(alert.period, alert.period)} "
+        f"chegou a R$ {float(event.spend_amount):.2f} de um orçamento de R$ {float(alert.budget_amount):.2f} "
+        # Refere-se ao THRESHOLD cruzado (event.threshold), não ao percent real
+        # (spend/budget) — com vários thresholds disparando na mesma avaliação, o
+        # percent real seria idêntico em todos os eventos e confundiria qual limite
+        # foi cruzado. percent real fica só nos metadados, p/ precisão.
+        f"({event.threshold}% — {kind_label}). Veja os detalhes em Financeiro › Alertas de custo."
+    )
+    delivery: dict[str, str] = {}
+
+    from app.models.user import User
+    admins = (
+        db.query(User)
+        .filter(User.role.in_(["admin", "super_admin"]), User.tenant_id == alert.tenant_id)
+        .all()
+    )
+    try:
+        from app.routes.notifications import NotificationCreate, _create_notification
+        for admin in admins:
+            _create_notification(db, NotificationCreate(
+                user_id=admin.id,
+                user_role=admin.role,
+                tenant_id=alert.tenant_id,
+                title=title,
+                message=message,
+                type="cost_alert",
+                related_entity_type="cost_alert",
+                related_entity_id=alert.id,
+                metadata={
+                    "threshold": event.threshold, "kind": event.kind,
+                    "period_key": event.period_key, "percent": percent,
+                },
+            ))
+        delivery["in_app"] = "sent"
+        if "push" in channels:
+            delivery["push"] = "sent"  # push sai pela própria _create_notification (tipo na whitelist)
+    except Exception:
+        LOGGER.exception("cost_alert: falha in-app alert_id=%s", alert.id)
+        delivery["in_app"] = "failed"
+
+    if "email" in channels:
+        try:
+            from app.services.transactional_email_service import send_cost_alert_email
+            for admin in admins:
+                if admin.email:
+                    send_cost_alert_email(admin.email, title, message, db=db, tenant_id=alert.tenant_id)
+            delivery["email"] = "sent"
+        except Exception:
+            LOGGER.exception("cost_alert: falha email alert_id=%s", alert.id)
+            delivery["email"] = "failed"
+    return delivery
+
+
+def evaluate_cost_alerts(db: Session, now_utc: datetime | None = None) -> int:
+    """Avalia alertas ativos; INSERT do evento é o dedupe (índice único —
+    conflito = já notificado neste período/threshold/kind/config). Retorna
+    quantos eventos NOVOS dispararam."""
+    from app.lib.walk_time import tenant_tz_name
+
+    now = now_utc or datetime.utcnow()
+    fired = 0
+    alerts = db.query(CostAlert).filter(
+        CostAlert.status == ALERT_STATUS_ACTIVE,
+        CostAlert.owner_type == "tenant",
+    ).all()
+    for alert in alerts:
+        try:
+            tz = tenant_tz_name(db, alert.tenant_id)
+            start, end, period_key, elapsed = period_window(alert.period, now, tz)
+            spend = tenant_spend(db, alert.tenant_id, alert.scope, start, end)
+            budget = Decimal(str(alert.budget_amount))
+            thresholds = [int(t) for t in json.loads(alert.thresholds_json or "[]")]
+            hits = crossed_thresholds(
+                spend=spend, budget=budget, thresholds=thresholds,
+                evaluation=alert.evaluation, elapsed_fraction=elapsed,
+            )
+            LOGGER.info(
+                "cost_alert evaluated alert_id=%s period_key=%s spend=%s budget=%s hits=%d",
+                alert.id, period_key, spend, budget, len(hits),
+            )
+            for threshold, kind in hits:
+                event = CostAlertEvent(
+                    id=str(uuid.uuid4()), tenant_id=alert.tenant_id, alert_id=alert.id,
+                    period_key=period_key, threshold=threshold, kind=kind,
+                    config_version=alert.config_version,
+                    spend_amount=float(spend), budget_amount=float(budget),
+                    channels_json=alert.channels_json or '["in_app"]',
+                )
+                nested = db.begin_nested()
+                try:
+                    db.add(event)
+                    nested.commit()
+                except IntegrityError:
+                    nested.rollback()  # já disparado neste período/config → silêncio
+                    continue
+                delivery = _notify_cost_alert(db, alert, event)
+                event.delivery_json = json.dumps(delivery)
+                db.commit()
+                fired += 1
+                LOGGER.warning(
+                    "cost_alert TRIGGERED alert_id=%s threshold=%s kind=%s period_key=%s",
+                    alert.id, threshold, kind, period_key,
+                )
+        except Exception:
+            LOGGER.exception("cost_alert: falha ao avaliar alert_id=%s", alert.id)
+            db.rollback()
+    db.commit()
+    return fired

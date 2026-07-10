@@ -43,6 +43,8 @@ CRITICAL_NOTIFICATION_TYPES = {
     "walker_expired",
     "acceptance_expired",
     "walk_recovery",
+    # Alertas de custo (10/07): orçamento do tenant cruzou threshold.
+    "cost_alert",
 }
 CRITICAL_WALK_STATUS_ACTIONS = {"walker_accepted", "ride_in_progress"}
 

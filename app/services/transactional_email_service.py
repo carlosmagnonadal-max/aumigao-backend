@@ -224,3 +224,13 @@ def send_welcome_email(to: str, user_name: str, *, db: "Session | None" = None, 
         f"<p>— Equipe Aumigão 🐾</p>"
     )
     _send_email(to, subject, body_text, body_html)
+
+
+def send_cost_alert_email(to: str, subject: str, body_text: str, *, db: "Session | None" = None, tenant_id: str | None = None) -> None:
+    """E-mail de alerta de custo. Fire-safe: nunca propaga exceção pro caller."""
+    if not _transactional_emails_enabled(db, tenant_id):
+        return
+    try:
+        _send_email(to, subject, body_text, None)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("cost_alert email falhou to=%s err=%s", mask_email(to), exc)

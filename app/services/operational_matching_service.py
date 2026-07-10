@@ -679,7 +679,7 @@ def serialize_operational_walk(
     }
 
 
-def _latest_walk_payment(walk: Walk, db: Session) -> "Payment | None":
+def _latest_walk_payment(walk: Walk, db: Session):
     from app.models.payment import Payment
 
     return (

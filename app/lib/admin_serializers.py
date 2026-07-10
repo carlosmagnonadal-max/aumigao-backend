@@ -638,6 +638,10 @@ def _serialize_admin_payment(
         "tipoPlano": "Passeio avulso",
         "invoice_url": payment.invoice_url,
         "created_at": payment.created_at,
+        # Mig 0107: estado do estorno pedido pelo motor de cancelamento — admin-web
+        # usa para mostrar o bloco "estorno total/parcial/falhou" na ficha do passeio.
+        "refund_status": payment.refund_status,
+        "refunded_amount": payment.refunded_amount,
     }
 
 
@@ -688,6 +692,10 @@ def _serialize_walk_completion_review(review: WalkCompletionReview, db: Session)
         "notes": review.notes,
         "checklist": _walk_completion_checklist(review),
         "status": review.status,
+        # Mig 0107: distingue finalização normal de compensação de cancelamento
+        # tardio na mesma fila (admin-web usa para renderizar o card certo).
+        "kind": getattr(review, "kind", "completion"),
+        "compensation_amount": getattr(review, "compensation_amount", None),
         "admin_note": review.admin_note,
         "reviewed_by_admin_id": review.reviewed_by_admin_id,
         "reviewed_at": review.reviewed_at.isoformat() if review.reviewed_at else None,

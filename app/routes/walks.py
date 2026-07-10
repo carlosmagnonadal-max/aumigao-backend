@@ -25,7 +25,8 @@ from app.models.tenant import Tenant
 from app.models.walker_profile import WalkerProfile
 from app.models.pet_tour import PET_TOUR_MODALITY
 from app.services.pet_tour_service import validate_booking as validate_pet_tour_booking
-from app.schemas.walk import WalkCreate, WalkResponse, WalkUpdateStatus
+from app.schemas.walk import WalkCancelRequest, WalkCreate, WalkResponse, WalkUpdateStatus
+from app.services.cancel_walk_service import process_tutor_cancellation
 from app.schemas.walk_review import ALLOWED_WALK_REVIEW_TAGS, WalkReviewCreate
 from app.schemas.walk_tip import WalkTipCheckoutCreate
 from app.schemas.complaint import ComplaintCreate, ComplaintEvidenceCreate
@@ -681,12 +682,43 @@ def get_walk(walk_id: str, user: User = Depends(get_current_user), db: Session =
     return data
 
 @router.put("/{walk_id}/status", response_model=WalkResponse)
-def update_status(walk_id: str, payload: WalkUpdateStatus, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def update_status(walk_id: str, payload: WalkUpdateStatus, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     walk = _get_walk_for_user(walk_id, user, db)
     if payload.status in DIRECT_COMPLETION_STATUSES:
         raise HTTPException(status_code=400, detail="Finalização deve ocorrer via revisão operacional.")
-    update_operational_status(walk, payload.status, db, actor=user)
-    record_late_cancellation_if_applicable(walk, db)
+    resolved_status = LEGACY_STATUS_TO_OPERATIONAL.get(payload.status, payload.status)
+    # Mig 0107: compat com o caminho ANTIGO do app tutor (ainda em produção em
+    # versões OTA não atualizadas) — {tipoCancelamento, motivoCancelamento} que
+    # esse payload historicamente montava era descartado (cancelWalk nem usa o
+    # parâmetro); aqui não há motivo no payload, então o motor grava sem motivo.
+    # Só desvia para o motor quando é o TUTOR DONO cancelando — qualquer outro
+    # caller (walker/admin) cai no caminho genérico de sempre, zero regressão.
+    if resolved_status == "ride_cancelled" and walk.tutor_id == user.id:
+        await process_tutor_cancellation(db, walk, actor_role="tutor", actor_id=user.id)
+    else:
+        update_operational_status(walk, payload.status, db, actor=user)
+        record_late_cancellation_if_applicable(walk, db)
+    db.commit()
+    db.refresh(walk)
+    return serialize_operational_walk(walk, db, user=user)
+
+
+@router.post("/{walk_id}/cancel", response_model=WalkResponse)
+async def cancel_walk(walk_id: str, payload: WalkCancelRequest | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Mig 0107 — caminho NOVO do app tutor: motivo real chega e é gravado
+    (substitui o payload descartado do PUT /status legado). Motor único decide
+    estorno total/parcial + compensação do walker."""
+    walk = db.get(Walk, walk_id)
+    if not walk or walk.tutor_id != user.id:
+        # 404 (não 403): não revela existência de passeios de outros tutores.
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado.")
+    if walk.operational_status in {"ride_cancelled", "ride_completed"}:
+        raise HTTPException(status_code=409, detail="Este passeio já foi finalizado ou cancelado.")
+    body = payload or WalkCancelRequest()
+    await process_tutor_cancellation(
+        db, walk, actor_role="tutor", actor_id=user.id,
+        reason_type=body.reason_type, reason_text=body.reason_text,
+    )
     db.commit()
     db.refresh(walk)
     return serialize_operational_walk(walk, db, user=user)

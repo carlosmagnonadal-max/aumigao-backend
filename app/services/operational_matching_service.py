@@ -669,7 +669,35 @@ def serialize_operational_walk(
             else (tenant.name if tenant else None)
         ),
         "tenant_brand_color": (tenant.branding.primary_color if tenant and tenant.branding else None),
+        # ── Mig 0107: motor de cancelamento ────────────────────────────────────
+        "cancellation_reason_type": walk.cancellation_reason_type,
+        "cancellation_reason": walk.cancellation_reason,
+        "cancelled_at": walk.cancelled_at,
+        "cancelled_by_role": walk.cancelled_by_role,
+        "refund_status": _latest_payment_refund_status(walk, db),
+        "refunded_amount": _latest_payment_refunded_amount(walk, db),
     }
+
+
+def _latest_walk_payment(walk: Walk, db: Session) -> "Payment | None":
+    from app.models.payment import Payment
+
+    return (
+        db.query(Payment)
+        .filter(Payment.walk_id == walk.id)
+        .order_by(Payment.created_at.desc())
+        .first()
+    )
+
+
+def _latest_payment_refund_status(walk: Walk, db: Session) -> str | None:
+    payment = _latest_walk_payment(walk, db)
+    return payment.refund_status if payment else None
+
+
+def _latest_payment_refunded_amount(walk: Walk, db: Session) -> float | None:
+    payment = _latest_walk_payment(walk, db)
+    return payment.refunded_amount if payment else None
 
 
 def _current_pending_attempt(db: Session, walk_id: str) -> WalkMatchingAttempt | None:

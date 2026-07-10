@@ -29,6 +29,12 @@ class WalkCreate(BaseModel):
 class WalkUpdateStatus(BaseModel):
     status: str
 
+class WalkCancelRequest(BaseModel):
+    # Mig 0107 — motor de cancelamento: motivo REAL do cancelamento (antes era
+    # montado no client e descartado, ver frontend/lib/api/walks.ts cancelWalk).
+    reason_type: str | None = Field(None, max_length=100)
+    reason_text: str | None = Field(None, max_length=1000)
+
 class WalkResponse(ORMModel):
     id: str
     tutor_id: str
@@ -112,3 +118,12 @@ class WalkResponse(ORMModel):
     # Aditivo (review P2 #3): app do passeador esconde o formulário de observação
     # do passeio quando False. Default False para compat com serializers de listagem.
     walk_observations_enabled: bool = False
+    # Mig 0107 — motor de cancelamento: motivo gravado + estado do estorno. Sem
+    # declarar aqui o response_model DESCARTA (mesmo gotcha de completion_review/
+    # security_code acima).
+    cancellation_reason_type: str | None = None
+    cancellation_reason: str | None = None
+    cancelled_at: datetime | None = None
+    cancelled_by_role: str | None = None
+    refund_status: str | None = None
+    refunded_amount: float | None = None

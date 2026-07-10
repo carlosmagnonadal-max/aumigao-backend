@@ -23,7 +23,8 @@ from app.dependencies.rbac import require_permission
 from app.services.audit_service import record_audit_log
 from app.services.payment_split_service import build_payment_split, get_or_create_payment_config, update_payment_config, is_network_walk
 from app.services.commission_billing_service import accrue_commission_for_walk
-from app.services.walker_earning_service import accrue_walker_earning
+from app.services.walker_earning_service import accrue_cancellation_compensation, accrue_walker_earning
+from app.services.cancel_walk_service import process_tutor_cancellation
 from app.services.tenant_context import resolve_current_tenant_id
 from app.schemas.tenant_payment_config import TenantPaymentConfigResponse, TenantPaymentConfigUpdate
 from app.dependencies.tenant_scope import apply_tenant_filter, ensure_tenant_access, get_admin_tenant_scope
@@ -1918,6 +1919,20 @@ def update_admin_walk_status(walk_id: str, payload: AdminWalkStatusRequest, admi
     if status in DIRECT_COMPLETION_STATUSES or next_operational_status in DIRECT_COMPLETION_STATUSES:
         raise HTTPException(status_code=400, detail="Finalização deve ocorrer via revisão operacional.")
 
+    # Mig 0107 — motor de cancelamento: mata a duplicação inline que existia
+    # aqui (nem refund_credit_for_walk chamava, nem notificava o walker). Cancel
+    # via admin passa pelo MESMO motor do tutor — actor admin, notifica tutor E
+    # walker. Retorna direto: o motor já cuida de status/motivo/log/notificação.
+    if next_operational_status == "ride_cancelled" and walk.operational_status != "ride_cancelled":
+        import asyncio
+
+        asyncio.run(process_tutor_cancellation(
+            db, walk, actor_role="admin", actor_id=admin.id, notify_tutor=True,
+        ))
+        db.commit()
+        db.refresh(walk)
+        return _serialize_admin_walk(walk, db)
+
     previous_operational_status = walk.operational_status
 
     walk.operational_status = next_operational_status
@@ -2232,6 +2247,58 @@ def approve_walk_completion(review_id: str, payload: WalkCompletionDecisionReque
     review.reviewed_by_admin_id = admin.id
     review.reviewed_at = now
     review.updated_at = now
+
+    # Mig 0107 — motor de cancelamento: a fila reusa walk_completion_reviews,
+    # mas a compensação de cancelamento NÃO é uma finalização — o walk já está
+    # cancelado (não mexe em operational_status/status) e NÃO passa por
+    # _ensure_internal_walk_payment (sem split de comissão: não houve serviço
+    # prestado). Só cria o WalkerEarning da compensação (idempotente por walk_id).
+    if getattr(review, "kind", "completion") == "cancellation_compensation":
+        walker_id = review.walker_user_id
+        amount = float(review.compensation_amount or 0)
+        if walker_id and amount > 0:
+            accrue_cancellation_compensation(db, walk, walker_id, amount)
+        log_event(
+            db, walk.id, "cancellation_compensation_approved", actor_type="admin", actor_id=admin.id,
+            metadata={"review_id": review.id, "amount": amount},
+        )
+        record_admin_operational_event(
+            db,
+            event_type="cancellation_compensation_approved",
+            entity_type="finalization",
+            entity_id=review.id,
+            severity="info",
+            title="Compensacao de cancelamento aprovada",
+            description=review.admin_note or "Compensacao de cancelamento tardio aprovada.",
+            actor=admin,
+            source="admin.finalization.approve",
+            metadata={"walk_id": walk.id, "walker_user_id": walker_id, "amount": amount},
+        )
+        walker = db.get(User, walker_id) if walker_id else None
+        if walker:
+            _create_notification(
+                db,
+                NotificationCreate(
+                    user_id=walker.id,
+                    user_role=walker.role,
+                    title="Compensacao de cancelamento liberada",
+                    message=(
+                        f"Sua compensacao de R$ {amount:.2f} pelo cancelamento tardio do passeio "
+                        "foi aprovada e liberada para o seu extrato."
+                    ),
+                    type="walk_payment_released",
+                    related_entity_type="walk",
+                    related_entity_id=walk.id,
+                    metadata={
+                        "walk_id": walk.id, "review_id": review.id, "amount": amount,
+                        "priority": "normal", "channel": "in_app",
+                    },
+                ),
+            )
+        db.commit()
+        db.refresh(review)
+        return {"ok": True, "review": _serialize_walk_completion_review(review, db), "walk": serialize_operational_walk(walk, db)}
+
     walk.operational_status = "ride_completed"
     walk.status = "Finalizado"
     walk.matching_finished_at = walk.matching_finished_at or now
@@ -2414,9 +2481,13 @@ def reject_walk_completion(review_id: str, payload: WalkCompletionDecisionReques
     review.reviewed_by_admin_id = admin.id
     review.reviewed_at = now
     review.updated_at = now
-    walk.operational_status = "completion_rejected"
-    walk.status = "Finalização rejeitada"
-    log_event(db, walk.id, "completion_review_rejected", actor_type="admin", actor_id=admin.id, metadata={"review_id": review.id})
+    # Mig 0107: rejeitar uma compensação de cancelamento NÃO mexe no walk — ele
+    # já está cancelado (operational_status/status ficam como estão). Rejeitar
+    # a finalização NORMAL segue o comportamento existente inalterado.
+    if getattr(review, "kind", "completion") != "cancellation_compensation":
+        walk.operational_status = "completion_rejected"
+        walk.status = "Finalização rejeitada"
+    log_event(db, walk.id, "completion_review_rejected", actor_type="admin", actor_id=admin.id, metadata={"review_id": review.id, "kind": getattr(review, "kind", "completion")})
     record_admin_operational_event(
         db,
         event_type="finalization_rejected",

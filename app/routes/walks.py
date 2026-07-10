@@ -34,10 +34,12 @@ from app.services.operational_matching_service import (
     LEGACY_STATUS_TO_OPERATIONAL,
     RIDE_SCHEDULED,
     TUTOR_DECISION_REASONS,
+    TUTOR_DECISION_STATUSES,
     log_event,
     process_expired_attempts,
     serialize_operational_walk,
     start_matching,
+    tutor_decision_state,
     update_operational_status,
     _batch_live_tracking,
 )
@@ -130,6 +132,7 @@ def _serialize_walk_list_item(
     walker_id = walk.walker_id or walk.assigned_walker_id
     walk_date, _, walk_time = (walk.scheduled_date or "").partition("T")
     can_see_full = user.role in {"admin", "super_admin"} or walk.tutor_id == user.id
+    decision_required, decision_reason = tutor_decision_state(walk)
     pet_photo_url = (pet.photo_url if pet else "") or ""
     if pet_photo_url.startswith(("file://", "content://", "blob:")):
         pet_photo_url = ""
@@ -175,13 +178,9 @@ def _serialize_walk_list_item(
         # Campos da decisão do tutor (teste real 08/07): o app monta o card
         # "reagendar/trocar/estorno" a partir da LISTA — sem estes campos aqui
         # (só existiam no serializador full) o card nunca aparecia.
-        "tutor_decision_required": (
-            walk.operational_status == "awaiting_tutor_reconfirmation"
-            and walk.no_walker_reason in TUTOR_DECISION_REASONS
-        ),
-        "decision_reason": (
-            walk.no_walker_reason if walk.no_walker_reason in TUTOR_DECISION_REASONS else None
-        ),
+        # 10/07: fonte única tutor_decision_state (inclui no_walker_found).
+        "tutor_decision_required": decision_required,
+        "decision_reason": decision_reason,
         "is_exclusive_walker": (walk.walker_selection_mode or "auto") == "only_selected",
         "matching_attempts": [],
         "operational_logs": [],
@@ -1161,7 +1160,9 @@ async def tutor_decision(
         # 404 (não 403) para não revelar existência de passeios de outros tutores.
         raise HTTPException(status_code=404, detail="Passeio nao encontrado.")
 
-    if walk.operational_status != "awaiting_tutor_reconfirmation":
+    # 10/07: no_walker_found (matching esgotado) também aceita a decisão do tutor —
+    # antes era beco sem saída com pagamento confirmado preso no passeio.
+    if walk.operational_status not in TUTOR_DECISION_STATUSES:
         raise HTTPException(status_code=409, detail="Passeio nao aguarda decisao do tutor.")
 
     action = (payload.action or "").strip()

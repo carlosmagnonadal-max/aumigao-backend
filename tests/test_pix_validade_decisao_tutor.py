@@ -423,6 +423,85 @@ def test_exclusive_walker_unavailable_routes_to_decision_menu():
     assert data["is_exclusive_walker"] is True
 
 
+# ──────── H: no_walker_found → menu de decisão (bug real 10/07) ──────────────
+# Teste real 09/07 noite: matching esgotou (passeadora não respondeu em 30min,
+# sem outro candidato) → walk caiu em no_walker_found e virou BECO SEM SAÍDA:
+# invisível no app do tutor (nenhum bucket conhecia o status), sem push e sem
+# ação possível — com pagamento confirmado preso. Recovery de matching esgotado
+# agora liga o MESMO menu reagendar/estorno do awaiting_tutor_reconfirmation.
+
+def test_serialization_no_walker_found_enables_decision_menu():
+    test_app, db = _build_walks_app()
+    _make_walk(db, op_status="no_walker_found", mode="auto",
+               reason="Nenhum passeador elegivel encontrado.")
+    walk = db.get(Walk, "w1")
+    data = serialize_operational_walk(walk, db)
+    assert data["tutor_decision_required"] is True
+    assert data["decision_reason"] == "sem_passeador"
+
+
+def test_list_walks_route_exposes_decision_for_no_walker_found():
+    test_app, db = _build_walks_app()
+    _make_walk(db, op_status="no_walker_found", mode="auto",
+               reason="Sem passeadores elegiveis para rematch.")
+    r = TestClient(test_app).get("/walks")
+    assert r.status_code == 200, r.text
+    item = r.json()[0]
+    assert item["tutor_decision_required"] is True
+    assert item["decision_reason"] == "sem_passeador"
+
+
+def test_tutor_decision_reschedule_from_no_walker_found(monkeypatch):
+    test_app, db = _build_walks_app()
+    _make_walk(db, op_status="no_walker_found", mode="auto",
+               reason="Nenhum passeador elegivel encontrado.")
+    _confirmed_payment(db)
+    monkeypatch.setattr(walks, "start_matching", lambda *a, **k: None)
+    new_start = (datetime.utcnow() + timedelta(hours=4)).strftime("%Y-%m-%dT%H:%M")
+    r = TestClient(test_app).post("/walks/w1/tutor-decision",
+                                  json={"action": "reschedule", "scheduled_date": new_start.split("T")[0],
+                                        "walk_time": new_start.split("T")[1]})
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    walk = db.get(Walk, "w1")
+    assert walk.operational_status == "pending_walker_confirmation"
+    assert walk.no_walker_reason is None
+
+
+def test_tutor_decision_refund_from_no_walker_found(monkeypatch):
+    test_app, db = _build_walks_app()
+    _make_walk(db, op_status="no_walker_found", mode="auto",
+               reason="Nenhum passeador elegivel encontrado.")
+    _confirmed_payment(db)
+
+    async def _fake_refund(provider, pid):
+        return True
+
+    monkeypatch.setattr("app.routes.payments.refund_asaas_charge", _fake_refund)
+    r = TestClient(test_app).post("/walks/w1/tutor-decision", json={"action": "refund"})
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    assert db.get(Walk, "w1").operational_status == "ride_cancelled"
+
+
+def test_tutor_decision_switch_walker_still_409_for_auto_no_walker_found(monkeypatch):
+    """switch_walker segue exclusivo-only — no_walker_found em modo auto não tem
+    passeador a trocar (o card nem mostra o botão)."""
+    test_app, db = _build_walks_app()
+    _make_walk(db, op_status="no_walker_found", mode="auto",
+               reason="Nenhum passeador elegivel encontrado.")
+    r = TestClient(test_app).post("/walks/w1/tutor-decision", json={"action": "switch_walker"})
+    assert r.status_code == 409
+
+
+def test_recovery_push_types_are_critical():
+    """Bug 10/07: os tipos do fluxo de recovery estavam FORA da whitelist de push —
+    tentativa expirava, matching esgotava e NINGUÉM (tutor/passeador) era avisado."""
+    from app.services.push_notifications import CRITICAL_NOTIFICATION_TYPES
+    for push_type in ("no_walker_found", "walker_expired", "acceptance_expired", "walk_recovery"):
+        assert push_type in CRITICAL_NOTIFICATION_TYPES, push_type
+
+
 # ─────────── G: campos de decisão SOBREVIVEM ao response_model da rota ────────
 
 def test_list_walks_route_exposes_decision_fields():

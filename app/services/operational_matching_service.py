@@ -80,6 +80,29 @@ OPERATIONAL_TO_LEGACY_STATUS = {
 # POST /walks/{id}/tutor-decision.
 TUTOR_DECISION_REASONS = {"pagamento_apos_corte", "exclusivo_nao_aceitou"}
 
+# Motivo-máquina sintético do matching esgotado (no_walker_found). Diferente dos
+# TUTOR_DECISION_REASONS, não vem de walk.no_walker_reason (que ali guarda frase
+# humana) — é derivado do próprio operational_status.
+NO_WALKER_DECISION_REASON = "sem_passeador"
+
+# Status que aceitam o POST /walks/{id}/tutor-decision. no_walker_found entrou em
+# 10/07: matching esgotado era beco sem saída — invisível no app do tutor e sem
+# ação possível, com pagamento confirmado preso no passeio.
+TUTOR_DECISION_STATUSES = {"awaiting_tutor_reconfirmation", "no_walker_found"}
+
+
+def tutor_decision_state(walk: "Walk") -> tuple[bool, str | None]:
+    """(tutor_decision_required, decision_reason) — fonte única dos 2 serializers
+    (lista leve em routes/walks.py e serialize_operational_walk)."""
+    if walk.operational_status == NO_WALKER_FOUND:
+        return True, NO_WALKER_DECISION_REASON
+    if (
+        walk.operational_status == AWAITING_TUTOR_RECONFIRMATION
+        and walk.no_walker_reason in TUTOR_DECISION_REASONS
+    ):
+        return True, walk.no_walker_reason
+    return False, None
+
 
 def _walk_payment_cutoff_minutes() -> int:
     import os
@@ -449,6 +472,7 @@ def serialize_operational_walk(
     """
     pet = db.get(Pet, walk.pet_id) if walk.pet_id else None
     tutor = db.get(User, walk.tutor_id) if walk.tutor_id else None
+    decision_required, decision_reason = tutor_decision_state(walk)
     tenant = db.get(Tenant, walk.tenant_id) if walk.tenant_id else None
     walker_id = walk.walker_id or walk.assigned_walker_id
     walker = db.get(User, walker_id) if walker_id else None
@@ -591,13 +615,8 @@ def serialize_operational_walk(
         # is_exclusive_walker: True se o passeio é de passeador exclusivo (only_selected).
         # payment_cutoff_at: ISO do (início − 45min) enquanto awaiting_payment — o app
         #   mostra um countdown honesto do prazo real de pagamento.
-        "tutor_decision_required": (
-            walk.operational_status == AWAITING_TUTOR_RECONFIRMATION
-            and (walk.no_walker_reason in TUTOR_DECISION_REASONS)
-        ),
-        "decision_reason": (
-            walk.no_walker_reason if walk.no_walker_reason in TUTOR_DECISION_REASONS else None
-        ),
+        "tutor_decision_required": decision_required,
+        "decision_reason": decision_reason,
         "is_exclusive_walker": (walk.walker_selection_mode or "auto") == "only_selected",
         "payment_cutoff_at": (
             (_start - timedelta(minutes=_walk_payment_cutoff_minutes())).isoformat()

@@ -36,6 +36,13 @@ CRITICAL_NOTIFICATION_TYPES = {
     "reward_eligible",
     # Fase 3 Perfil Vivo: lembretes determinísticos de vacina/aniversário/inatividade.
     "pet_reminder",
+    # Recovery de matching (bug 10/07): tentativa expirou / matching esgotou /
+    # menu de decisão do tutor — sem push aqui, NINGUÉM era avisado e o passeio
+    # pago sumia em silêncio (tutor só descobria abrindo o app).
+    "no_walker_found",
+    "walker_expired",
+    "acceptance_expired",
+    "walk_recovery",
 }
 CRITICAL_WALK_STATUS_ACTIONS = {"walker_accepted", "ride_in_progress"}
 

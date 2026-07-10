@@ -612,6 +612,7 @@
   "POST /walker/withdrawals",
   "POST /walks",
   "POST /walks/{walk_id}/accept",
+  "POST /walks/{walk_id}/cancel",
   "POST /walks/{walk_id}/complaint",
   "POST /walks/{walk_id}/decline",
   "POST /walks/{walk_id}/kit-issue-report",

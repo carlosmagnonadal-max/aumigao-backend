@@ -124,6 +124,29 @@ def tenant_spend(db: Session, tenant_id: str, scope: str, start_utc: datetime, e
     return Decimal(str(query.scalar() or 0)).quantize(_CENT, rounding=ROUND_HALF_UP)
 
 
+def tutor_spend(db: Session, tutor_id: str, scope: str, start_utc: datetime, end_utc: datetime) -> Decimal:
+    """Gasto do TUTOR na janela: payments com status pago. Escopo:
+    total = todos os pagamentos do tutor; pet:{id} = só os de walks daquele pet
+    (pagamento sem walk — ex. assinatura — só entra no total)."""
+    from app.constants import PAID_PAYMENT_STATUSES
+    from app.models.payment import Payment
+    from app.models.walk import Walk as WalkModel
+
+    query = (
+        db.query(sa_func.coalesce(sa_func.sum(Payment.amount), 0))
+        .filter(
+            Payment.tutor_id == tutor_id,
+            Payment.status.in_(list(PAID_PAYMENT_STATUSES)),
+            Payment.created_at >= start_utc,
+            Payment.created_at < end_utc,
+        )
+    )
+    if scope.startswith("pet:"):
+        pet_id = scope.split(":", 1)[1]
+        query = query.join(WalkModel, WalkModel.id == Payment.walk_id).filter(WalkModel.pet_id == pet_id)
+    return Decimal(str(query.scalar() or 0)).quantize(_CENT, rounding=ROUND_HALF_UP)
+
+
 _PERIOD_LABEL = {"daily": "hoje", "weekly": "esta semana", "monthly": "este mês"}
 _SCOPE_LABEL = {"total": "custo total", "own_walkers": "passeadores próprios", "network": "rede compartilhada"}
 
@@ -194,6 +217,57 @@ def _notify_cost_alert(db: Session, alert: CostAlert, event: CostAlertEvent) -> 
     return delivery
 
 
+def _notify_tutor_cost_alert(db: Session, alert: CostAlert, event: CostAlertEvent) -> dict:
+    """Fan-out do alerta do TUTOR: notificação direta ao dono (user_id) — o push
+    sai pela própria _create_notification (tipo cost_alert já está na whitelist).
+    E-mail opcional pro e-mail do tutor. Espelha _notify_cost_alert (admins)."""
+    channels = json.loads(alert.channels_json or '["in_app"]')
+    if "in_app" not in channels:
+        channels.insert(0, "in_app")
+    percent = int(round(float(Decimal(str(event.spend_amount)) / Decimal(str(alert.budget_amount)) * 100)))
+    kind_label = "gasto real" if event.kind == "actual" else "projeção"
+    title = f"💰 Orçamento: {alert.name} atingiu {event.threshold}%"
+    message = (
+        f"Seus gastos {_PERIOD_LABEL.get(alert.period, alert.period)} chegaram a "
+        f"R$ {float(event.spend_amount):.2f} de um orçamento de R$ {float(alert.budget_amount):.2f} "
+        f"({percent}% — {kind_label}). Veja em Orçamento de gastos."
+    )
+    delivery: dict[str, str] = {}
+    try:
+        from app.routes.notifications import NotificationCreate, _create_notification
+        _create_notification(db, NotificationCreate(
+            user_id=alert.owner_user_id,
+            user_role="tutor",
+            tenant_id=alert.tenant_id,
+            title=title,
+            message=message,
+            type="cost_alert",
+            related_entity_type="cost_alert",
+            related_entity_id=alert.id,
+            metadata={"threshold": event.threshold, "kind": event.kind,
+                      "period_key": event.period_key, "percent": percent},
+        ))
+        delivery["in_app"] = "sent"
+        if "push" in channels:
+            delivery["push"] = "sent"
+    except Exception:
+        LOGGER.exception("cost_alert: falha in-app tutor alert_id=%s", alert.id)
+        delivery["in_app"] = "failed"
+
+    if "email" in channels:
+        try:
+            from app.models.user import User as UserModel
+            from app.services.transactional_email_service import send_cost_alert_email
+            owner = db.get(UserModel, alert.owner_user_id)
+            ok = bool(owner and owner.email) and send_cost_alert_email(
+                owner.email, title, message, db=db, tenant_id=alert.tenant_id)
+            delivery["email"] = "sent" if ok else "failed"
+        except Exception:
+            LOGGER.exception("cost_alert: falha email tutor alert_id=%s", alert.id)
+            delivery["email"] = "failed"
+    return delivery
+
+
 def evaluate_cost_alerts(db: Session, now_utc: datetime | None = None) -> int:
     """Avalia alertas ativos; INSERT do evento é o dedupe (índice único —
     conflito = já notificado neste período/threshold/kind/config). Retorna
@@ -204,13 +278,20 @@ def evaluate_cost_alerts(db: Session, now_utc: datetime | None = None) -> int:
     fired = 0
     alerts = db.query(CostAlert).filter(
         CostAlert.status == ALERT_STATUS_ACTIVE,
-        CostAlert.owner_type == "tenant",
     ).all()
     for alert in alerts:
         try:
+            if alert.owner_type == "tutor" and not alert.owner_user_id:
+                # Defensivo: alerta "tutor" sem dono não tem pra quem notificar
+                # (mesmo estilo da guarda de budget invalido, abaixo).
+                LOGGER.warning("cost_alert: tutor sem owner_user_id alert_id=%s", alert.id)
+                continue
             tz = tenant_tz_name(db, alert.tenant_id)
             start, end, period_key, elapsed = period_window(alert.period, now, tz)
-            spend = tenant_spend(db, alert.tenant_id, alert.scope, start, end)
+            if alert.owner_type == "tutor" and alert.owner_user_id:
+                spend = tutor_spend(db, alert.owner_user_id, alert.scope, start, end)
+            else:
+                spend = tenant_spend(db, alert.tenant_id, alert.scope, start, end)
             budget = Decimal(str(alert.budget_amount))
             if budget <= 0:
                 # Defesa contra alerta criado fora do Pydantic (fase 2/scripts) —
@@ -241,7 +322,8 @@ def evaluate_cost_alerts(db: Session, now_utc: datetime | None = None) -> int:
                 except IntegrityError:
                     nested.rollback()  # já disparado neste período/config → silêncio
                     continue
-                delivery = _notify_cost_alert(db, alert, event)
+                notifier = _notify_tutor_cost_alert if alert.owner_type == "tutor" else _notify_cost_alert
+                delivery = notifier(db, alert, event)
                 event.delivery_json = json.dumps(delivery)
                 db.commit()
                 fired += 1

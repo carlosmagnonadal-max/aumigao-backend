@@ -140,3 +140,37 @@ def test_share_link_gated_off_returns_404(monkeypatch):
     monkeypatch.setenv("LIVE_SHARE_ENABLED", "false")
     r = client.post(f"/walks/{WALK_ID}/share-link")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# R15.3 — CORS na rota publica (bug real: pagina /live/{token} do site, servida
+# em app.aumigaowalk.com.br, ficava "Carregando..." pra sempre porque a resposta
+# nao trazia Access-Control-Allow-Origin e o fetch do navegador falhava por CORS.
+# Usa o app real (app.main) para exercitar o CORSMiddleware de fato — o router
+# isolado usado nos testes acima nao tem middleware nenhum.
+# ---------------------------------------------------------------------------
+
+def test_public_live_cors_header_present_for_allowed_site_origin():
+    from fastapi.testclient import TestClient
+    from app.main import app as real_app
+
+    client = TestClient(real_app)
+    r = client.get(
+        "/api/public/live/naoexiste",
+        headers={"Origin": "https://app.aumigaowalk.com.br"},
+    )
+    assert r.status_code == 404
+    assert r.headers.get("access-control-allow-origin") == "https://app.aumigaowalk.com.br"
+
+
+def test_public_live_cors_header_absent_for_unknown_origin():
+    from fastapi.testclient import TestClient
+    from app.main import app as real_app
+
+    client = TestClient(real_app)
+    r = client.get(
+        "/api/public/live/naoexiste",
+        headers={"Origin": "https://attacker.example.com"},
+    )
+    assert r.status_code == 404
+    assert "access-control-allow-origin" not in {k.lower() for k in r.headers.keys()}

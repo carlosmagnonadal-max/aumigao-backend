@@ -409,6 +409,11 @@ else:
     _cors_origins = [
         "https://aumigaowalk.com.br",
         "https://www.aumigaowalk.com.br",
+        # Subdomínio do mesmo repo "site" (ver PUBLIC_BASE em app/routes/live_share.py)
+        # que serve páginas públicas server-rendered como /live/{token} (R15.3: faltava
+        # aqui porque nenhuma feature anterior fazia fetch client-side da API a partir
+        # deste subdomínio — só era usado como destino de link).
+        "https://app.aumigaowalk.com.br",
         # Admin-web na Vercel
         "https://admin-aumigao.vercel.app",
     ]

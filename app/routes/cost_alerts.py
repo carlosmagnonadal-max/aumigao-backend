@@ -32,8 +32,6 @@ from app.dependencies.auth import get_current_user
 
 api_router = APIRouter(prefix="/api/admin/cost-alerts", tags=["cost-alerts"])
 
-_CONFIG_FIELDS = ("budget_amount", "period", "scope", "evaluation")  # + thresholds
-
 
 class CostAlertPayload(BaseModel):
     name: str = Field(min_length=1, max_length=120)

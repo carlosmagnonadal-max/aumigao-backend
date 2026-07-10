@@ -71,3 +71,4 @@ from app.models.pet_self_walk import PetSelfWalk  # noqa: F401 — Fase D: passe
 from app.models.webhook_event import WebhookEvent  # noqa: F401 — dedup de webhooks do provedor
 from app.models.tenant_product_highlight import TenantProductHighlight  # noqa: F401 — Vitrine de destaques (Enterprise)
 from app.models.walker_indication import WalkerIndication, WalkerLead  # noqa: F401 — Indicação de passeador (0098)
+from app.models.cost_alert import CostAlert, CostAlertEvent  # noqa: F401 — Alertas de custo (0106)

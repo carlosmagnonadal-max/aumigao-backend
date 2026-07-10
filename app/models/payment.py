@@ -23,3 +23,13 @@ class Payment(Base):
     platform_amount: Mapped[float | None] = mapped_column(Money, nullable=True)
     walker_amount: Mapped[float | None] = mapped_column(Money, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Migration 0107 — motor de cancelamento: rastreio do estorno solicitado pelo
+    # motor de cancelamento (cancel_walk_service). NULL = nunca houve pedido de
+    # estorno neste payment (zero-regressão nos payments existentes).
+    # "pending" = solicitado ao Asaas, aguardando confirmação via webhook;
+    # "done" = confirmado (webhook PAYMENT_REFUNDED/PAYMENT_PARTIALLY_REFUNDED);
+    # "failed" = a chamada ao gateway falhou (best-effort; não desfaz o cancelamento —
+    # ver record_operational_log no motor para retry/visibilidade admin).
+    refund_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    refunded_amount: Mapped[float | None] = mapped_column(Money, nullable=True)

@@ -119,6 +119,29 @@ class TenantSettings(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # ── Motor de cancelamento (migration 0107) ────────────────────────────────
+    # Config por tenant (doutrina: tudo configurável, admin decide) — mesmo
+    # padrão de meeting_point_discount (mig 0103): defaults de fábrica preservam
+    # o comportamento acordado 10/07/2026 (24h/50%/100%/auto ON) para TODO
+    # tenant que nunca tocou nesta config.
+    # Janela grátis de cancelamento em minutos antes do início (default 1440 = 24h).
+    cancellation_free_window_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1440, server_default=sa.text("1440")
+    )
+    # % retido do valor pago quando o cancelamento ocorre DENTRO da janela.
+    late_cancellation_fee_percent: Mapped[float] = mapped_column(
+        sa.Numeric(5, 2, asdecimal=False), nullable=False, default=50, server_default=sa.text("50")
+    )
+    # % da taxa retida que vira compensação PENDENTE do passeador designado/aceito.
+    late_fee_walker_share_percent: Mapped[float] = mapped_column(
+        sa.Numeric(5, 2, asdecimal=False), nullable=False, default=100, server_default=sa.text("100")
+    )
+    # Estorno automático via Asaas no cancelamento. OFF = motor cancela e grava o
+    # motivo/estado, mas NÃO chama o gateway (retry/estorno manual pelo admin).
+    auto_refund_on_cancel: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=sa.text("true")
+    )
+
     tenant: Mapped[Tenant] = relationship(back_populates="settings")
 
 

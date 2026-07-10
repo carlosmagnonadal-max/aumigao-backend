@@ -73,6 +73,15 @@ class Walk(Base):
     # Passeio concedido como brinde de indicação (gift para indicado ou indicante).
     is_referral_gift: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Migration 0107 — motor de cancelamento: motivo GRAVADO no walk (antes era
+    # descartado no client, ver frontend/lib/api/walks.ts cancelWalk). Todos
+    # nullable — passeios cancelados antes desta migration ficam sem motivo
+    # (grandfathered), zero-regressão.
+    cancellation_reason_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancelled_by_role: Mapped[str | None] = mapped_column(String, nullable=True)
+
     tutor = relationship("User", back_populates="walks", foreign_keys=[tutor_id])
 
 

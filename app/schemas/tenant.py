@@ -109,6 +109,16 @@ class TenantSettingsUpdate(BaseModel):
     # TODO: ao implementar provedor pago, exigir background_check_provider_config
     #       e cifrar as credenciais com Fernet/KMS antes de salvar.
     background_check_provider: str | None = None
+    # Motor de cancelamento (mig 0107) — config por tenant (doutrina: tudo
+    # configuravel, admin decide). Mesmo padrao do meeting_point_discount (mig
+    # 0103): defaults de fabrica ficam no modelo; aqui so a janela de update
+    # parcial (None = nao mexe). Bounds validados via Field (janela > 0,
+    # percentuais 0-100) — 422 com mensagem do Pydantic, mesmo rigor do
+    # background_check_provider acima (validação de escrita antes de salvar).
+    cancellation_free_window_minutes: int | None = Field(None, gt=0)
+    late_cancellation_fee_percent: float | None = Field(None, ge=0, le=100)
+    late_fee_walker_share_percent: float | None = Field(None, ge=0, le=100)
+    auto_refund_on_cancel: bool | None = None
 
 
 class TenantSettingsResponse(ORMModel):
@@ -120,6 +130,11 @@ class TenantSettingsResponse(ORMModel):
     whatsapp_number: str | None = None
     settings_json: str | None = None
     background_check_provider: str = "manual"
+    # Motor de cancelamento (mig 0107) — ver TenantSettingsUpdate acima.
+    cancellation_free_window_minutes: int = 1440
+    late_cancellation_fee_percent: float = 50
+    late_fee_walker_share_percent: float = 100
+    auto_refund_on_cancel: bool = True
     created_at: datetime
     updated_at: datetime
 

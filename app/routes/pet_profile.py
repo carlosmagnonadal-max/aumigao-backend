@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -102,7 +102,12 @@ class TimelineEventCreate(BaseModel):
     @field_validator("occurred_at")
     @classmethod
     def _not_future(cls, v: datetime) -> datetime:
-        if v > datetime.utcnow():
+        # O app manda toISOString() (offset-aware); o banco guarda naive-UTC —
+        # normaliza antes de comparar/gravar. Folga de 2min absorve relógio de
+        # device levemente adiantado.
+        if v.tzinfo is not None:
+            v = v.astimezone(timezone.utc).replace(tzinfo=None)
+        if v > datetime.utcnow() + timedelta(minutes=2):
             raise ValueError("occurred_at não pode ser no futuro")
         return v
 

@@ -114,6 +114,49 @@ def test_diary_create_with_title(monkeypatch):
     assert "mood" not in json.loads(ev["payload_json"])
 
 
+def test_timeline_accepts_offset_aware_occurred_at(monkeypatch):
+    """Regressão Sentry 11/07: o app manda toISOString() (sufixo Z → offset-aware);
+    o validador comparava com utcnow() naive e estourava TypeError 500."""
+    db = _ctx()
+    c = _client(db, db.get(User, "u1"), True, monkeypatch)
+    iso_z = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    r = c.post("/api/pets/p1/timeline", json={
+        "event_type": "diary",
+        "occurred_at": iso_z,
+        "diary_text": "Registro vindo do app com timezone.",
+    })
+    assert r.status_code == 201, r.text
+
+
+def test_timeline_normalizes_offset_to_utc_naive(monkeypatch):
+    """occurred_at com offset (-03:00) é convertido pra UTC naive antes de gravar,
+    mantendo a convenção do banco (tudo naive-UTC)."""
+    db = _ctx()
+    c = _client(db, db.get(User, "u1"), True, monkeypatch)
+    past_utc = (datetime.utcnow() - timedelta(hours=5)).replace(microsecond=0)
+    local_wall = past_utc - timedelta(hours=3)  # mesma hora expressa em -03:00
+    r = c.post("/api/pets/p1/timeline", json={
+        "event_type": "diary",
+        "occurred_at": local_wall.isoformat() + "-03:00",
+        "diary_text": "Registro com offset local.",
+    })
+    assert r.status_code == 201, r.text
+    assert r.json()["event"]["occurred_at"] == past_utc.isoformat()
+
+
+def test_timeline_rejects_future_occurred_at_aware(monkeypatch):
+    """Futuro continua 422 mesmo com datetime offset-aware."""
+    db = _ctx()
+    c = _client(db, db.get(User, "u1"), True, monkeypatch)
+    future = (datetime.utcnow() + timedelta(hours=2)).replace(microsecond=0)
+    r = c.post("/api/pets/p1/timeline", json={
+        "event_type": "diary",
+        "occurred_at": future.isoformat() + "Z",
+        "diary_text": "Não deveria entrar.",
+    })
+    assert r.status_code == 422
+
+
 def test_diary_text_required(monkeypatch):
     db = _ctx()
     c = _client(db, db.get(User, "u1"), True, monkeypatch)

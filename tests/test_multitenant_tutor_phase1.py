@@ -91,6 +91,33 @@ def test_tutor_tenants_lista_so_active(monkeypatch):
     assert [t["tenant_id"] for t in r.json()] == [TENANT_A]
 
 
+def test_tutor_tenants_inclui_tenant_nativo_sem_vinculo(monkeypatch):
+    """Incidente 11/07: tutor do próprio tenant não via a marca dele no app —
+    o tenant nativo (user.tenant_id) não entrava na lista, então o app não
+    tinha o que auto-ativar. O nativo entra como vínculo implícito ativo."""
+    db = _db()
+    db.add(Tenant(id=TENANT_A, name="Rede A", slug="rede-a", status="active", plan="starter"))
+    db.add(User(id=TUTOR, email="t@x.com", password_hash="x", role="tutor", tenant_id=TENANT_A))
+    db.commit()
+    r = _client(db, True, monkeypatch).get("/tutor/tenants")
+    assert r.status_code == 200
+    body = r.json()
+    assert [t["tenant_id"] for t in body] == [TENANT_A]
+    assert body[0]["access_status"] == "active"
+
+
+def test_tutor_tenants_nativo_primeiro_e_sem_duplicar(monkeypatch):
+    """Nativo vem primeiro; vínculo explícito com o próprio nativo não duplica."""
+    db = _db()
+    db.add(Tenant(id=TENANT_A, name="Rede A", slug="rede-a", status="active", plan="starter"))
+    db.add(Tenant(id=TENANT_B, name="Rede B", slug="rede-b", status="active", plan="starter"))
+    db.add(User(id=TUTOR, email="t@x.com", password_hash="x", role="tutor", tenant_id=TENANT_A))
+    db.add(TenantTutorAccess(tenant_id=TENANT_B, tutor_user_id=TUTOR, status="active"))
+    db.commit()
+    r = _client(db, True, monkeypatch).get("/tutor/tenants")
+    assert [t["tenant_id"] for t in r.json()] == [TENANT_A, TENANT_B]
+
+
 def test_tutor_tenants_flag_off_vazio(monkeypatch):
     db = _db(); _seed(db)
     r = _client(db, False, monkeypatch).get("/tutor/tenants")

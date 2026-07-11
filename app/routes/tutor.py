@@ -99,7 +99,7 @@ class TutorJoinRequest(BaseModel):
     referral_code: str | None = None
 
 
-def _tenant_brand_dict(a: TenantTutorAccess, tenant: Tenant) -> dict:
+def _tenant_brand_dict(tenant: Tenant, status: str) -> dict:
     b = tenant.branding
     return {
         "tenant_id": tenant.id,
@@ -107,7 +107,7 @@ def _tenant_brand_dict(a: TenantTutorAccess, tenant: Tenant) -> dict:
         "display_name": (b.display_name if b and b.display_name else tenant.name),
         "brand_color": (b.primary_color if b else None),
         "logo_url": (b.logo_url if b else None),
-        "access_status": a.status,
+        "access_status": status,
     }
 
 
@@ -125,11 +125,24 @@ def tutor_tenants(
         .order_by(TenantTutorAccess.created_at.desc())
         .all()
     )
-    out = []
+    out: list[dict] = []
+    seen: set[str] = set()
+    # Tenant NATIVO do tutor entra como vínculo implícito ativo, em primeiro —
+    # tutor do tenant vê a marca dele sem join manual (incidente 11/07: o logo
+    # do white label não chegava ao app porque a lista vinha vazia e o app não
+    # tinha o que auto-ativar).
+    if user.tenant_id:
+        home = db.get(Tenant, user.tenant_id)
+        if home:
+            out.append(_tenant_brand_dict(home, "active"))
+            seen.add(home.id)
     for a in accesses:
+        if a.tenant_id in seen:
+            continue
         tenant = db.get(Tenant, a.tenant_id)
         if tenant:
-            out.append(_tenant_brand_dict(a, tenant))
+            out.append(_tenant_brand_dict(tenant, a.status))
+            seen.add(a.tenant_id)
     return out
 
 
@@ -180,4 +193,4 @@ def tutor_join_tenant(
             logging.getLogger("aumigao.tutor").warning(
                 "falha ao ligar referral do tutor code=%s user=%s", payload.referral_code, user.id
             )
-    return _tenant_brand_dict(access, tenant)
+    return _tenant_brand_dict(tenant, access.status)

@@ -13,6 +13,7 @@ class TenantAppBrandingConfig(BaseModel):
     splash_image_url: str
     primary_color: str
     secondary_color: str
+    accent_color: str = ""
     powered_by_enabled: bool
 
 

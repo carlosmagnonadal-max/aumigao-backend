@@ -21,7 +21,7 @@ from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401 - registra todas as tabelas no Base.metadata
 from app.core.database import Base, get_db
-from app.models.tenant import Tenant
+from app.models.tenant import Tenant, TenantBranding
 from app.routes import tenant_app_config
 from app.services.tenant_seed_service import DEFAULT_TENANT_SLUG
 
@@ -58,7 +58,7 @@ def _assert_shape(body: dict):
     branding = body["branding"]
     assert set(branding.keys()) == {
         "display_name", "app_name", "logo_url", "icon_url", "splash_image_url",
-        "primary_color", "secondary_color", "powered_by_enabled",
+        "primary_color", "secondary_color", "accent_color", "powered_by_enabled",
     }
     features = body["features"]
     assert set(features.keys()) == {"network_access", "dedicated_app", "custom_products", "custom_projects"}
@@ -136,6 +136,18 @@ def test_current_app_config_branding_defaults():
     assert branding["logo_url"] == ""
     assert branding["primary_color"] == "#6429E8"  # DEFAULT_PRIMARY_COLOR (roxo da marca)
     assert branding["secondary_color"] == "#101811"  # DEFAULT_SECONDARY_COLOR
+
+
+def test_current_app_config_returns_accent_color():
+    """Regressao: o servico ja calcula accent_color, mas o schema de resposta
+    o descartava (response_model filtra campos nao declarados). O app usa
+    accent_color no tema dinamico do tenant, entao precisa chegar no GET.
+    """
+    client, db = build()
+    db.add(TenantBranding(tenant_id=TENANT_ID, display_name="Aumigao", accent_color="#FF7A00"))
+    db.commit()
+    branding = client.get("/tenants/current/app-config").json()["branding"]
+    assert branding["accent_color"] == "#FF7A00"
 
 
 # ----------------------------------------------------------------- by tenant ---

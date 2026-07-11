@@ -355,6 +355,25 @@ app = FastAPI(
 )
 
 
+# Blindagem de uploads (incidente 11/07): produção sem R2 rejeita o upload com
+# 503 claro — nunca grava em disco efêmero (perda silenciosa do arquivo).
+from app.services.object_storage import StorageNotConfiguredError  # noqa: E402
+
+
+@app.exception_handler(StorageNotConfiguredError)
+async def storage_not_configured_handler(request: Request, exc: StorageNotConfiguredError) -> JSONResponse:
+    request_id = request_id_var.get("-")
+    logger.error(
+        "storage_not_configured method=%s path=%s request_id=%s",
+        request.method, request.url.path, request_id,
+    )
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Armazenamento de arquivos indisponível no momento. O upload não foi salvo — tente novamente em instantes."},
+        headers={"X-Request-ID": request_id},
+    )
+
+
 # O1 — Exception handler global: captura qualquer Exception não tratada
 # (HTTPException continua seguindo o fluxo normal do FastAPI).
 @app.exception_handler(Exception)

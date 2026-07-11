@@ -28,6 +28,20 @@ _client = None
 _client_lock = threading.Lock()
 
 
+class StorageNotConfiguredError(RuntimeError):
+    """Produção sem storage de objetos configurado — upload rejeitado.
+
+    Incidente 11/07: com as envs R2_* ausentes, o upload do logo do white label
+    caiu no fallback de disco local (efêmero no Cloud Run) e o arquivo evaporou
+    no deploy seguinte. Em produção a perda silenciosa é pior que a falha:
+    rejeitamos o upload com erro claro (rota devolve 503; Sentry acusa).
+    """
+
+
+def _strict_storage() -> bool:
+    return _env("ENVIRONMENT").lower() == "production"
+
+
 def r2_enabled() -> bool:
     return bool(
         _env("R2_BUCKET")
@@ -76,7 +90,11 @@ def _key_for(destination: Path | str) -> str | None:
 
 
 def save(destination: Path, data: bytes, content_type: str | None = None) -> None:
-    """Grava o upload. Em R2 quando configurado; senão no disco local (comportamento antigo)."""
+    """Grava o upload. Em R2 quando configurado; senão no disco local (dev/testes).
+
+    Em PRODUÇÃO o fallback local é PROIBIDO (disco efêmero = perda silenciosa) —
+    sem R2 configurado o upload falha alto com StorageNotConfiguredError.
+    """
     if r2_enabled():
         key = _key_for(destination)
         if not key:
@@ -85,6 +103,15 @@ def save(destination: Path, data: bytes, content_type: str | None = None) -> Non
         if content_type:
             kwargs["ContentType"] = content_type
         _get_client().put_object(**kwargs)
+    elif _strict_storage():
+        logger.error(
+            "object_storage.save REJEITADO: producao sem R2_* configurado (destination=%s)",
+            destination,
+        )
+        raise StorageNotConfiguredError(
+            "Storage de uploads não configurado em produção — upload rejeitado "
+            "para não gravar em disco efêmero (envs R2_* ausentes)."
+        )
     else:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(data)

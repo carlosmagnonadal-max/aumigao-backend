@@ -264,6 +264,28 @@ class TestTipWindowAwaitingReview:
         assert resp.status_code == 409
 
 
+class TestTipMinimumAmount:
+    """Asaas rejeita cobrança < R$ 5,00 (invalid_object — Sentry 11/07, gorjeta
+    de R$ 2 do input livre). Validação local devolve 422 amigável ANTES de tocar
+    o gateway e sem criar WalkTip."""
+
+    def test_tip_below_asaas_minimum_rejected(self):
+        db = _make_db()
+        _add_walk_awaiting_review(db)
+        client = _make_walks_app(db)
+        resp = client.post(f"/walks/{WALK_ID}/tip-checkout", json={"amount": 2.0})
+        assert resp.status_code == 422, resp.text
+        assert "5,00" in resp.text
+        assert db.query(WalkTip).filter(WalkTip.walk_id == WALK_ID).first() is None
+
+    def test_tip_at_minimum_accepted(self):
+        db = _make_db()
+        _add_walk_awaiting_review(db)
+        client = _make_walks_app(db)
+        resp = client.post(f"/walks/{WALK_ID}/tip-checkout", json={"amount": 5.0})
+        assert resp.status_code == 200, resp.text
+
+
 # ---------------------------------------------------------------------------
 # B) Webhook tip
 # ---------------------------------------------------------------------------

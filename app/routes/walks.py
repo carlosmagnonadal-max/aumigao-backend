@@ -69,6 +69,9 @@ REVIEWABLE_COMPLETION_STATUSES = {"ride_completed", "awaiting_completion_review"
 REJECTED_COMPLETION_REVIEW_STATUSES = {"rejected", "completion_rejected"}
 TIP_STATUSES = {"pending", "paid", "failed", "cancelled"}
 TIP_PROVIDER = "internal_mock"
+# Asaas rejeita cobrança abaixo de R$ 5,00 (invalid_object) — validar local
+# evita 500 no checkout de gorjeta (Sentry 11/07, valor livre de R$ 2).
+TIP_MIN_AMOUNT = 5.0
 
 
 class WalkTipCreate(BaseModel):
@@ -819,6 +822,8 @@ async def create_walk_tip_checkout(walk_id: str, payload: WalkTipCheckoutCreate,
     walk = _get_walk_for_user(walk_id, user, db)
     if walk.tutor_id != user.id:
         raise HTTPException(status_code=403, detail="Apenas o tutor dono do passeio pode enviar gorjeta.")
+    if float(payload.amount) < TIP_MIN_AMOUNT:
+        raise HTTPException(status_code=422, detail="A gorjeta mínima é R$ 5,00.")
     # Gate tips
     _tip_tenant_id = walk.tenant_id or user.tenant_id
     if _tip_tenant_id:

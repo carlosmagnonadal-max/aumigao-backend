@@ -3,6 +3,7 @@ from typing import Any
 from fastapi import Request
 from sqlalchemy.orm import Session
 
+from app.core.data_cache import data_cache
 from app.models.tenant import Tenant
 from app.services.tenant_branding_service import (
     DEFAULT_PRIMARY_COLOR,
@@ -160,6 +161,22 @@ def _safe_background_provider(db: Session, tenant: Any | None) -> str:
     return "manual"
 
 
+# TTL curto: staleness máxima de 60s para QUALQUER mudança de config que não
+# passe pela invalidação explícita (features, units, plano). O write de
+# branding invalida na hora (ver update_current_branding em tenant_branding.py).
+APP_CONFIG_CACHE_TTL_SECONDS = 60
+
+
+def app_config_cache_key(tenant_id: str) -> str:
+    return f"tenant_app_config:{tenant_id}"
+
+
+def invalidate_tenant_app_config_cache(tenant_id: str | None) -> None:
+    """Derruba o app-config cacheado do tenant. Chamar após writes de config."""
+    if tenant_id:
+        data_cache.delete(app_config_cache_key(tenant_id))
+
+
 def get_tenant_app_config(
     db: Session,
     tenant_id: str | None = None,
@@ -171,7 +188,15 @@ def get_tenant_app_config(
         _safe_rollback(db)
         tenant = None
 
-    return {
+    # Resposta é pública e idêntica para todos os callers do mesmo tenant —
+    # segura de cachear por tenant.id. Sem tenant resolvido, não cacheia.
+    cache_key = app_config_cache_key(tenant.id) if tenant else None
+    if cache_key:
+        cached = data_cache.get_json(cache_key)
+        if cached is not None:
+            return cached
+
+    result = {
         "tenant_id": tenant.id if tenant else "",
         "branding": _safe_branding(db, tenant),
         "features": _safe_features(db, tenant),
@@ -180,3 +205,6 @@ def get_tenant_app_config(
         "capabilities": _safe_capabilities(db, tenant),
         "background_check_provider": _safe_background_provider(db, tenant),
     }
+    if cache_key:
+        data_cache.set_json(cache_key, result, APP_CONFIG_CACHE_TTL_SECONDS)
+    return result

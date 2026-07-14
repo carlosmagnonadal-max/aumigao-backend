@@ -20,7 +20,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401 - registra todas as tabelas no Base.metadata
-from app.core.database import Base, get_db
+from app.core.database import Base, get_db, get_read_db
 from app.models.tenant import Tenant, TenantBranding
 from app.routes import tenant_app_config
 from app.services.tenant_seed_service import DEFAULT_TENANT_SLUG
@@ -49,6 +49,8 @@ def build(*, plan: str = "business"):
     test_app.include_router(tenant_app_config.router)
     test_app.include_router(tenant_app_config.api_router)
     test_app.dependency_overrides[get_db] = lambda: db
+    # As rotas GET usam a sessão de leitura (get_read_db) — mesmo override.
+    test_app.dependency_overrides[get_read_db] = lambda: db
     return TestClient(test_app), db
 
 

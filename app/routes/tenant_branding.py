@@ -34,6 +34,7 @@ from app.schemas.tenant_branding import TenantBrandingRuntimeResponse
 from app.schemas.tenant_branding_update import TenantBrandingUpdatePayload
 from app.services import object_storage
 from app.services.signed_uploads import UPLOAD_ROOT as UPLOADS_BASE
+from app.services.tenant_app_config_service import invalidate_tenant_app_config_cache
 from app.services.tenant_branding_service import get_tenant_branding_runtime, update_tenant_branding_runtime
 from app.services.tenant_context import resolve_current_tenant
 from app.services.upload_registry import record_upload
@@ -109,7 +110,11 @@ def update_current_branding(
             raise HTTPException(status_code=404, detail="Tenant do admin nao encontrado")
     else:
         tenant = resolve_current_tenant(db, request)
-    return update_tenant_branding_runtime(db, tenant, payload, actor=admin)
+    result = update_tenant_branding_runtime(db, tenant, payload, actor=admin)
+    # Branding mudou → derruba o app-config cacheado do tenant na hora, para o
+    # app ver logo/cores novos no próximo boot (sem esperar o TTL de 60s).
+    invalidate_tenant_app_config_cache(tenant.id if tenant else None)
+    return result
 
 
 @admin_api_router.post("/current/branding/upload-image", status_code=201)

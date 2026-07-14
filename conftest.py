@@ -38,6 +38,13 @@ os.environ.setdefault("REQUIRE_PAYMENT_BEFORE_MATCHING", "false")
 #     "LEGAL_ACCEPTANCE_ENFORCED", "true"). Mesmo padrao do gate de pagamento acima.
 os.environ.setdefault("LEGAL_ACCEPTANCE_ENFORCED", "false")
 
+# 2d) Cache de dados (data_cache): o DEFAULT DE PRODUCAO e LIGADO, mas as suites
+#     legadas escrevem direto no banco e releem o app-config esperando frescor
+#     imediato — com cache ligado receberiam resposta velha (TTL 60s). A suite
+#     roda com o cache DESLIGADO por padrao; os testes do cache ligam via
+#     monkeypatch.setenv("DATA_CACHE_ENABLED", "true"). Mesmo padrao do 2b/2c.
+os.environ.setdefault("DATA_CACHE_ENABLED", "false")
+
 # 3) Chave fixa de cifragem de PII (CPF/RG) para os testes — Fernet key válida de 32 bytes.
 #    NUNCA usar em produção (lá vem de PII_ENCRYPTION_KEY no ambiente).
 #    Gerada com: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -91,6 +98,18 @@ def _reset_ip_rate_limiters():
         upload_rate_limiter._failures.clear()
     except ImportError:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_data_cache():
+    """Zera o fallback in-memory do data_cache entre testes (singleton de módulo)."""
+    try:
+        from app.core.data_cache import data_cache
+        data_cache._fallback.clear()
+        yield
+        data_cache._fallback.clear()
+    except ImportError:
+        yield
 
 
 def pytest_configure(config):

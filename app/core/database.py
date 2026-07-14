@@ -75,6 +75,39 @@ engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args=connect_args, **eng
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+# ---------------------------------------------------------------------------
+# Split leitura/escrita (flag-guarded por READ_DATABASE_URL).
+#
+# Com READ_DATABASE_URL setada (réplica de leitura do Neon), read_engine e
+# ReadSessionLocal apontam para a réplica; sem a env, são ALIASES do primary —
+# comportamento idêntico ao atual, zero risco até a réplica existir.
+#
+# O listener RLS after_begin abaixo escuta na CLASSE Session, então sessões
+# criadas por ReadSessionLocal recebem a mesma injeção de tenant.
+# ---------------------------------------------------------------------------
+def _read_database_url() -> str | None:
+    raw = (os.getenv("READ_DATABASE_URL") or "").strip().strip('"').strip("'")
+    return raw or None
+
+
+READ_DATABASE_URL = _read_database_url()
+
+if READ_DATABASE_URL:
+    _read_parsed = urlparse(READ_DATABASE_URL)
+    _read_connect_args = {"check_same_thread": False} if READ_DATABASE_URL.startswith("sqlite") else {}
+    read_engine_kwargs: dict = {}
+    if not READ_DATABASE_URL.startswith("sqlite"):
+        if "-pooler" in (_read_parsed.hostname or ""):
+            read_engine_kwargs = {"poolclass": NullPool}
+        else:
+            read_engine_kwargs = {"pool_pre_ping": True, "pool_recycle": 300, "pool_size": 5, "max_overflow": 10}
+    read_engine = create_engine(READ_DATABASE_URL, connect_args=_read_connect_args, **read_engine_kwargs)
+    ReadSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=read_engine)
+else:
+    read_engine = engine
+    ReadSessionLocal = SessionLocal
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -196,6 +229,28 @@ def get_db(request: Request = None):  # type: ignore[assignment]
         db.info["rls_tenant"] = tenant_id or ""
     else:
         # Caller interno ou teste: acesso global (sem RLS restritivo).
+        db.info["rls_tenant"] = "*"
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def get_read_db(request: Request = None):  # type: ignore[assignment]
+    """FastAPI dependency de sessão SOMENTE-LEITURA (réplica quando configurada).
+
+    Idêntica a get_db em RLS/tenant, mas ligada a ReadSessionLocal — que aponta
+    para a réplica de leitura quando READ_DATABASE_URL está setada, ou para o
+    primary quando não está (alias; zero mudança de comportamento).
+
+    Usar APENAS em endpoints GET tolerantes a lag de replicação (dados de
+    configuração, catálogos). NUNCA em fluxos read-after-write do mesmo request.
+    """
+    db = ReadSessionLocal()
+    if request is not None:
+        tenant_id = getattr(getattr(request, "state", None), "tenant_id", None)
+        db.info["rls_tenant"] = tenant_id or ""
+    else:
         db.info["rls_tenant"] = "*"
     try:
         yield db

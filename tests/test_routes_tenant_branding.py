@@ -21,6 +21,7 @@ from unittest.mock import patch as mock_patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from PIL import Image
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -222,12 +223,23 @@ _PNG_MAGIC = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
 
 
 def _png_file(name: str = "logo.png") -> tuple[str, tuple]:
-    """Prepara o tuple multipart para o TestClient."""
+    """Prepara o tuple multipart para o TestClient (magic bytes crus)."""
     return ("file", (name, io.BytesIO(_PNG_MAGIC), "image/png"))
 
 
+def _real_png_file(name: str = "logo.png", size: tuple = (40, 20)) -> tuple[str, tuple]:
+    """PNG de verdade (decodificável), pois kind=logo passa por normalize_logo_image
+    (app/lib/branding_image.py) — os magic-bytes crus de _png_file não sobrevivem
+    ao Image.load() e derrubariam o teste com 422."""
+    img = Image.new("RGBA", size, (10, 20, 30, 255))
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    return ("file", (name, buffer, "image/png"))
+
+
 def test_upload_branding_image_happy_logo(tmp_path):
-    """Upload happy path: kind=logo, PNG valido -> 201 + url retornada."""
+    """Upload happy path: kind=logo, PNG valido -> 201 + url retornada (normalizada)."""
     client, db = build()
     as_admin(client, db)
 
@@ -238,7 +250,7 @@ def test_upload_branding_image_happy_logo(tmp_path):
                     return_value="https://cdn/tenant_branding_logo-abc.png") as mock_url:
         r = client.post(
             "/api/admin/tenants/current/branding/upload-image?kind=logo",
-            files=[_png_file()],
+            files=[_real_png_file()],
         )
 
     assert r.status_code == 201, r.text
@@ -247,6 +259,25 @@ def test_upload_branding_image_happy_logo(tmp_path):
     assert "logo" in body["url"]
     mock_save.assert_called_once()
     mock_url.assert_called_once()
+    # object_storage.save recebeu bytes normalizados (PNG) e content-type PNG,
+    # mesmo a entrada já sendo PNG.
+    saved_content_type = mock_save.call_args.args[2]
+    assert saved_content_type == "image/png"
+
+
+def test_upload_branding_image_logo_invalid_image_returns_422():
+    """kind=logo com bytes que não decodificam como imagem -> 422 amigável."""
+    client, db = build()
+    as_admin(client, db)
+
+    with mock_patch("app.services.object_storage.save"):
+        r = client.post(
+            "/api/admin/tenants/current/branding/upload-image?kind=logo",
+            files=[_png_file()],  # só magic bytes, não é PNG decodificável de verdade
+        )
+
+    assert r.status_code == 422, r.text
+    assert "processar a imagem" in r.json()["detail"].lower()
 
 
 def test_upload_branding_image_happy_icon():

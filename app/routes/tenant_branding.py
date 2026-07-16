@@ -11,6 +11,9 @@ Upload de imagem de branding:
   Content-Type). Rate limit por IP (mesmo infra do login). Prefixo de arquivo:
   `tenant_branding_{kind}-<uuid>.<ext>` — FORA dos prefixos sensiveis de walker.
   Resposta: {"url": "<url_publica>"}
+  kind=logo passa por normalize_logo_image (app/lib/branding_image.py): recorta
+  margens embutidas e limita tamanho, sempre devolvendo PNG. icon/splash
+  continuam sendo salvos CRUS (proporção fixa, sem o problema de margem).
 
 Regra de ouro do repo: todo endpoint de ESCRITA admin chama get_admin_tenant_scope
 no topo (injeta GUC RLS antes de INSERT/UPDATE).
@@ -28,6 +31,7 @@ from app.core.database import get_db
 from app.dependencies.auth import require_admin
 from app.dependencies.rbac import require_permission
 from app.dependencies.tenant_scope import get_admin_tenant_scope, is_super_admin
+from app.lib.branding_image import InvalidImageError, normalize_logo_image
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.tenant_branding import TenantBrandingRuntimeResponse
@@ -149,10 +153,26 @@ async def upload_branding_image(
 
     extension = _branding_upload_extension(file.filename, file.content_type)
     content = await read_image_upload_safely(file, max_bytes=_BRANDING_UPLOAD_MAX_BYTES)
+    upload_content_type = file.content_type
+
+    if kind_norm == "logo":
+        # Só a logo passa por normalização: o app a renderiza num container
+        # bem largo (~2.8:1 a 3.6:1) com `contain`, e margens embutidas no
+        # arquivo (transparentes ou de fundo uniforme) deixam o desenho
+        # visualmente descentrado/pequeno mesmo com o contain "funcionando".
+        # icon/splash têm proporção fixa e continuam sendo salvos CRUS.
+        try:
+            content, upload_content_type = normalize_logo_image(content, file.content_type)
+        except (InvalidImageError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Não foi possível processar a imagem enviada. Tente outro arquivo (JPG, PNG ou WEBP).",
+            ) from exc
+        extension = ".png"  # normalize_logo_image sempre devolve PNG (preserva transparência)
 
     destination = _BRANDING_UPLOAD_ROOT / f"tenant_branding_{kind_norm}-{uuid4().hex}{extension}"
 
-    object_storage.save(destination, content, file.content_type)
+    object_storage.save(destination, content, upload_content_type)
 
     # Injeta escopo RLS para o registro de upload (write cross-tenant seguro).
     get_admin_tenant_scope(admin, db)
@@ -163,7 +183,7 @@ async def upload_branding_image(
         tenant_id=admin.tenant_id,
         document_type=f"branding_{kind_norm}",
         storage_path=str(destination),
-        mime_type=file.content_type,
+        mime_type=upload_content_type,
         size_bytes=len(content),
     )
     db.commit()

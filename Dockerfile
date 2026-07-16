@@ -17,8 +17,18 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Código.
 COPY . .
 
+# Usuário não-privilegiado para rodar o processo (hardening: nunca como root em
+# produção). UPLOAD_ROOT (uploads/, fallback dev/local) é criado em runtime por
+# app/main.py via mkdir(parents=True) — por isso /app inteiro precisa pertencer
+# ao appuser, não só os arquivos copiados.
+RUN adduser --disabled-password --gecos "" --uid 10001 appuser \
+    && chown -R appuser:appuser /app
+
 # Cloud Run injeta $PORT (default 8080). Sem --workers fixo: o Cloud Run escala por
 # INSTÂNCIAS (não por workers); 1 worker async por instância é o idiomático aqui.
 # A concorrência é controlada pela config de concurrency do serviço Cloud Run.
 ENV PORT=8080
+
+USER appuser
+
 CMD exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips="*"

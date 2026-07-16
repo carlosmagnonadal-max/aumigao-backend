@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
-from app.dependencies.rbac import require_permission
+from app.dependencies.rbac import require_permission, user_has_permission
 from app.models.user import User
 from app.services.audit_service import record_audit_log
 from app.models.tenant import Tenant, TenantBranding, TenantFeature, TenantSettings, TenantUnit
@@ -212,6 +212,24 @@ def update_tenant(tenant_id: str, payload: TenantUpdate, admin: User = Depends(g
     _scope_or_404(admin, tenant_id, db)
     tenant = _tenant_or_404(tenant_id, db)
     values = payload.model_dump(exclude_unset=True)
+    # ── Segurança (auditoria ALTA: escalação de privilégio / bypass de billing) ──
+    # Alterar `plan` ou `status` é operação de PLATAFORMA, não self-service do tenant:
+    #   • `plan` recalcula a comissão para o default do tier (auto-promoção sem pagar);
+    #   • `status="active"` reativa um tenant suspenso por inadimplência
+    #     (tenant_saas_billing_service seta status="suspended").
+    # O papel `tenant_admin` tem apenas `tenants.read` (não `tenants.manage`), mas o gate
+    # do router é só `tenants.read` — por isso a trava fica aqui, escopada aos campos
+    # sensíveis, preservando a edição self-service dos demais campos (name/legal_name/
+    # contatos) com `tenants.read`.
+    if "plan" in values or "status" in values:
+        # Camada 1 (RBAC): mutação de plano/status exige a permissão elevada.
+        # Camada 2 (defesa em profundidade): ainda que `tenants.manage` seja concedida
+        # por engano a um admin de tenant, apenas a operação Aumigão (super_admin) muda.
+        if not user_has_permission(db, admin, "tenants.manage") or not is_super_admin(admin):
+            raise HTTPException(
+                status_code=403,
+                detail="Somente a operação Aumigão pode alterar plano ou status do tenant.",
+            )
     _ensure_status(values.get("status"), TENANT_STATUSES, "status")
     _ensure_plan(values.get("plan"))
     for field, value in values.items():

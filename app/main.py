@@ -28,7 +28,14 @@ if _SENTRY_DSN:
     except Exception as _sentry_err:
         logging.getLogger(__name__).warning("Sentry init falhou: %s", _sentry_err)
 
-from app.core.database import Base, SessionLocal, engine, get_database_diagnostics, mask_database_url
+from app.core.database import (
+    Base,
+    SessionLocal,
+    assert_rls_enforced_role,
+    engine,
+    get_database_diagnostics,
+    mask_database_url,
+)
 from app.core.request_context import request_id_var
 from app.middleware.request_context import RequestContextMiddleware
 from app.middleware.tenant_resolver import TenantResolverMiddleware
@@ -353,6 +360,19 @@ app = FastAPI(
     redoc_url=None if _is_production else "/redoc",
     openapi_url=None if _is_production else "/openapi.json",
 )
+
+
+# Rede de segurança (defesa em profundidade) — fail-fast se o role de runtime
+# conectado ao Postgres tiver bypass de RLS (BYPASSRLS/SUPERUSER). Se o secret
+# DATABASE_URL apontar por engano para o role dono (migrations/backup), TODO
+# o isolamento multi-tenant fica inerte silenciosamente. Registrado como o
+# PRIMEIRO handler de startup para abortar o boot antes de qualquer outra
+# inicialização depender de um banco com RLS comprometido. NO-OP em SQLite
+# (dialect != postgresql, ex.: testes/CI). Não substitui a verificação manual
+# do secret de produção — só detecta o problema no PRÓXIMO boot/deploy.
+@app.on_event("startup")
+def _assert_rls_enforced_role_startup():
+    assert_rls_enforced_role(engine)
 
 
 # Blindagem de uploads (incidente 11/07): produção sem R2 rejeita o upload com

@@ -1,12 +1,16 @@
+import logging
 import os
 from pathlib import Path
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import NullPool
 from starlette.requests import Request
+
+logger = logging.getLogger(__name__)
 
 from app.core.feature_flags import multi_tenant_walker_enabled, multi_tenant_tutor_enabled
 
@@ -300,3 +304,84 @@ def get_tutor_self_db(request: Request = None):  # type: ignore[assignment]
         yield db
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Rede de segurança: valida no boot que o role de runtime NÃO tem bypass de RLS.
+#
+# Todo o isolamento multi-tenant depende de o role de conexão (DATABASE_URL)
+# ser um role non-owner sem BYPASSRLS/SUPERUSER (produção: aumigao_app). Se por
+# engano o secret apontasse para o role dono (ex.: neondb_owner, usado só em
+# migrations/backup), TODAS as policies RLS ficariam inertes silenciosamente —
+# nenhum erro, só vazamento cross-tenant total. Esta checagem transforma esse
+# cenário num fail-fast no boot, em vez de um vazamento silencioso em produção.
+#
+# NÃO substitui a verificação manual do secret de produção — apenas detecta o
+# problema no PRÓXIMO boot/deploy, caso ele já não tenha ocorrido.
+# ---------------------------------------------------------------------------
+class RLSRoleMisconfiguredError(RuntimeError):
+    """Levantado quando o role de runtime do Postgres tem BYPASSRLS ou é SUPERUSER.
+
+    Isso significa que o isolamento multi-tenant via RLS está comprometido:
+    as policies existem no schema mas o Postgres as ignora para este role.
+    """
+
+
+def _evaluate_rls_role_row(row) -> None:
+    """Decisão pura (sem I/O): recebe a linha de pg_roles e levanta
+    RLSRoleMisconfiguredError se o role tiver bypass de RLS.
+
+    row: tupla/Row (current_user, rolbypassrls, rolsuper) ou None se a
+    query não retornou nenhuma linha (role não encontrado em pg_roles —
+    tratado como falha, por segurança/fail-fast).
+
+    Isolada da conexão real para ser testável com um mock simples.
+    """
+    if row is None:
+        raise RLSRoleMisconfiguredError(
+            "Não foi possível localizar o role de conexão atual em pg_roles — "
+            "abortando por segurança (fail-fast). Verifique DATABASE_URL."
+        )
+    _current_user, rolbypassrls, rolsuper = row
+    if rolbypassrls or rolsuper:
+        raise RLSRoleMisconfiguredError(
+            "Runtime conectado como role com bypass de RLS (BYPASSRLS e/ou "
+            "SUPERUSER) — isolamento multi-tenant comprometido: todas as "
+            "policies RLS de isolamento entre tenants ficam inertes "
+            "silenciosamente. Verifique DATABASE_URL — deve apontar para o "
+            "role de aplicação non-owner (ex.: aumigao_app), NUNCA para o "
+            "role dono usado em migrations/backup."
+        )
+
+
+def assert_rls_enforced_role(target_engine: Engine | None = None, timeout_seconds: int = 5) -> None:
+    """Verifica no boot que o role Postgres de runtime não bypassa RLS.
+
+    NO-OP em qualquer dialeto diferente de postgresql (ex.: SQLite em
+    testes/CI, que não possui pg_roles).
+
+    Usa SET LOCAL statement_timeout dentro de uma transação (revertido
+    automaticamente ao fim da transação, sem vazar para outras conexões do
+    pool) para não travar o startup por muito tempo em caso de problema de
+    rede/conectividade com o Postgres.
+
+    Levanta RLSRoleMisconfiguredError se o role tiver BYPASSRLS ou SUPERUSER.
+    Propaga qualquer outro erro (timeout, falha de conexão) — o caller
+    (startup do FastAPI) deve tratar qualquer exceção aqui como fail-fast:
+    melhor não subir a aplicação do que subir com RLS potencialmente quebrado.
+    """
+    target_engine = target_engine if target_engine is not None else engine
+    if target_engine.dialect.name != "postgresql":
+        return
+
+    timeout_ms = max(int(timeout_seconds), 1) * 1000
+    with target_engine.begin() as connection:
+        connection.execute(text(f"SET LOCAL statement_timeout = {timeout_ms}"))
+        row = connection.execute(
+            text(
+                "SELECT current_user, rolbypassrls, rolsuper "
+                "FROM pg_roles WHERE rolname = current_user"
+            )
+        ).first()
+    _evaluate_rls_role_row(row)
+    logger.info("[rls] role de runtime verificado: sem bypass de RLS (current_user=%s)", row[0])

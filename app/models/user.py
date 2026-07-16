@@ -13,6 +13,12 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String, default="")
     role: Mapped[str] = mapped_column(String, default="tutor")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # SEC (account-takeover Apple): identificador ESTÁVEL do usuário na Apple ("sub" do
+    # identity_token, sempre presente e assinado). É a âncora de identidade do Apple
+    # Sign-In — nunca confiar no e-mail client-supplied. Nullable pois só usuários que
+    # logaram via Apple têm valor; unique/index para busca e para impedir 2 contas no
+    # mesmo sub.
+    apple_sub: Mapped[str | None] = mapped_column(String, nullable=True, unique=True, index=True)
     # B-ALT-011 (passo 2b): versao da sessao. O access token carrega "ver" = este valor;
     # incrementar (na troca/reset de senha) revoga TODAS as sessoes antigas do usuario.
     token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)

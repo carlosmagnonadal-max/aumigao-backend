@@ -83,6 +83,16 @@ def _mock_apple_ok(email: str):
     return _decode
 
 
+def _mock_apple(sub: str, email: str | None = None):
+    """Imita _decode_apple_jwt_payload com sub fixo e email opcional (verificado)."""
+    def _decode(token: str):
+        data = {"sub": sub}
+        if email is not None:
+            data["email"] = email
+        return data
+    return _decode
+
+
 # ------------------------------------------------------------------ testes ---
 
 def test_google_new_user_creates_tutor_and_returns_tokens(monkeypatch):
@@ -187,6 +197,133 @@ def test_walker_app_target_existing_user_can_login(monkeypatch):
     # Nao e usuario novo, entao nao cai no bloqueio 403
     assert r.status_code == 200, r.text
     assert r.json()["user"]["role"] == "walker"
+
+
+# ---------------------------------------------------------- Apple: account-takeover ---
+
+def test_apple_no_email_with_spoofed_payload_email_does_not_takeover(monkeypatch):
+    """SEC: token Apple SEM email + payload.email da vítima NÃO autentica como a vítima.
+
+    Cenário do account-takeover: atacante tem token Apple genuíno (sub próprio, sem
+    claim de email) e envia payload.email = e-mail da vítima. Como não há match por
+    sub e o token não traz email verificado, deve ser rejeitado (401) — nunca virar
+    sessão da vítima.
+    """
+    # Vítima existente, ainda SEM apple_sub vinculado.
+    monkeypatch.setattr(auth, "_decode_apple_jwt_payload", _mock_apple("attacker-sub", email=None))
+    client, db = build(extra_users=[
+        dict(id="u-vitima", email="vitima@x.com", password_hash="hash",
+             role="tutor", tenant_id=TENANT_ID, is_active=True)
+    ])
+
+    r = client.post("/auth/social", json={
+        "provider": "apple",
+        "token": "apple-token-genuino-sem-email",
+        "email": "vitima@x.com",       # client-supplied — deve ser IGNORADO
+        "full_name": "Atacante",
+    })
+
+    assert r.status_code == 401, r.text
+    # A vítima NÃO deve ter recebido apple_sub do atacante.
+    db.expire_all()
+    vitima = db.query(User).filter(User.email == "vitima@x.com").one()
+    assert vitima.apple_sub is None
+
+
+def test_apple_linked_sub_authenticates_without_email(monkeypatch):
+    """Token Apple com sub JÁ vinculado autentica a conta certa mesmo sem email."""
+    monkeypatch.setattr(auth, "_decode_apple_jwt_payload", _mock_apple("linked-sub", email=None))
+    client, db = build(extra_users=[
+        dict(id="u-apple", email="apple-user@x.com", password_hash="",
+             role="tutor", tenant_id=TENANT_ID, is_active=True, apple_sub="linked-sub")
+    ])
+
+    r = client.post("/auth/social", json={
+        "provider": "apple",
+        "token": "apple-token-login-subsequente",
+        "email": "outra-coisa@x.com",  # ignorado
+    })
+
+    assert r.status_code == 200, r.text
+    assert r.json()["user"]["email"] == "apple-user@x.com"
+
+
+def test_apple_first_time_verified_email_creates_and_links_sub(monkeypatch):
+    """1ª vez com email VERIFICADO no token cria a conta e persiste apple_sub."""
+    monkeypatch.setattr(auth, "_decode_apple_jwt_payload", _mock_apple("novo-sub", email="novo@apple.com"))
+    client, db = build()
+
+    r = client.post("/auth/social", json={
+        "provider": "apple",
+        "token": "apple-token-primeira-vez",
+        "full_name": "Novo Apple",
+    })
+
+    assert r.status_code == 200, r.text
+    assert r.json()["user"]["email"] == "novo@apple.com"
+    user = db.query(User).filter(User.email == "novo@apple.com").one()
+    assert user.apple_sub == "novo-sub"
+
+
+def test_apple_verified_email_links_sub_to_existing_account(monkeypatch):
+    """Conta existente (por email verificado) recebe o apple_sub no 1º login Apple."""
+    monkeypatch.setattr(auth, "_decode_apple_jwt_payload", _mock_apple("link-sub", email="existe@apple.com"))
+    client, db = build(extra_users=[
+        dict(id="u-existe", email="existe@apple.com", password_hash="hash",
+             role="tutor", tenant_id=TENANT_ID, is_active=True)
+    ])
+
+    r = client.post("/auth/social", json={
+        "provider": "apple",
+        "token": "apple-token-link",
+    })
+
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    user = db.query(User).filter(User.email == "existe@apple.com").one()
+    assert user.apple_sub == "link-sub"
+
+
+# ------------------------------------------------- Google: validação de audience ---
+
+def _mock_tokeninfo(client_id: str):
+    async def _coro(access_token: str):
+        return {"issued_to": client_id, "azp": client_id, "email": "x@google.com"}
+    return _coro
+
+
+def test_google_audience_outside_allowlist_rejected(monkeypatch):
+    """SEC (confused deputy): access_token emitido para OUTRO app (issued_to fora da
+    allowlist) é rejeitado com 401, antes mesmo de buscar o userinfo."""
+    monkeypatch.setattr(auth, "_google_tokeninfo", _mock_tokeninfo("app-do-atacante.apps.googleusercontent.com"))
+
+    async def _boom_userinfo(token):
+        raise AssertionError("userinfo NÃO deveria ser chamado quando o audience é inválido")
+    monkeypatch.setattr(auth, "_google_fetch_userinfo", _boom_userinfo)
+
+    client, _ = build()
+    r = client.post("/auth/social", json={"provider": "google", "token": "token-de-outro-app"})
+
+    assert r.status_code == 401, r.text
+    assert "aplicativo" in r.json()["detail"].lower() or "emitido" in r.json()["detail"].lower()
+
+
+def test_google_audience_in_allowlist_ok(monkeypatch):
+    """access_token com issued_to dentro da allowlist segue normalmente e loga o usuário."""
+    from app.routes.auth import _google_allowed_client_ids
+    good_id = _google_allowed_client_ids()[0]
+    monkeypatch.setattr(auth, "_google_tokeninfo", _mock_tokeninfo(good_id))
+
+    async def _userinfo(token):
+        return {"email": "ok@google.com", "name": "OK User"}
+    monkeypatch.setattr(auth, "_google_fetch_userinfo", _userinfo)
+
+    client, db = build()
+    r = client.post("/auth/social", json={"provider": "google", "token": "token-do-nosso-app"})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["user"]["email"] == "ok@google.com"
+    assert db.query(User).filter(User.email == "ok@google.com").count() == 1
 
 
 def test_social_rate_limit_blocks_after_max_failures(monkeypatch):

@@ -84,12 +84,14 @@ def _reset_pii_crypto_cache():
 def _reset_ip_rate_limiters():
     """Zera os rate limiters por IP entre testes (singletons de módulo — A4 hardening)."""
     try:
-        from app.routes.auth import _register_rate_limiter, _social_rate_limiter
+        from app.routes.auth import _login_ip_rate_limiter, _register_rate_limiter, _social_rate_limiter
         _register_rate_limiter._failures.clear()
         _social_rate_limiter._failures.clear()
+        _login_ip_rate_limiter._failures.clear()
         yield
         _register_rate_limiter._failures.clear()
         _social_rate_limiter._failures.clear()
+        _login_ip_rate_limiter._failures.clear()
     except ImportError:
         yield
     try:

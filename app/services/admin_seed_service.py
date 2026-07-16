@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 from uuid import uuid5, NAMESPACE_URL
@@ -9,6 +10,8 @@ from app.core.security import get_password_hash, verify_password
 from app.models.user import User
 from app.services.tenant_seed_service import default_tenant_id
 
+
+_logger = logging.getLogger("aumigao.admin_seed")
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -44,13 +47,21 @@ def ensure_configured_admin_users(db: Session) -> list[User]:
             )
             db.add(user)
         else:
+            # SEC: conta JÁ existe — NÃO sobrescrever password_hash/is_active/role.
+            # Redefinir a senha do env aqui reverteria uma rotação de senha feita
+            # pela UI (o env fica desatualizado e "reanimaria" a senha antiga a cada
+            # boot). Só backfill NÃO-destrutivo (tenant_id/full_name se vazios) e um
+            # aviso quando as credenciais do env não conferem mais (esperado após
+            # rotação).
             user.tenant_id = user.tenant_id or tenant_id
-            user.role = config["role"]
-            user.is_active = True
-            if not verify_password(config["password"], user.password_hash):
-                user.password_hash = get_password_hash(config["password"])
             if not user.full_name:
                 user.full_name = config["full_name"]
+            if not verify_password(config["password"], user.password_hash or ""):
+                _logger.warning(
+                    "admin_seed: credenciais do env nao conferem para %s "
+                    "(esperado apos rotacao de senha pela UI; nao sobrescrevendo).",
+                    config["email"],
+                )
         admins.append(user)
     if admins:
         db.commit()

@@ -1,6 +1,7 @@
 ﻿import base64
 import json
 import logging
+import os
 import secrets
 import threading
 import time
@@ -85,6 +86,10 @@ _forgot_password_limiter = _make_rate_limiter(max_failures=3, window_seconds=900
 _register_rate_limiter = _make_rate_limiter(max_failures=10, window_seconds=3600, key_prefix="register")
 # social: 20 tentativas por hora por IP (mais alto pois o fluxo pode ter retentativas legítimas).
 _social_rate_limiter = _make_rate_limiter(max_failures=20, window_seconds=3600, key_prefix="social")
+# login: 2º limitador POR IP (o login_rate_limiter só limita por e-mail). Impede
+# password-spraying / enumeração distribuída variando o e-mail a partir do mesmo IP.
+# Limite alto (50/10min) para não afetar NAT/redes compartilhadas legítimas.
+_login_ip_rate_limiter = _make_rate_limiter(max_failures=50, window_seconds=600, key_prefix="login_ip")
 
 
 def _get_client_ip(request: Request) -> str:
@@ -249,12 +254,13 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
 
     client_ip = _get_client_ip(request)
     password = str(payload.password or "").strip()
-    if login_rate_limiter.is_blocked(email):
+    if login_rate_limiter.is_blocked(email) or _login_ip_rate_limiter.is_blocked(client_ip):
         raise HTTPException(status_code=429, detail="Muitas tentativas de login. Tente novamente mais tarde.")
 
     user = db.query(User).filter(User.email == email).first()
     if not user or not verify_password(password, user.password_hash):
         login_rate_limiter.record_failure(email)
+        _login_ip_rate_limiter.record_failure(client_ip)
         _auth_logger.warning(
             "login_failed email=%s ip=%s",
             _mask_email(email), client_ip,
@@ -331,7 +337,51 @@ def refresh_token_endpoint(payload: RefreshRequest, db: Session = Depends(get_db
     return {"access_token": new_access, "token_type": "bearer"}
 
 
-async def _google_user_info(access_token: str) -> dict:
+# Client IDs OAuth do app Google (iOS/Android/Web + variantes). São identificadores
+# PÚBLICOS (não são segredos) — safe hardcodar como allowlist, mesmo padrão de
+# _apple_allowed_audiences(). Env GOOGLE_OAUTH_CLIENT_IDS (CSV) sobrepõe o default.
+_GOOGLE_DEFAULT_CLIENT_IDS = [
+    "744756614214-r1ps0fjaregds3bgn5m4d65sebcs513t.apps.googleusercontent.com",
+    "744756614214-b23v0ah52tvc65mn45fo9snvsqqthcrc.apps.googleusercontent.com",
+    "744756614214-gfhjqvfnsjefrqa9nr6avocicg6tktkf.apps.googleusercontent.com",
+    "744756614214-13adc7rd3sv3s5il8biul6t9d2as3k3u.apps.googleusercontent.com",
+    "744756614214-tovr7ve86ase60omqqai7n4f1cdej0t2.apps.googleusercontent.com",
+]
+
+
+def _google_allowed_client_ids() -> list[str]:
+    """Allowlist de client IDs OAuth que podem emitir tokens aceitos aqui.
+
+    Espelha _apple_allowed_audiences(): lê CSV de GOOGLE_OAUTH_CLIENT_IDS, com
+    fallback para os IDs conhecidos hardcoded (públicos).
+    """
+    env_val = os.getenv("GOOGLE_OAUTH_CLIENT_IDS", "").strip()
+    ids = [c.strip() for c in env_val.split(",") if c.strip()]
+    return ids or list(_GOOGLE_DEFAULT_CLIENT_IDS)
+
+
+async def _google_tokeninfo(access_token: str) -> dict:
+    """Consulta o endpoint tokeninfo do Google (usado p/ validar o AUDIENCE do token).
+
+    Retorna o JSON de tokeninfo, que inclui ``issued_to``/``azp`` — o client_id que
+    emitiu o access_token. Rede/timeout ou status != 200 → HTTPException 401
+    (fail-closed: nunca deixa passar sem validar).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://www.googleapis.com/oauth2/v1/tokeninfo",
+                params={"access_token": access_token},
+            )
+    except Exception as exc:
+        _auth_logger.warning("google_tokeninfo_network_error reason=%s", type(exc).__name__)
+        raise HTTPException(status_code=401, detail="Não foi possível validar o token Google. Tente novamente.")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Token Google inválido ou expirado.")
+    return resp.json()
+
+
+async def _google_fetch_userinfo(access_token: str) -> dict:
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(
             "https://www.googleapis.com/oauth2/v3/userinfo",
@@ -340,6 +390,22 @@ async def _google_user_info(access_token: str) -> dict:
     if resp.status_code != 200:
         raise HTTPException(status_code=401, detail="Token Google inválido ou expirado.")
     return resp.json()
+
+
+async def _google_user_info(access_token: str) -> dict:
+    """Retorna o perfil Google do usuário APÓS validar o audience do token.
+
+    SEC (confused deputy): valida que o access_token foi emitido para ESTE app —
+    compara ``issued_to``/``azp`` do tokeninfo contra a allowlist de client IDs.
+    Sem isso, um token Google válido emitido para OUTRO app poderia autenticar aqui.
+    Fail-closed: falha de rede no tokeninfo é tratada como rejeição.
+    """
+    tokeninfo = await _google_tokeninfo(access_token)
+    issued_to = (tokeninfo.get("issued_to") or tokeninfo.get("azp") or "").strip()
+    if issued_to not in _google_allowed_client_ids():
+        _auth_logger.warning("google_audience_rejected issued_to=%s", issued_to or "<vazio>")
+        raise HTTPException(status_code=401, detail="Token Google não foi emitido para este aplicativo.")
+    return await _google_fetch_userinfo(access_token)
 
 
 def _decode_apple_jwt_payload(identity_token: str) -> dict:
@@ -415,6 +481,48 @@ def _decode_apple_jwt_payload(identity_token: str) -> dict:
     raise HTTPException(status_code=401, detail="Token Apple com audience inválido.")
 
 
+def _create_social_tutor(
+    db: Session,
+    request: Request,
+    *,
+    email: str,
+    full_name: str,
+    app_target: str | None,
+    apple_sub: str | None = None,
+) -> User:
+    """Cria uma conta de tutor via social login (Google/Apple).
+
+    Passeadores não podem criar conta via social login — precisam do fluxo de
+    cadastro com documentos. Se app_target=walker, bloqueia (403).
+    """
+    if app_target == "walker":
+        raise HTTPException(
+            status_code=403,
+            detail="Passeadores devem se cadastrar pelo formulário de candidatura. Use email e senha para entrar se já tiver conta.",
+        )
+    tenant_id = getattr(request.state, "tenant_id", None) or default_tenant_id(db)
+    user = User(
+        id=str(uuid4()),
+        email=email,
+        full_name=full_name or email.split("@")[0],
+        role="tutor",
+        password_hash="",
+        tenant_id=tenant_id,
+        is_active=True,
+        apple_sub=apple_sub,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    # F1.2: boas-vindas para contas novas criadas via social login
+    threading.Thread(
+        target=send_welcome_email,
+        args=(user.email, user.full_name or ""),
+        daemon=True,
+    ).start()
+    return user
+
+
 @router.post("/social", response_model=TokenResponse)
 async def social_login(payload: SocialLoginPayload, request: Request, db: Session = Depends(get_db)):
     client_ip = _get_client_ip(request)
@@ -430,46 +538,64 @@ async def social_login(payload: SocialLoginPayload, request: Request, db: Sessio
         info = await _google_user_info(payload.token)
         email = info.get("email", "").strip().lower()
         full_name = info.get("name") or ""
-    elif payload.provider == "apple":
-        token_data = _decode_apple_jwt_payload(payload.token)
-        email = (token_data.get("email") or payload.email or "").strip().lower()
-        full_name = payload.full_name or ""
-    else:
-        raise HTTPException(status_code=400, detail="Provider inválido. Use 'google' ou 'apple'.")
-
-    if not email:
-        raise HTTPException(status_code=400, detail="Email não disponível no token. Tente novamente.")
-
-    user = db.query(User).filter(User.email == email).first()
-    if not user:
-        # Passeadores não podem criar conta via social login — precisam do fluxo de cadastro
-        # com documentos. Se app_target=walker, bloqueia a criação de conta nova.
-        if payload.app_target == "walker":
-            raise HTTPException(
-                status_code=403,
-                detail="Passeadores devem se cadastrar pelo formulário de candidatura. Use email e senha para entrar se já tiver conta.",
+        if not email:
+            raise HTTPException(status_code=400, detail="Email não disponível no token. Tente novamente.")
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            user = _create_social_tutor(
+                db, request, email=email, full_name=full_name, app_target=payload.app_target
             )
-        tenant_id = getattr(request.state, "tenant_id", None) or default_tenant_id(db)
-        user = User(
-            id=str(uuid4()),
-            email=email,
-            full_name=full_name or email.split("@")[0],
-            role="tutor",
-            password_hash="",
-            tenant_id=tenant_id,
-            is_active=True,
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-        # F1.2: boas-vindas para contas novas criadas via social login
-        threading.Thread(
-            target=send_welcome_email,
-            args=(user.email, user.full_name or ""),
-            daemon=True,
-        ).start()
+        return build_session(user)
 
-    return build_session(user)
+    if payload.provider == "apple":
+        token_data = _decode_apple_jwt_payload(payload.token)
+        # SEC (account-takeover): o `sub` vem SEMPRE do token assinado, NUNCA do
+        # payload client-supplied. É a âncora de identidade da conta Apple.
+        apple_sub = token_data["sub"]
+        # E-mail VERIFICADO só existe no token (1ª autorização). payload.email é
+        # client-supplied e JAMAIS decide qual conta autenticar.
+        verified_email = (token_data.get("email") or "").strip().lower()
+        # Metadados de UI (client-supplied) — só para exibição em conta nova.
+        display_name = payload.full_name or ""
+
+        # 1) Resolve pela âncora estável (sub). Este é o caminho normal de logins
+        #    subsequentes de contas já vinculadas.
+        user = db.query(User).filter(User.apple_sub == apple_sub).first()
+        if user:
+            return build_session(user)
+
+        # 2) Sem match por sub. Só podemos prosseguir com e-mail VERIFICADO do token.
+        if not verified_email:
+            # Login subsequente de conta cujo apple_sub ainda não foi persistido
+            # (usuário que logou via Apple ANTES desta correção). Dado histórico
+            # ausente — NUNCA usar payload.email para autenticar. Orienta re-vínculo.
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "Não foi possível concluir o login com a Apple. "
+                    "Entre uma vez com e-mail e senha para revincular sua conta e tente novamente."
+                ),
+            )
+
+        # 3) Busca/cria por e-mail VERIFICADO e persiste o apple_sub para os
+        #    próximos logins.
+        user = db.query(User).filter(User.email == verified_email).first()
+        if not user:
+            user = _create_social_tutor(
+                db,
+                request,
+                email=verified_email,
+                full_name=display_name,
+                app_target=payload.app_target,
+                apple_sub=apple_sub,
+            )
+        elif not user.apple_sub:
+            user.apple_sub = apple_sub
+            db.commit()
+            db.refresh(user)
+        return build_session(user)
+
+    raise HTTPException(status_code=400, detail="Provider inválido. Use 'google' ou 'apple'.")
 
 
 # --------------------------------------------------------- forgot-password ----

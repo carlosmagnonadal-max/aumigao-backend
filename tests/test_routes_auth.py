@@ -22,7 +22,7 @@ from app.middleware.tenant_resolver import TenantResolverMiddleware
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.routes import auth
-from app.routes.auth import _register_rate_limiter, _social_rate_limiter
+from app.routes.auth import _login_ip_rate_limiter, _register_rate_limiter, _social_rate_limiter
 from app.services.login_rate_limiter import login_rate_limiter
 from app.services.tenant_seed_service import DEFAULT_TENANT_SLUG
 
@@ -102,10 +102,12 @@ def _reset_rate_limiter():
     login_rate_limiter._failures.clear()
     _register_rate_limiter._failures.clear()
     _social_rate_limiter._failures.clear()
+    _login_ip_rate_limiter._failures.clear()
     yield
     login_rate_limiter._failures.clear()
     _register_rate_limiter._failures.clear()
     _social_rate_limiter._failures.clear()
+    _login_ip_rate_limiter._failures.clear()
 
 
 # ---------------------------------------------------------------- register ---
@@ -329,6 +331,51 @@ def test_login_rate_limit_blocks_after_max_failures():
     r = client.post("/auth/login", json={"email": "rl@test.com", "password": "senha1234"})
     assert r.status_code == 429
     assert "tentativas" in r.json()["detail"].lower()
+
+
+def test_login_ip_rate_limit_blocks_across_different_emails():
+    """SEC: o limitador POR IP bloqueia após 50 falhas do mesmo IP, mesmo variando o e-mail.
+
+    O limitador só-por-email não pega password-spraying distribuído (1 tentativa por
+    e-mail). O limitador por IP fecha essa brecha.
+    """
+    IP = "203.0.113.7"
+    client, _ = build(users=[make_user(email="alvo@test.com", password="senha1234")])
+    # 50 falhas, cada uma com um e-mail DIFERENTE (nunca bloqueia o limitador por email).
+    for i in range(50):
+        r = client.post(
+            "/auth/login",
+            json={"email": f"spray{i}@test.com", "password": "errada99"},
+            headers={"X-Forwarded-For": IP},
+        )
+        assert r.status_code == 401, r.text
+    # 51ª tentativa do MESMO IP — mesmo com um e-mail novo e válido — é bloqueada por IP.
+    r = client.post(
+        "/auth/login",
+        json={"email": "alvo@test.com", "password": "senha1234"},
+        headers={"X-Forwarded-For": IP},
+    )
+    assert r.status_code == 429, r.text
+    assert "tentativas" in r.json()["detail"].lower()
+
+
+def test_login_ip_rate_limit_does_not_affect_other_ips():
+    """O bloqueio por IP é isolado: outro IP continua conseguindo logar."""
+    IP_BAD = "203.0.113.8"
+    client, _ = build(users=[make_user(email="ok@test.com", password="senha1234")])
+    for i in range(50):
+        client.post(
+            "/auth/login",
+            json={"email": f"x{i}@test.com", "password": "errada99"},
+            headers={"X-Forwarded-For": IP_BAD},
+        )
+    # IP diferente loga normalmente.
+    r = client.post(
+        "/auth/login",
+        json={"email": "ok@test.com", "password": "senha1234"},
+        headers={"X-Forwarded-For": "198.51.100.9"},
+    )
+    assert r.status_code == 200, r.text
 
 
 def test_login_success_clears_rate_limit_counter():

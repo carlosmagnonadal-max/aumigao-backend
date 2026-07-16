@@ -17,7 +17,9 @@ from app.routes import walks as walks_module
 from app.models.tenant import Tenant, TenantFeature
 from app.models.user import User
 from app.models.pet import Pet
-from app.models.walk import Walk
+from app.models.walk import Walk, WalkMatchingAttempt
+from app.models.walker_profile import WalkerProfile
+from app.models.tenant_walker_access import TenantWalkerAccess
 from app.models.payment import Payment
 from app.models.recurring_plan import (
     RecurringPlan, TutorSubscription, SUBSCRIPTION_ACTIVE,
@@ -428,6 +430,102 @@ def test_grant_credits_on_first_payment():
     assert grant_credits_on_payment(db, sub) is False
     # agora consome normalmente
     assert consume_credit_if_available(db, tenant, TUTOR_ID) is not None
+
+
+WALKER_E_ID = "walker-eligible"
+
+
+def _seed_eligible_walker(db, tenant, walker_id=WALKER_E_ID):
+    """Passeador elegivel para o pool do tenant (mesmo padrao de test_routes_matching):
+    User(role=walker) + WalkerProfile ativo + TenantWalkerAccess ativo na rede."""
+    db.add(User(id=walker_id, email=f"{walker_id}@x.com", password_hash="x",
+                role="walker", tenant_id=tenant.id, is_active=True))
+    db.add(WalkerProfile(
+        id=f"profile-{walker_id}", user_id=walker_id, full_name="Passeador Elegivel",
+        status="active", active_as_walker=True, city="salvador",
+        created_at=datetime.utcnow(),
+    ))
+    db.add(TenantWalkerAccess(
+        id=f"twa-{walker_id}", tenant_id=tenant.id, walker_user_id=walker_id,
+        status="active", access_type="shared_network",
+    ))
+    db.commit()
+
+
+def _subscription_walk_payload(**extra):
+    base = {
+        "pet_id": "pet-1",
+        "scheduled_date": "2026-07-01T10:00:00",
+        "duration_minutes": 30,
+        "price": 40.0,
+        "pickup_method": "Buscar em casa",
+        "address_snapshot": "Rua A, 100 - Centro",
+        "notes": "",
+    }
+    base.update(extra)
+    return base
+
+
+def test_create_walk_covered_by_subscription_enters_matching_queue(monkeypatch):
+    """BUG passeio orfao de plano mensal: passeio coberto por credito de assinatura
+    NAO tem webhook Asaas para libera-lo; o matching precisa disparar no proprio
+    create. Apos POST /walks, deve existir uma WalkMatchingAttempt (o passeio entra
+    na fila /walker/requests). Usa modo exclusivo (only_selected) para a criacao da
+    tentativa ser deterministica, respeitando o passeador escolhido pelo tutor.
+    Gate LIGADO (cenario de producao): so a cobertura de assinatura libera o passeio."""
+    monkeypatch.setenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "true")
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    subscribe(db, tenant, TUTOR_ID, plan.id)  # concede 4 creditos
+    _seed_eligible_walker(db, tenant)
+    client = _make_walks_client(db)
+
+    resp = client.post("/walks", json=_subscription_walk_payload(
+        walker_id=WALKER_E_ID, walker_selection_mode="only_selected",
+    ))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    walk_id = body["id"]
+
+    # Passeio coberto pela assinatura (sem cobranca avulsa) e nasce liberado.
+    assert db.get(Walk, walk_id).subscription_id is not None
+    assert body["operational_status"] == "pending_walker_confirmation"
+
+    # O passeio ENTROU na fila: existe uma tentativa de matching pendente para o
+    # passeador escolhido (exigencia de /walker/requests).
+    attempt = (
+        db.query(WalkMatchingAttempt)
+        .filter(WalkMatchingAttempt.walk_id == walk_id)
+        .first()
+    )
+    assert attempt is not None, "passeio de assinatura ficou orfao (nenhuma WalkMatchingAttempt)"
+    assert attempt.walker_id == WALKER_E_ID  # modo exclusivo respeitado
+    assert attempt.status == "pending"
+    assert db.get(Walk, walk_id).assigned_walker_id == WALKER_E_ID
+
+
+def test_create_walk_awaiting_payment_does_not_enter_matching(monkeypatch):
+    """Nao-regressao: com o gate ligado e SEM assinatura, o passeio nasce
+    'awaiting_payment' e NAO cria matching no create — a liberacao continua indo
+    pelo webhook do Asaas (payments.py), sem duplicar."""
+    monkeypatch.setenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "true")
+    db = _make_db(); tenant = _tenant(db)
+    _seed_eligible_walker(db, tenant)  # ha passeador disponivel, mas nao deve ser acionado
+    client = _make_walks_client(db)
+
+    resp = client.post("/walks", json=_subscription_walk_payload())
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    walk_id = body["id"]
+
+    assert body["operational_status"] == "awaiting_payment"
+    assert db.get(Walk, walk_id).subscription_id is None
+    attempt = (
+        db.query(WalkMatchingAttempt)
+        .filter(WalkMatchingAttempt.walk_id == walk_id)
+        .first()
+    )
+    assert attempt is None, "awaiting_payment nao deve criar matching no create (vai pelo webhook)"
 
 
 def test_refund_double_call_same_walk_no_double_credit():

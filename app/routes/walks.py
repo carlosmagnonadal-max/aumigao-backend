@@ -602,6 +602,29 @@ def create_walk(payload: WalkCreate, request: Request, user: User = Depends(get_
             walk.id,
         )
 
+        # BUG plano mensal: quando o walk nasce JÁ liberado (não awaiting_payment) —
+        # coberto por crédito de assinatura, ou gate _require_payment_before_matching
+        # DESLIGADO — ele precisa entrar no matching AQUI. O ramo awaiting_payment
+        # (passeio avulso pago) continua sendo promovido pelo webhook do Asaas
+        # (payments.py), então NÃO disparamos matching nele para não duplicar.
+        # Passeio de assinatura não tem webhook: sem este disparo, nenhuma
+        # WalkMatchingAttempt é criada e o passeio fica órfão fora da fila
+        # /walker/requests. Mesmo padrão do webhook: commit ANTES do matching
+        # (walk/crédito já persistidos), best-effort com rollback isolado — falha
+        # aqui não pode derrubar a criação do passeio (dinheiro já liquidado).
+        # start_matching respeita walker_selection_mode: modo exclusivo reusa
+        # assigned_walker_id, modo auto ranqueia.
+        if walk.operational_status == "pending_walker_confirmation":
+            try:
+                start_matching(walk, db)
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.exception(
+                    "create_walk.start_matching_failed walk_id=%s",
+                    walk.id,
+                )
+
         db.refresh(walk)
 
         logger.warning(

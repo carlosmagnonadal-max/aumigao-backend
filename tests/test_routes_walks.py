@@ -139,7 +139,13 @@ def _seed_walk_review(db, *, walk_id: str, rating: int, walker_id: str = WALKER_
 
 
 # --------------------------------------------------------------- create -----
-def test_create_walk_defers_matching_to_pending_confirmation():
+def test_create_walk_born_ready_dispatches_matching(monkeypatch):
+    # Gate OFF (default do conftest): o passeio nasce liberado (pending_walker_confirmation)
+    # e AGORA dispara start_matching no proprio create (fix do passeio orfao). Aqui o
+    # matching e isolado com um spy para testar so a logica de gate/estado; o teste
+    # end-to-end (attempt real criada) esta em test_recurring_plan_credits.py.
+    calls = []
+    monkeypatch.setattr(walks, "start_matching", lambda walk, db: calls.append(walk.id))
     client, _ = build()
     r = client.post("/walks", json=_walk_create_payload())
     assert r.status_code == 200, r.text
@@ -147,10 +153,11 @@ def test_create_walk_defers_matching_to_pending_confirmation():
     assert body["tutor_id"] == TUTOR_ID
     assert body["pet_id"] == PET_ID
     assert body["pet_name"] == "Rex"
-    # Matching inicial adiado: passeio nasce aguardando confirmacao, status legado Agendado.
+    # Passeio nasce liberado (status legado Agendado) e o matching foi disparado.
     assert body["operational_status"] == "pending_walker_confirmation"
     assert body["status"] == "Agendado"
     assert body["walker_selection_mode"] == "auto"
+    assert calls == [body["id"]]
 
 
 # --------------------------------------------------- create (gate ON) -------
@@ -169,12 +176,16 @@ def test_create_walk_gate_on_born_awaiting_payment(monkeypatch):
 
 def test_create_walk_gate_on_subscription_born_scheduled(monkeypatch):
     # R7: passeio coberto por assinatura ativa NÃO passa pelo gate — nasce agendado.
+    # Sem webhook para liberar o passeio de assinatura, o matching precisa disparar
+    # no proprio create (fix do passeio orfao) — verificado aqui pelo spy.
     monkeypatch.setenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "true")
 
     class _FakeSub:
         id = "sub-1"
 
     monkeypatch.setattr(walks, "consume_credit_if_available", lambda db, tenant, tutor_id: _FakeSub())
+    calls = []
+    monkeypatch.setattr(walks, "start_matching", lambda walk, db: calls.append(walk.id))
     # record_revenue_recognized_safe é import lazy e best-effort (try/except) — inócuo aqui.
     client, _ = build()
     r = client.post("/walks", json=_walk_create_payload())
@@ -182,6 +193,8 @@ def test_create_walk_gate_on_subscription_born_scheduled(monkeypatch):
     body = r.json()
     assert body["operational_status"] == "pending_walker_confirmation"
     assert body["status"] == "Agendado"
+    # Passeio de assinatura entra no matching no create (nao ha webhook para ele).
+    assert calls == [body["id"]]
 
 
 def test_create_walk_persists_and_appears_in_list():

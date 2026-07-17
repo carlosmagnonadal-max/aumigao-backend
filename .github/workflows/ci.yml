@@ -67,8 +67,7 @@ jobs:
             --ignore=tests/test_iteration58_verification_retest.py \
             --ignore=tests/test_iteration64_kit_ui_retest_backend.py \
             --ignore=tests/test_iteration74_retest_pet_admin_schedule.py \
-            --ignore=tests/test_walk_pricing_shared_rules.py \
-            --ignore=tests/test_walks_api.py
+            --ignore=tests/test_walk_pricing_shared_rules.py
 
       - name: Check Alembic single head
         run: |

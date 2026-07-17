@@ -539,6 +539,7 @@
   "POST /api/walks/{walk_id}/share-link",
   "POST /auth/change-password",
   "POST /auth/forgot-password",
+  "POST /auth/link-apple",
   "POST /auth/login",
   "POST /auth/logout",
   "POST /auth/refresh",

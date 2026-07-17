@@ -33,3 +33,8 @@ class UserResponse(ORMModel):
     # Plumbing tenant_id: permite que o admin-web saiba qual tenant o usuário pertence
     # (necessário para tenant-admin ver o próprio extrato de provisão fiscal).
     tenant_id: str | None = None
+    # apple_linked: booleano derivado (apple_sub não-nulo) — o app usa para decidir se
+    # oferece a vinculação de Apple ID. Populado via property User.apple_linked
+    # (from_attributes). NUNCA expor o apple_sub em si. Default False para objetos que
+    # não expõem a property (defense-in-depth).
+    apple_linked: bool = False

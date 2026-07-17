@@ -27,6 +27,15 @@ class User(Base):
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+    @property
+    def apple_linked(self) -> bool:
+        """True quando a conta tem uma Apple ID vinculada (apple_sub não-nulo).
+
+        Exposto no perfil (UserResponse) para o app decidir se mostra o fluxo de
+        vinculação. NUNCA expõe o apple_sub em si — só o booleano derivado.
+        """
+        return self.apple_sub is not None
+
     tutor_profile = relationship("TutorProfile", back_populates="user", uselist=False)
     walker_profile = relationship("WalkerProfile", back_populates="user", uselist=False)
     pets = relationship("Pet", back_populates="tutor")

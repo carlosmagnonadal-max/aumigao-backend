@@ -13,6 +13,7 @@ import httpx
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 _apple_logger = logging.getLogger("aumigao.apple_auth")
@@ -118,6 +119,11 @@ class ChangePasswordRequest(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str = Field(..., max_length=4096)
+
+
+class LinkAppleRequest(BaseModel):
+    # identity_token JWT da Apple — mesmo limite defensivo do SocialLoginPayload.
+    token: str = Field(..., max_length=4096)
 
 
 # Rate limiter dedicado para change-password: 5 tentativas por 15 min (por user_id).
@@ -596,6 +602,64 @@ async def social_login(payload: SocialLoginPayload, request: Request, db: Sessio
         return build_session(user)
 
     raise HTTPException(status_code=400, detail="Provider inválido. Use 'google' ou 'apple'.")
+
+
+@router.post("/link-apple")
+def link_apple(
+    payload: LinkAppleRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Vincula EXPLICITAMENTE uma Apple ID à conta já autenticada.
+
+    Elimina a fricção do caso residual do login Apple: contas antigas cujo
+    apple_sub nunca foi persistido (a Apple só envia o e-mail verificado na 1ª
+    autorização). Aqui o usuário — já logado por e-mail/senha — prova posse da
+    Apple ID enviando um identity_token válido, que ancoramos no apple_sub.
+
+    SEC: o `sub` vem SEMPRE do token assinado (validado por _decode_apple_jwt_payload,
+    idêntico ao login social) — nunca de dado client-supplied. Nunca desvinculamos a
+    Apple ID de outra conta (risco de account-takeover): se o sub já pertence a outro
+    usuário, recusamos com 409.
+    """
+    # Valida assinatura RS256, iss, aud e exp — mesma função do login social.
+    # Propaga os status codes dela (401 inválido/expirado, 400 malformado,
+    # 503 JWKS indisponível), coerente com POST /auth/social.
+    token_data = _decode_apple_jwt_payload(payload.token)
+    sub = token_data["sub"]
+
+    # Idempotente: já vinculado a ESTA mesma Apple ID.
+    if user.apple_sub == sub:
+        return {"apple_linked": True}
+
+    # Conta já vinculada a OUTRA Apple ID — não sobrescrevemos silenciosamente.
+    if user.apple_sub:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "apple_ja_vinculada", "message": "Sua conta já está vinculada a outra Apple ID."},
+        )
+
+    # Este sub já pertence a OUTRO usuário — NÃO desvincular (takeover). Recusa.
+    existing = db.query(User).filter(User.apple_sub == sub).first()
+    if existing and existing.id != user.id:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "apple_em_uso", "message": "Esta Apple ID já está vinculada a outra conta."},
+        )
+
+    user.apple_sub = sub
+    try:
+        db.commit()
+    except IntegrityError:
+        # Corrida: outra request vinculou o mesmo sub entre o SELECT acima e o commit.
+        # A coluna é UNIQUE (models/user.py) — trata como apple_em_uso.
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "apple_em_uso", "message": "Esta Apple ID já está vinculada a outra conta."},
+        )
+    db.refresh(user)
+    return {"apple_linked": True}
 
 
 # --------------------------------------------------------- forgot-password ----

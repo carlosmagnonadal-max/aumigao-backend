@@ -181,6 +181,68 @@ def test_recurring_plans_subscribe_happy_path():
     assert grant_credits_on_payment(db, sub_obj) is False
 
 
+def test_my_cycle_walks_without_subscription_returns_empty():
+    """Task 2: sem assinatura ativa → 200 com subscription:null e lista vazia."""
+    client, _ = build(features={"recurring_plans"})
+    r = client.get("/recurring-plans/my-cycle-walks")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["subscription"] is None
+    assert body["walks"] == []
+    assert body["credits_remaining"] is None
+
+
+def test_my_cycle_walks_lists_current_cycle():
+    """Task 2: lista os passeios com subscription_id da assinatura atual dentro do
+    período corrente, com pet_name/status/credit_refunded, ordenados por data desc."""
+    from datetime import datetime, timedelta
+
+    from app.models.recurring_plan import RecurringPlan, TutorSubscription, SUBSCRIPTION_ACTIVE
+    from app.models.walk import Walk
+
+    client, db = build(features={"recurring_plans"}, pets=["rex"])
+    now = datetime.utcnow()
+    db.add(RecurringPlan(id="plan1", tenant_id=TENANT_ID, name="Mensal 8", price=99.0, walks_per_cycle=8, active=True))
+    sub = TutorSubscription(
+        id="sub1", tenant_id=TENANT_ID, plan_id="plan1", tutor_id=TUTOR_ID,
+        status=SUBSCRIPTION_ACTIVE, price=99.0, walks_per_cycle=8, credits_remaining=6,
+        current_period_start=now - timedelta(days=5), current_period_end=now + timedelta(days=25),
+    )
+    db.add(sub)
+    # 2 passeios do ciclo (subscription_id=sub1) + 1 fora (sem assinatura) + 1 de ciclo anterior.
+    db.add(Walk(id="w-new", tutor_id=TUTOR_ID, tenant_id=TENANT_ID, pet_id="rex",
+                scheduled_date="2026-07-10T09:00:00", duration_minutes=30, price=40.0,
+                status="Agendado", operational_status="pending_walker_confirmation",
+                subscription_id="sub1", created_at=now - timedelta(days=1)))
+    db.add(Walk(id="w-old-day", tutor_id=TUTOR_ID, tenant_id=TENANT_ID, pet_id="rex",
+                scheduled_date="2026-07-02T09:00:00", duration_minutes=30, price=40.0,
+                status="Cancelado", operational_status="ride_cancelled",
+                subscription_id="sub1", credit_refunded=True, created_at=now - timedelta(days=2)))
+    db.add(Walk(id="w-avulso", tutor_id=TUTOR_ID, tenant_id=TENANT_ID, pet_id="rex",
+                scheduled_date="2026-07-11T09:00:00", duration_minutes=30, price=40.0,
+                status="Agendado", operational_status="pending_walker_confirmation",
+                subscription_id=None, created_at=now - timedelta(days=1)))
+    db.add(Walk(id="w-prev-cycle", tutor_id=TUTOR_ID, tenant_id=TENANT_ID, pet_id="rex",
+                scheduled_date="2026-06-01T09:00:00", duration_minutes=30, price=40.0,
+                status="Agendado", operational_status="pending_walker_confirmation",
+                subscription_id="sub1", created_at=now - timedelta(days=40)))
+    db.commit()
+
+    r = client.get("/recurring-plans/my-cycle-walks")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["subscription"]["id"] == "sub1"
+    assert body["credits_remaining"] == 6
+    assert body["walks_per_cycle"] == 8
+    ids = [w["id"] for w in body["walks"]]
+    # Só os 2 do ciclo corrente com subscription_id (avulso e ciclo anterior excluídos).
+    assert ids == ["w-new", "w-old-day"]  # ordem desc por scheduled_date
+    first = body["walks"][0]
+    assert first["pet_name"] == "rex"
+    assert first["credit_refunded"] is False
+    assert body["walks"][1]["credit_refunded"] is True
+
+
 def test_shared_walk_full_lifecycle_two_tutors():
     client, db = build(features={"shared_walks"}, pets=["rex"])
     # convidado: 2o tutor + pet apto a compartilhar

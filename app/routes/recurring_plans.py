@@ -108,6 +108,80 @@ async def cancel_my_subscription(request: Request, user: User = Depends(get_curr
     return _subscription_response(db, subscription)
 
 
+@router.get("/my-cycle-walks")
+@api_router.get("/my-cycle-walks")
+def my_cycle_walks(request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Histórico dos passeios do CICLO corrente do plano do tutor.
+
+    Retorna os passeios cobertos pela assinatura atual (subscription_id) criados
+    dentro do período vigente (current_period_start/end), com o essencial para a UI
+    de acompanhamento do plano. Sem assinatura ativa → 200 com subscription:null e
+    lista vazia (a tela mostra o estado "sem plano" sem tratar erro).
+    """
+    from app.models.pet import Pet
+    from app.models.walk import Walk
+
+    tenant = _resolve_user_tenant(user, db, request)
+    subscription = svc.get_active_subscription(db, tenant.id, user.id)
+    if subscription is None:
+        return {
+            "subscription": None,
+            "walks": [],
+            "period_start": None,
+            "period_end": None,
+            "walks_per_cycle": None,
+            "credits_remaining": None,
+        }
+
+    period_start = subscription.current_period_start
+    period_end = subscription.current_period_end
+
+    query = db.query(Walk).filter(Walk.subscription_id == subscription.id)
+    if period_start is not None:
+        query = query.filter(Walk.created_at >= period_start)
+    if period_end is not None:
+        query = query.filter(Walk.created_at <= period_end)
+    # scheduled_date é ISO ("YYYY-MM-DDThh:mm:ss") — ordenação lexicográfica = cronológica.
+    walks = query.order_by(Walk.scheduled_date.desc(), Walk.created_at.desc()).all()
+
+    pet_ids = {w.pet_id for w in walks if w.pet_id}
+    pet_names = (
+        {p.id: p.name for p in db.query(Pet).filter(Pet.id.in_(pet_ids)).all()}
+        if pet_ids
+        else {}
+    )
+
+    def _serialize(walk) -> dict:
+        date_part, _, time_part = (walk.scheduled_date or "").partition("T")
+        pet_name = pet_names.get(walk.pet_id)
+        return {
+            "id": walk.id,
+            "scheduled_date": walk.scheduled_date,
+            "walk_date": date_part or None,
+            "walk_time": (time_part[:5] if time_part else None),
+            "status": walk.status,
+            "operational_status": walk.operational_status,
+            "pet_id": walk.pet_id,
+            "pet_name": pet_name,
+            "pet_names": [pet_name] if pet_name else [],
+            "credit_refunded": bool(getattr(walk, "credit_refunded", False)),
+        }
+
+    return {
+        "subscription": {
+            "id": subscription.id,
+            "plan_id": subscription.plan_id,
+            "plan_name": svc.plan_name_for(db, subscription),
+            "status": subscription.status,
+        },
+        "walks": [_serialize(w) for w in walks],
+        "period_start": period_start,
+        "period_end": period_end,
+        "walks_per_cycle": subscription.walks_per_cycle,
+        "credits_remaining": subscription.credits_remaining,
+    }
+
+
 @router.get("/subscription/payment")
 @api_router.get("/subscription/payment")
 async def get_subscription_payment(

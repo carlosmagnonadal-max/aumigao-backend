@@ -466,17 +466,14 @@ def _subscription_walk_payload(**extra):
     return base
 
 
-def test_create_walk_covered_by_subscription_enters_matching_queue(monkeypatch):
-    """BUG passeio orfao de plano mensal: passeio coberto por credito de assinatura
-    NAO tem webhook Asaas para libera-lo; o matching precisa disparar no proprio
-    create. Apos POST /walks, deve existir uma WalkMatchingAttempt (o passeio entra
-    na fila /walker/requests). Usa modo exclusivo (only_selected) para a criacao da
-    tentativa ser deterministica, respeitando o passeador escolhido pelo tutor.
-    Gate LIGADO (cenario de producao): so a cobertura de assinatura libera o passeio."""
+def test_create_walk_with_subscription_is_awaiting_payment_no_debit(monkeypatch):
+    """Projeto A (2 fases): com assinatura ATIVA e crédito, o passeio NÃO debita no
+    create — nasce 'awaiting_payment', subscription_id NULL, subscription_eligible
+    True e SEM matching. O passeador só é acionado após confirm-plan."""
     monkeypatch.setenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "true")
     db = _make_db(); tenant = _tenant(db)
     plan = _make_plan(db, tenant, walks_per_cycle=4)
-    subscribe(db, tenant, TUTOR_ID, plan.id)  # concede 4 creditos
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)  # 4 créditos
     _seed_eligible_walker(db, tenant)
     client = _make_walks_client(db)
 
@@ -487,21 +484,108 @@ def test_create_walk_covered_by_subscription_enters_matching_queue(monkeypatch):
     body = resp.json()
     walk_id = body["id"]
 
-    # Passeio coberto pela assinatura (sem cobranca avulsa) e nasce liberado.
-    assert db.get(Walk, walk_id).subscription_id is not None
-    assert body["operational_status"] == "pending_walker_confirmation"
+    assert body["operational_status"] == "awaiting_payment"
+    assert body["subscription_eligible"] is True
+    assert db.get(Walk, walk_id).subscription_id is None
+    db.refresh(sub)
+    assert sub.credits_remaining == 4  # NADA debitado no create
+    attempt = db.query(WalkMatchingAttempt).filter(WalkMatchingAttempt.walk_id == walk_id).first()
+    assert attempt is None, "create de plano não deve disparar matching (só confirm-plan)"
 
-    # O passeio ENTROU na fila: existe uma tentativa de matching pendente para o
-    # passeador escolhido (exigencia de /walker/requests).
-    attempt = (
-        db.query(WalkMatchingAttempt)
-        .filter(WalkMatchingAttempt.walk_id == walk_id)
-        .first()
-    )
-    assert attempt is not None, "passeio de assinatura ficou orfao (nenhuma WalkMatchingAttempt)"
-    assert attempt.walker_id == WALKER_E_ID  # modo exclusivo respeitado
+
+def test_confirm_plan_debits_and_enters_matching(monkeypatch):
+    """confirm-plan: debita 1 crédito, seta subscription_id, promove e dispara o
+    matching (o passeio entra na fila /walker/requests)."""
+    monkeypatch.setenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "true")
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)
+    _seed_eligible_walker(db, tenant)
+    client = _make_walks_client(db)
+
+    walk_id = client.post("/walks", json=_subscription_walk_payload(
+        walker_id=WALKER_E_ID, walker_selection_mode="only_selected",
+    )).json()["id"]
+
+    resp = client.post(f"/walks/{walk_id}/confirm-plan")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["operational_status"] == "pending_walker_confirmation"
+    assert body["subscription_eligible"] is False  # já confirmado
+
+    walk = db.get(Walk, walk_id)
+    assert walk.subscription_id == sub.id
+    db.refresh(sub)
+    assert sub.credits_remaining == 3  # 4 -> 3
+
+    attempt = db.query(WalkMatchingAttempt).filter(WalkMatchingAttempt.walk_id == walk_id).first()
+    assert attempt is not None, "confirm-plan não colocou o passeio na fila"
+    assert attempt.walker_id == WALKER_E_ID
     assert attempt.status == "pending"
-    assert db.get(Walk, walk_id).assigned_walker_id == WALKER_E_ID
+    assert walk.assigned_walker_id == WALKER_E_ID
+
+
+def test_confirm_plan_idempotent_no_double_debit(monkeypatch):
+    """confirm-plan chamado 2× no mesmo walk: debita 1× só. A 2ª é idempotente (200)."""
+    monkeypatch.setenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "true")
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)
+    _seed_eligible_walker(db, tenant)
+    client = _make_walks_client(db)
+
+    walk_id = client.post("/walks", json=_subscription_walk_payload(
+        walker_id=WALKER_E_ID, walker_selection_mode="only_selected",
+    )).json()["id"]
+
+    r1 = client.post(f"/walks/{walk_id}/confirm-plan")
+    r2 = client.post(f"/walks/{walk_id}/confirm-plan")
+    assert r1.status_code == 200 and r2.status_code == 200, (r1.text, r2.text)
+    db.refresh(sub)
+    assert sub.credits_remaining == 3  # debitou só 1 crédito nas 2 chamadas
+
+
+def test_confirm_plan_without_credit_returns_409(monkeypatch):
+    """Sem crédito no plano: confirm-plan → 409 sem_credito; passeio segue avulso."""
+    monkeypatch.setenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "true")
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=1)
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)
+    sub.credits_remaining = 0; db.add(sub); db.commit()  # esgotado
+    client = _make_walks_client(db)
+
+    walk_id = client.post("/walks", json=_subscription_walk_payload()).json()["id"]
+    resp = client.post(f"/walks/{walk_id}/confirm-plan")
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "sem_credito"
+    assert db.get(Walk, walk_id).subscription_id is None
+    assert db.get(Walk, walk_id).operational_status == "awaiting_payment"
+
+
+def test_confirm_plan_preset_subscription_is_idempotent(monkeypatch):
+    """Walk já com subscription_id (confirmado): confirm-plan é no-op idempotente e
+    NÃO debita crédito de novo (guarda anti-double-spend a nível de walk)."""
+    monkeypatch.setenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "true")
+    db = _make_db(); tenant = _tenant(db)
+    plan = _make_plan(db, tenant, walks_per_cycle=4)
+    sub = subscribe(db, tenant, TUTOR_ID, plan.id)
+    consume_credit_if_available(db, tenant, TUTOR_ID); db.commit()  # 4 -> 3
+    walk = _make_covered_walk(db, tenant, sub)  # já tem subscription_id
+    walk.operational_status = "pending_walker_confirmation"; db.add(walk); db.commit()
+    client = _make_walks_client(db)
+
+    resp = client.post(f"/walks/{walk.id}/confirm-plan")
+    assert resp.status_code == 200, resp.text
+    db.refresh(sub)
+    assert sub.credits_remaining == 3  # nenhum débito adicional
+
+
+def test_confirm_plan_not_owner_returns_404(monkeypatch):
+    monkeypatch.setenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "true")
+    db = _make_db(); tenant = _tenant(db)
+    client = _make_walks_client(db)
+    resp = client.post("/walks/nao-existe/confirm-plan")
+    assert resp.status_code == 404, resp.text
 
 
 def test_create_walk_awaiting_payment_does_not_enter_matching(monkeypatch):

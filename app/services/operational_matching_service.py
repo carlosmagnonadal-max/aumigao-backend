@@ -568,9 +568,14 @@ def serialize_operational_walk(
     pet_photo_url = (pet.photo_url if pet else "") or ""
     if pet_photo_url.startswith(("file://", "content://", "blob:")):
         pet_photo_url = ""
+    # Projeto A (2 fases): sinaliza ao app que este passeio 'awaiting_payment' pode
+    # ser confirmado pelo plano do tutor (crédito disponível) — read-only, não debita.
+    from app.services.recurring_plan_service import walk_subscription_eligible
+    subscription_eligible = walk_subscription_eligible(db, walk)
     return {
         "id": walk.id,
         "tutor_id": walk.tutor_id,
+        "subscription_eligible": subscription_eligible,
         "walker_id": walker_id,
         "assigned_walker_id": walk.assigned_walker_id,
         "assignedWalkerId": walk.assigned_walker_id,

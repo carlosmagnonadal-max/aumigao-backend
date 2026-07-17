@@ -171,6 +171,45 @@ def _credit_spendable_predicate():
     )
 
 
+def _spendable_candidates_query(db: Session, tenant_id: str, tutor_id: str):
+    """Query (ordenada) das assinaturas do tutor cujos créditos são consumíveis.
+
+    Fonte ÚNICA da elegibilidade de crédito — usada tanto pelo consumo real
+    (consume_credit_if_available, que debita) quanto pela checagem read-only
+    (find_eligible_subscription, que só lê). Manter uma única definição evita que
+    a UI (subscription_eligible) e o débito real divirjam.
+
+    Ordem: canceladas-por-downgrade primeiro (não renovam — o tutor não perde o que
+    já pagou), depois a ativa (created_at asc como desempate estável).
+    """
+    from sqlalchemy import case
+
+    cancelled_first = case(
+        (TutorSubscription.status == SUBSCRIPTION_CANCELLED, 0), else_=1
+    )
+    return (
+        db.query(TutorSubscription)
+        .filter(
+            TutorSubscription.tenant_id == tenant_id,
+            TutorSubscription.tutor_id == tutor_id,
+            _credit_spendable_predicate(),
+            TutorSubscription.credits_remaining > 0,
+        )
+        .order_by(cancelled_first, TutorSubscription.created_at.asc())
+    )
+
+
+def find_eligible_subscription(db: Session, tenant: Tenant, tutor_id: str) -> TutorSubscription | None:
+    """Retorna a assinatura que cobriria 1 passeio do tutor SEM debitar crédito.
+
+    Projeto A (confirmação em 2 fases): a UI (subscription_eligible) precisa saber
+    se o tutor pode confirmar o passeio pelo plano ANTES de debitar. Espelha a
+    seleção de consume_credit_if_available (mesma _spendable_candidates_query), mas
+    é 100% read-only. None quando não há crédito consumível.
+    """
+    return _spendable_candidates_query(db, tenant.id, tutor_id).first()
+
+
 def consume_credit_if_available(db: Session, tenant: Tenant, tutor_id: str) -> TutorSubscription | None:
     """Consome 1 crédito de assinatura do tutor, de forma ATÔMICA.
 
@@ -188,24 +227,11 @@ def consume_credit_if_available(db: Session, tenant: Tenant, tutor_id: str) -> T
     Retorna a TutorSubscription (recarregada, com credits_remaining já decrementado;
     sem commit — o caller commita) ou None quando não há crédito consumível.
     """
-    from sqlalchemy import case
-
-    cancelled_first = case(
-        (TutorSubscription.status == SUBSCRIPTION_CANCELLED, 0), else_=1
-    )
     candidate_ids = [
-        row[0]
-        for row in (
-            db.query(TutorSubscription.id)
-            .filter(
-                TutorSubscription.tenant_id == tenant.id,
-                TutorSubscription.tutor_id == tutor_id,
-                _credit_spendable_predicate(),
-                TutorSubscription.credits_remaining > 0,
-            )
-            .order_by(cancelled_first, TutorSubscription.created_at.asc())
-            .all()
-        )
+        row.id
+        for row in _spendable_candidates_query(db, tenant.id, tutor_id)
+        .with_entities(TutorSubscription.id)
+        .all()
     ]
     for sub_id in candidate_ids:
         result = db.execute(
@@ -226,6 +252,25 @@ def consume_credit_if_available(db: Session, tenant: Tenant, tutor_id: str) -> T
             db.expire_all()
             return db.get(TutorSubscription, row[0])
     return None
+
+
+def walk_subscription_eligible(db: Session, walk) -> bool:
+    """Base do campo `subscription_eligible` do payload do walk (Projeto A 2 fases).
+
+    True quando o passeio está 'awaiting_payment', ainda SEM subscription_id, e o
+    tutor tem assinatura com crédito que o cobriria. 100% read-only — não debita.
+    """
+    if getattr(walk, "operational_status", None) != "awaiting_payment":
+        return False
+    if getattr(walk, "subscription_id", None):
+        return False
+    tenant_id = getattr(walk, "tenant_id", None)
+    if not tenant_id:
+        return False
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        return False
+    return find_eligible_subscription(db, tenant, walk.tutor_id) is not None
 
 
 def subscribe(db: Session, tenant: Tenant, tutor_id: str, plan_id: str) -> TutorSubscription:

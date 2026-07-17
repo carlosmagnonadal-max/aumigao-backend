@@ -38,6 +38,11 @@ class WalkCancelRequest(BaseModel):
 class WalkResponse(ORMModel):
     id: str
     tutor_id: str
+    # Projeto A (confirmação em 2 fases): true quando o passeio está aguardando
+    # pagamento e o tutor tem crédito de assinatura que o cobriria — o app oferece
+    # "usar meu plano" (POST /walks/{id}/confirm-plan) no lugar do pagamento avulso.
+    # Declarado aqui senão o response_model DESCARTA (gotcha 08/07).
+    subscription_eligible: bool = False
     walker_id: str | None = None
     pet_id: str
     pet_name: str | None = None

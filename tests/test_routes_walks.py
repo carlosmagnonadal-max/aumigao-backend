@@ -174,10 +174,24 @@ def test_create_walk_gate_on_born_awaiting_payment(monkeypatch):
     assert body["status"] == "aguardando_pagamento"
 
 
-def test_create_walk_gate_on_subscription_born_scheduled(monkeypatch):
-    # R7: passeio coberto por assinatura ativa NÃO passa pelo gate — nasce agendado.
-    # Sem webhook para liberar o passeio de assinatura, o matching precisa disparar
-    # no proprio create (fix do passeio orfao) — verificado aqui pelo spy.
+def test_create_walk_gate_on_born_awaiting_payment_no_matching(monkeypatch):
+    # Projeto A (2 fases): com o gate ligado, o passeio nasce 'awaiting_payment' e
+    # NÃO dispara matching no create — nem o coberto por assinatura (que agora só
+    # entra no matching via confirm-plan). O passeador não é acionado no create.
+    monkeypatch.setenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "true")
+    calls = []
+    monkeypatch.setattr(walks, "start_matching", lambda walk, db: calls.append(walk.id))
+    client, _ = build()
+    r = client.post("/walks", json=_walk_create_payload())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["operational_status"] == "awaiting_payment"
+    assert body["status"] == "aguardando_pagamento"
+    assert calls == []  # nenhum matching no create
+
+
+def test_confirm_plan_debits_and_triggers_matching(monkeypatch):
+    # confirm-plan: consome crédito (mock), promove o walk e dispara o matching.
     monkeypatch.setenv("REQUIRE_PAYMENT_BEFORE_MATCHING", "true")
 
     class _FakeSub:
@@ -186,15 +200,15 @@ def test_create_walk_gate_on_subscription_born_scheduled(monkeypatch):
     monkeypatch.setattr(walks, "consume_credit_if_available", lambda db, tenant, tutor_id: _FakeSub())
     calls = []
     monkeypatch.setattr(walks, "start_matching", lambda walk, db: calls.append(walk.id))
-    # record_revenue_recognized_safe é import lazy e best-effort (try/except) — inócuo aqui.
     client, _ = build()
-    r = client.post("/walks", json=_walk_create_payload())
+    walk_id = client.post("/walks", json=_walk_create_payload()).json()["id"]
+
+    r = client.post(f"/walks/{walk_id}/confirm-plan")
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["operational_status"] == "pending_walker_confirmation"
     assert body["status"] == "Agendado"
-    # Passeio de assinatura entra no matching no create (nao ha webhook para ele).
-    assert calls == [body["id"]]
+    assert calls == [walk_id]  # matching disparado no confirm-plan
 
 
 def test_create_walk_persists_and_appears_in_list():

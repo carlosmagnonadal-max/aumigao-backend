@@ -286,6 +286,49 @@ class TestTipMinimumAmount:
         assert resp.status_code == 200, resp.text
 
 
+class TestTipPendingSupersede:
+    """Task 4: no máximo 1 gorjeta 'pending' por walk+tutor. Um novo checkout
+    supersede as sessões pending anteriores (marca cancelled), sem tocar em pagas."""
+
+    def test_new_checkout_supersedes_previous_pending(self):
+        db = _make_db()
+        _add_walk_awaiting_review(db)
+        client = _make_walks_app(db)
+
+        # 1º checkout (fallback internal_mock → pending)
+        r1 = client.post(f"/walks/{WALK_ID}/tip-checkout", json={"amount": 10.0})
+        assert r1.status_code == 200, r1.text
+        first_id = r1.json()["tip_id"]
+        # 2º checkout: deve supersede o 1º
+        r2 = client.post(f"/walks/{WALK_ID}/tip-checkout", json={"amount": 15.0})
+        assert r2.status_code == 200, r2.text
+        second_id = r2.json()["tip_id"]
+
+        pendings = db.query(WalkTip).filter(
+            WalkTip.walk_id == WALK_ID, WalkTip.status == "pending"
+        ).all()
+        assert len(pendings) == 1, "deve restar no máximo 1 pending por walk+tutor"
+        assert pendings[0].id == second_id
+        assert db.get(WalkTip, first_id).status == "cancelled"
+
+    def test_supersede_does_not_touch_paid_tip(self):
+        db = _make_db()
+        _add_walk_awaiting_review(db)
+        client = _make_walks_app(db)
+
+        # Gorjeta JÁ PAGA anterior — não pode ser cancelada por um novo checkout.
+        paid = WalkTip(
+            id="tip-paid-prev", tenant_id=TENANT_ID, walk_id=WALK_ID,
+            tutor_id=TUTOR_ID, walker_id=WALKER_USER_ID, amount=20.0,
+            status="paid", provider="internal_mock",
+        )
+        db.add(paid); db.commit()
+
+        r = client.post(f"/walks/{WALK_ID}/tip-checkout", json={"amount": 10.0})
+        assert r.status_code == 200, r.text
+        assert db.get(WalkTip, "tip-paid-prev").status == "paid"
+
+
 # ---------------------------------------------------------------------------
 # B) Webhook tip
 # ---------------------------------------------------------------------------

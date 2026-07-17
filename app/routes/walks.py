@@ -8,7 +8,7 @@ import json
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, update as sa_update
 from sqlalchemy.orm import Session, aliased
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
@@ -53,6 +53,7 @@ from app.services.tutor_network_service import is_tutor_eligible_for_tenant
 from app.constants import PAID_PAYMENT_STATUSES as _PAID_PAYMENT_STATUSES
 from app.constants import WALK_COMPLETED_STATUSES as COMPLETED_WALK_STATUSES
 from app.constants import WALK_COMPLETED_STATUSES as DIRECT_COMPLETION_STATUSES
+from app.models.recurring_plan import TutorSubscription
 from app.services.recurring_plan_service import consume_credit_if_available, refund_credit_for_walk
 from app.utils.url_utils import normalize_media_url
 
@@ -135,6 +136,7 @@ def _serialize_walk_list_item(
     walker: User | None,
     user: User,
     walker_photo_url: str | None = None,
+    subscription_eligible: bool = False,
 ) -> dict:
     walker_id = walk.walker_id or walk.assigned_walker_id
     walk_date, _, walk_time = (walk.scheduled_date or "").partition("T")
@@ -147,6 +149,9 @@ def _serialize_walk_list_item(
     return {
         "id": walk.id,
         "tutor_id": walk.tutor_id,
+        # Projeto A (2 fases): pré-computado por (tenant, tutor) em _serialize_walk_list
+        # (evita N+1). Deixa o app oferecer "usar meu plano" já na listagem.
+        "subscription_eligible": subscription_eligible,
         "walker_id": walker_id,
         "assigned_walker_id": walk.assigned_walker_id,
         "assignedWalkerId": walk.assigned_walker_id,
@@ -227,10 +232,28 @@ def _serialize_walk_list(
     if walker_ids:
         profiles = db.query(WalkerProfile).filter(WalkerProfile.user_id.in_(walker_ids)).all()
         photo_by_walker_id = {p.user_id: normalize_media_url(p.profile_photo_url) for p in profiles}
+    # Projeto A (2 fases): subscription_eligible pré-computado por (tenant, tutor)
+    # apenas para walks 'awaiting_payment' ainda sem subscription_id — 1 query por
+    # par distinto (tipicamente 1, o próprio tutor), sem N+1 na listagem leve.
+    eligible_pairs: set[tuple[str, str]] = set()
+    pending_pairs = {
+        (walk.tenant_id, walk.tutor_id)
+        for walk, _, _, _ in rows
+        if walk.operational_status == "awaiting_payment"
+        and not getattr(walk, "subscription_id", None)
+        and walk.tenant_id
+    }
+    if pending_pairs:
+        from app.services.recurring_plan_service import find_eligible_subscription
+        for _tenant_id, _tutor_id in pending_pairs:
+            _tenant = db.get(Tenant, _tenant_id)
+            if _tenant is not None and find_eligible_subscription(db, _tenant, _tutor_id) is not None:
+                eligible_pairs.add((_tenant_id, _tutor_id))
     return [
         _serialize_walk_list_item(
             walk, pet, tutor, walker, user,
             walker_photo_url=photo_by_walker_id.get(walk.walker_id or walk.assigned_walker_id),
+            subscription_eligible=(walk.tenant_id, walk.tutor_id) in eligible_pairs,
         )
         for walk, pet, tutor, walker in rows
     ]
@@ -290,6 +313,13 @@ def _walk_observations_enabled(walk: Walk, db: Session) -> bool:
         return False
     from app.services import pet_profile_service as _pet_profile_svc
     return _pet_profile_svc.observations_active(tenant, db)
+
+
+def _walk_subscription_eligible(walk: Walk, db: Session) -> bool:
+    """Projeto A (2 fases): passeio 'awaiting_payment' que o plano do tutor cobriria.
+    Fina camada sobre o serviço (fonte única da elegibilidade)."""
+    from app.services.recurring_plan_service import walk_subscription_eligible
+    return walk_subscription_eligible(db, walk)
 
 
 def _get_walk_for_user(walk_id: str, user: User, db: Session) -> Walk:
@@ -553,25 +583,14 @@ def create_walk(payload: WalkCreate, request: Request, user: User = Depends(get_
 
         db.add(walk)
 
-        # Projeto A: passeio coberto por crédito de assinatura ativa (sem cobrança avulsa).
-        _covered_by_subscription = False
-        if walk.tenant_id:
-            _tenant = db.get(Tenant, walk.tenant_id)
-            if _tenant is not None:
-                _sub = consume_credit_if_available(db, _tenant, walk.tutor_id)
-                if _sub is not None:
-                    walk.subscription_id = _sub.id
-                    _covered_by_subscription = True
-                    # Item 4: reconhece receita contábil do crédito consumido — best-effort.
-                    # NUNCA propaga exceção — ledger jamais pode quebrar criação do passeio.
-                    try:
-                        from app.services.credit_ledger_service import record_revenue_recognized_safe
-                        record_revenue_recognized_safe(db, _sub, walk.id)
-                    except Exception:
-                        logger.exception(
-                            "create_walk: falha best-effort ledger revenue subscription_id=%s walk_id=%s",
-                            _sub.id, walk.id,
-                        )
+        # Projeto A (confirmação em 2 fases): o passeio coberto por assinatura NÃO
+        # debita crédito nem seta subscription_id AQUI. Ele nasce 'awaiting_payment'
+        # (mesmo bucket do avulso — o app já segura o passeador nesse estado) e a
+        # elegibilidade é sinalizada por `subscription_eligible` no payload. O débito
+        # do crédito + disparo do matching só ocorrem no POST /walks/{id}/confirm-plan
+        # (confirmação explícita do tutor). Assim o abandono do wizard não gasta
+        # crédito e o passeador não é acionado sem confirmação real. Ver
+        # confirm_walk_plan mais abaixo.
 
         logger.warning(
             "create_walk.matching_deferred walk_id=%s",
@@ -579,8 +598,10 @@ def create_walk(payload: WalkCreate, request: Request, user: User = Depends(get_
         )
 
         # R7: com o gate ligado, o walk nasce aguardando pagamento e NÃO entra no
-        # matching até o webhook de pagamento confirmado liberá-lo (payments.py).
-        if _require_payment_before_matching() and not _covered_by_subscription:
+        # matching até uma liberação explícita (webhook Asaas do avulso, ou
+        # confirm-plan da assinatura). Gate DESLIGADO → walk nasce liberado e o
+        # matching dispara no create (fix 6b35659).
+        if _require_payment_before_matching():
             walk.operational_status = "awaiting_payment"
             walk.status = "aguardando_pagamento"
             walk.no_walker_reason = "Aguardando confirmação do pagamento."
@@ -640,6 +661,10 @@ def create_walk(payload: WalkCreate, request: Request, user: User = Depends(get_
         return {
             "id": walk.id,
             "tutor_id": walk.tutor_id,
+            # Projeto A (2 fases): true quando este walk 'awaiting_payment' pode ser
+            # confirmado pelo plano do tutor (crédito disponível). O app usa isto pra
+            # oferecer "usar meu plano" no lugar do pagamento avulso.
+            "subscription_eligible": _walk_subscription_eligible(walk, db),
             "walker_id": walk.walker_id,
             "assigned_walker_id": walk.assigned_walker_id,
             "pet_id": walk.pet_id,
@@ -706,6 +731,121 @@ def get_walk(walk_id: str, user: User = Depends(get_current_user), db: Session =
     # esconder o formulário de observação quando a feature está dormente.
     data["walk_observations_enabled"] = _walk_observations_enabled(walk, db)
     return data
+
+
+@router.post("/{walk_id}/confirm-plan", response_model=WalkResponse)
+def confirm_walk_plan(walk_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Projeto A (confirmação em 2 fases): o tutor confirma pelo PLANO um passeio que
+    nasceu 'awaiting_payment'. Debita 1 crédito da assinatura, vincula subscription_id,
+    reconhece a receita contábil, promove o passeio e dispara o matching.
+
+    Anti-double-spend sob concorrência: o crédito é debitado ATOMICAMENTE
+    (consume_credit_if_available) e o walk é reivindicado por UPDATE condicional
+    (WHERE subscription_id IS NULL). Dois cliques concorrentes: só um vence o claim;
+    o perdedor DEVOLVE o crédito que consumiu (nenhum passeio debita 2×). Idempotente:
+    walk já confirmado por este fluxo → 200 sem novo débito.
+
+    Respostas: 200 (walk atualizado, mesmo shape do GET); 404 (não existe/não é dono);
+    409 {"code": "sem_credito"|"estado_invalido", "message": ...}.
+    """
+    walk = db.get(Walk, walk_id)
+    if not walk or walk.tutor_id != user.id:
+        # 404 (não 403): não revela existência de passeios de outros tutores.
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado.")
+
+    # Idempotência: já confirmado por este fluxo (crédito já debitado) → 200 sem duplicar.
+    if getattr(walk, "subscription_id", None):
+        return serialize_operational_walk(walk, db, user=user)
+
+    # Só passeio aguardando pagamento entra na confirmação por plano.
+    if walk.operational_status != "awaiting_payment":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "estado_invalido", "message": "Este passeio não pode ser confirmado pelo plano."},
+        )
+
+    tenant = db.get(Tenant, walk.tenant_id) if walk.tenant_id else None
+    if tenant is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "sem_credito", "message": "Você não tem um plano ativo com créditos disponíveis."},
+        )
+
+    # 1) Debita 1 crédito ATOMICAMENTE (UPDATE condicional por id, WHERE credits_remaining>0).
+    sub = consume_credit_if_available(db, tenant, user.id)
+    if sub is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "sem_credito", "message": "Você não tem créditos disponíveis no seu plano para este passeio."},
+        )
+
+    # 2) Reivindica o walk ATOMICAMENTE: só quem virar subscription_id de NULL→sub.id
+    #    (com o walk ainda em awaiting_payment) confirma. Serializa dois cliques.
+    claimed = db.execute(
+        sa_update(Walk)
+        .where(
+            Walk.id == walk.id,
+            Walk.subscription_id.is_(None),
+            Walk.operational_status == "awaiting_payment",
+        )
+        .values(
+            subscription_id=sub.id,
+            operational_status="pending_walker_confirmation",
+            status="Agendado",
+            no_walker_reason="Buscando o melhor passeador disponível.",
+        )
+        .returning(Walk.id)
+    ).first()
+
+    if claimed is None:
+        # Perdeu a corrida (outro request já confirmou) ou o estado mudou: DEVOLVE o
+        # crédito consumido para não debitar 2× o mesmo passeio.
+        db.execute(
+            sa_update(TutorSubscription)
+            .where(TutorSubscription.id == sub.id)
+            .values(
+                credits_remaining=TutorSubscription.credits_remaining + 1,
+                updated_at=datetime.utcnow(),
+            )
+        )
+        db.commit()
+        db.expire_all()
+        walk = db.get(Walk, walk_id)
+        if walk is not None and getattr(walk, "subscription_id", None):
+            # Confirmado pelo vencedor da corrida → idempotente.
+            return serialize_operational_walk(walk, db, user=user)
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "estado_invalido", "message": "Este passeio não pode ser confirmado pelo plano."},
+        )
+
+    # 3) Receita contábil do crédito consumido — best-effort (nunca derruba a confirmação).
+    try:
+        from app.services.credit_ledger_service import record_revenue_recognized_safe
+        record_revenue_recognized_safe(db, sub, walk_id)
+    except Exception:
+        logger.exception(
+            "confirm_walk_plan: falha best-effort ledger revenue subscription_id=%s walk_id=%s",
+            sub.id, walk_id,
+        )
+
+    # Persiste débito + vínculo + promoção ANTES do matching (mesmo padrão do fix
+    # 6b35659 / webhook): dinheiro/crédito já commitados; matching best-effort com
+    # rollback isolado — falha aqui não pode reverter a confirmação.
+    db.commit()
+    db.expire_all()
+    walk = db.get(Walk, walk_id)
+
+    try:
+        start_matching(walk, db)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("confirm_walk_plan.start_matching_failed walk_id=%s", walk_id)
+
+    db.refresh(walk)
+    return serialize_operational_walk(walk, db, user=user)
+
 
 @router.put("/{walk_id}/status", response_model=WalkResponse)
 async def update_status(walk_id: str, payload: WalkUpdateStatus, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -985,6 +1125,21 @@ async def create_walk_tip_checkout(walk_id: str, payload: WalkTipCheckoutCreate,
     tip.checkout_url = checkout_url
     tip.provider_payment_id = provider_payment_id
     tip.invoice_url = invoice_url
+
+    # Guard (Task 4): no máximo 1 gorjeta 'pending' por walk+tutor. Ao abrir um novo
+    # checkout, supersede as sessões pending anteriores do mesmo walk+tutor (retry
+    # legítimo: o app novo cancela no cliente e recria — o servidor garante a
+    # invariante mesmo se o cancelamento do cliente não chegou). Não toca em
+    # 'paid'/'failed'/'cancelled'. Mesma transação do INSERT abaixo.
+    db.execute(
+        sa_update(WalkTip)
+        .where(
+            WalkTip.walk_id == walk.id,
+            WalkTip.tutor_id == user.id,
+            WalkTip.status == "pending",
+        )
+        .values(status="cancelled")
+    )
 
     db.add(tip)
     db.commit()

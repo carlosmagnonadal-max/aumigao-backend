@@ -187,6 +187,39 @@ def test_list_messages_ordered_and_marks_read():
     assert by_role["tutor"]["read_at"] is None  # propria mensagem -> nao marcada
 
 
+def test_unread_count_is_read_only():
+    """Task 3: GET /unread-count conta as não-lidas SEM marcar como lidas (read-only).
+    Chamar 2× deve devolver o mesmo número, e o list posterior ainda enxerga as msgs
+    como não-lidas."""
+    test_app, db = build()
+    walker_client = client_as(test_app, db, WALKER_ID)
+    walker_client.post("/protected-chat/messages", json={"walk_id": WALK_ID, "body": "a"})
+    walker_client.post("/protected-chat/messages", json={"walk_id": WALK_ID, "body": "b"})
+
+    tutor_client = client_as(test_app, db, TUTOR_ID)
+    r1 = tutor_client.get("/protected-chat/unread-count", params={"walk_id": WALK_ID})
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["unread_count"] == 2
+    # 2ª chamada: mesmo número (nada foi marcado como lido)
+    r2 = tutor_client.get("/protected-chat/unread-count", params={"walk_id": WALK_ID})
+    assert r2.json()["unread_count"] == 2
+    # confirma no banco: read_at continua None nas 2 mensagens do walker
+    unread = (
+        db.query(ProtectedChatMessage)
+        .filter(ProtectedChatMessage.sender_user_id == WALKER_ID, ProtectedChatMessage.read_at.is_(None))
+        .count()
+    )
+    assert unread == 2
+
+
+def test_unread_count_requires_auth_401():
+    test_app, _ = build()
+    test_app.dependency_overrides.pop(get_current_user, None)
+    client = TestClient(test_app)
+    r = client.get("/protected-chat/unread-count", params={"walk_id": WALK_ID})
+    assert r.status_code == 401
+
+
 # ----------------------------------------------------------------- 403 -------
 def test_outsider_cannot_access_chat_403():
     test_app, db = build()

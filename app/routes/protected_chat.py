@@ -223,6 +223,29 @@ def list_messages(walk_id: str, user: User, db: Session) -> dict:
     }
 
 
+def count_unread_messages(walk_id: str, user: User, db: Session) -> dict:
+    """Contador de não-lidas SEM efeito colateral (read-only).
+
+    list_messages marca como lidas ao servir o GET; o app chamava aquele endpoint
+    só para o badge, zerando o contador no ato. Este endpoint conta sem marcar nada.
+    Mesmos gates de acesso do list (feature + janela do chat), para ser um
+    substituto direto na contagem.
+    """
+    walk = _get_walk_or_404(db, walk_id)
+    _assert_protected_chat_feature(walk, user, db)
+    _assert_chat_available(walk, user, db)
+    unread_count = (
+        db.query(ProtectedChatMessage)
+        .filter(
+            ProtectedChatMessage.walk_id == walk.id,
+            ProtectedChatMessage.sender_user_id != user.id,
+            ProtectedChatMessage.read_at.is_(None),
+        )
+        .count()
+    )
+    return {"unread_count": unread_count}
+
+
 def mark_messages_read(walk_id: str, user: User, db: Session) -> dict:
     walk = _get_walk_or_404(db, walk_id)
     _assert_protected_chat_feature(walk, user, db)
@@ -287,6 +310,15 @@ def post_mark_messages_read(
     return mark_messages_read(payload.walk_id, user, db)
 
 
+@router.get("/unread-count")
+def get_unread_count(
+    walk_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return count_unread_messages(walk_id, user, db)
+
+
 @api_router.get("/messages")
 def get_api_protected_chat_messages(
     walk_id: str,
@@ -312,3 +344,12 @@ def post_api_mark_messages_read(
     db: Session = Depends(get_db),
 ):
     return mark_messages_read(payload.walk_id, user, db)
+
+
+@api_router.get("/unread-count")
+def get_api_unread_count(
+    walk_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return count_unread_messages(walk_id, user, db)

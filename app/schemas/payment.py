@@ -12,6 +12,11 @@ class PaymentCreate(BaseModel):
     amount: float = Field(gt=0)
     provider: str = "asaas"
     method: str = "pix"
+    # Projeto A / D1: quando o passeio é elegível ao plano, o create_payment
+    # devolve 409 {code: plano_disponivel} em vez de cobrar — o app oferece o
+    # plano. charge_anyway=True é a escolha explícita do tutor por pagar avulso
+    # (ignora o plano) e libera a cobrança normal.
+    charge_anyway: bool = False
 
 
 class PaymentQuoteResponse(BaseModel):

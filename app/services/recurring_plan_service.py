@@ -19,6 +19,7 @@ from app.models.recurring_plan import (
     RecurringPlan,
     TutorSubscription,
 )
+from app.models.pet_tour import PET_TOUR_MODALITY, STANDARD_MODALITY
 from app.models.tenant import Tenant
 from app.models.walk import Walk
 from app.services.tenant_plan_service import (
@@ -28,6 +29,33 @@ from app.services.tenant_plan_service import (
 
 FEATURE_LABEL = "Planos recorrentes"
 logger = logging.getLogger("aumigao.recurring_plan_service")
+
+# Decisão de produto D1 (17/07): o crédito de plano cobre passeio INDIVIDUAL e
+# COMPARTILHADO (Walk.modality == "standard", qualquer duração 30/45/60). O Pet
+# Tour (modality "pet_tour") é uma modalidade premium paga SEMPRE à parte — nunca
+# consome crédito de plano. Mapeia o walk_type que o app envia (individual/shared/
+# pet_tour) para a modalidade gravada no Walk.
+_WALK_TYPE_TO_MODALITY = {
+    "individual": STANDARD_MODALITY,
+    "shared": STANDARD_MODALITY,
+    "pet_tour": PET_TOUR_MODALITY,
+}
+
+
+def plan_covers_modality(modality: str | None) -> bool:
+    """True se a modalidade do passeio é coberta pelo crédito de plano (D1).
+
+    Cobre individual e compartilhado (modality 'standard'); NÃO cobre o Pet Tour
+    (modality 'pet_tour'). Fonte ÚNICA da regra de cobertura por modalidade —
+    usada pela elegibilidade (walk_subscription_eligible), pelo confirm-plan e
+    pela pré-checagem (plan_coverage) para não divergirem.
+    """
+    return (modality or STANDARD_MODALITY) != PET_TOUR_MODALITY
+
+
+def plan_covers_walk_type(walk) -> bool:
+    """Versão que lê a modalidade direto do Walk. Ver plan_covers_modality."""
+    return plan_covers_modality(getattr(walk, "modality", STANDARD_MODALITY))
 
 
 def _period_end(now: datetime, interval: str) -> datetime:
@@ -264,6 +292,9 @@ def walk_subscription_eligible(db: Session, walk) -> bool:
         return False
     if getattr(walk, "subscription_id", None):
         return False
+    # D1: Pet Tour nunca é elegível ao plano (modalidade premium paga à parte).
+    if not plan_covers_walk_type(walk):
+        return False
     tenant_id = getattr(walk, "tenant_id", None)
     if not tenant_id:
         return False
@@ -271,6 +302,60 @@ def walk_subscription_eligible(db: Session, walk) -> bool:
     if tenant is None:
         return False
     return find_eligible_subscription(db, tenant, walk.tutor_id) is not None
+
+
+def plan_coverage(db: Session, tenant: Tenant, tutor_id: str, walk_type: str) -> dict:
+    """Pré-checagem read-only da cobertura de plano para um walk_type.
+
+    Espelha a elegibilidade REAL do confirm-plan (find_eligible_subscription +
+    regra de modalidade) para o campo `covered` — assim o app não oferece o plano
+    quando o confirm-plan fosse falhar. 100% read-only (não debita crédito).
+
+    reason segue a precedência (do mais forte ao mais fraco):
+      modalidade_nao_coberta > sem_assinatura > assinatura_pendente > sem_credito > ok.
+
+    Metadados (credits/renewal/payment_status) referem-se à assinatura ATIVA do
+    tutor (ou, na ausência dela, à assinatura consumível cancelada-por-downgrade):
+    - credits_total  = walks_per_cycle do snapshot da assinatura;
+    - renewal_at     = current_period_end;
+    - payment_status = "ativa" (créditos concedidos) | "aguardando_pagamento"
+      (assinatura existe mas o 1º pagamento ainda não confirmou) | null (sem
+      assinatura).
+    """
+    modality = _WALK_TYPE_TO_MODALITY.get(walk_type, STANDARD_MODALITY)
+    covers_modality = plan_covers_modality(modality)
+
+    active = get_active_subscription(db, tenant.id, tutor_id)
+    # eligible = assinatura com crédito consumível AGORA (mesma seleção do débito).
+    eligible = find_eligible_subscription(db, tenant, tutor_id) if covers_modality else None
+    meta = active or eligible
+
+    if not covers_modality:
+        covered, reason = False, "modalidade_nao_coberta"
+    elif active is None and eligible is None:
+        covered, reason = False, "sem_assinatura"
+    elif active is not None and not active.credits_granted:
+        covered, reason = False, "assinatura_pendente"
+    elif eligible is not None:
+        covered, reason = True, "ok"
+    else:
+        covered, reason = False, "sem_credito"
+
+    if meta is None:
+        payment_status = None
+    elif meta.credits_granted:
+        payment_status = "ativa"
+    else:
+        payment_status = "aguardando_pagamento"
+
+    return {
+        "covered": covered,
+        "reason": reason,
+        "credits_remaining": int(meta.credits_remaining) if meta else 0,
+        "credits_total": int(meta.walks_per_cycle) if meta else 0,
+        "payment_status": payment_status,
+        "renewal_at": meta.current_period_end if meta else None,
+    }
 
 
 def subscribe(db: Session, tenant: Tenant, tutor_id: str, plan_id: str) -> TutorSubscription:

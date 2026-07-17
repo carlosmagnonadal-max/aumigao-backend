@@ -6,7 +6,7 @@
 import logging
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger("aumigao.routes.recurring_plans")
@@ -83,6 +83,31 @@ def list_recurring_plans(request: Request, user: User = Depends(get_current_user
         plans=[RecurringPlanResponse.model_validate(plan) for plan in plans],
         subscription=_subscription_response(db, subscription) if subscription else None,
     )
+
+
+_COVERAGE_WALK_TYPES = ("individual", "shared", "pet_tour")
+
+
+@router.get("/coverage")
+@api_router.get("/coverage")
+def plan_coverage_precheck(
+    request: Request,
+    walk_type: str = Query(..., description="individual | shared | pet_tour"),
+    duration: int | None = Query(None, description="30 | 45 | 60 — informativo"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Pré-checagem de cobertura de plano (Projeto A / D1) para o app decidir se
+    oferece "usar meu plano" antes de criar o passeio/cobrança.
+
+    Sempre 200 (sem 404 de negócio). `duration` é informativa (a cobertura não
+    depende da duração — todas 30/45/60 do individual/compartilhado são cobertas).
+    Ver recurring_plan_service.plan_coverage para o shape e a precedência do reason.
+    """
+    if walk_type not in _COVERAGE_WALK_TYPES:
+        raise HTTPException(status_code=400, detail="walk_type inválido.")
+    tenant = _resolve_user_tenant(user, db, request)
+    return svc.plan_coverage(db, tenant, user.id, walk_type)
 
 
 @router.post("/{plan_id}/subscribe", response_model=TutorSubscriptionResponse)

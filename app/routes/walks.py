@@ -54,7 +54,11 @@ from app.constants import PAID_PAYMENT_STATUSES as _PAID_PAYMENT_STATUSES
 from app.constants import WALK_COMPLETED_STATUSES as COMPLETED_WALK_STATUSES
 from app.constants import WALK_COMPLETED_STATUSES as DIRECT_COMPLETION_STATUSES
 from app.models.recurring_plan import TutorSubscription
-from app.services.recurring_plan_service import consume_credit_if_available, refund_credit_for_walk
+from app.services.recurring_plan_service import (
+    consume_credit_if_available,
+    plan_covers_walk_type,
+    refund_credit_for_walk,
+)
 from app.utils.url_utils import normalize_media_url
 
 # ── CR / gamificação (Fase 4) ────────────────────────────────────────────────
@@ -762,6 +766,15 @@ def confirm_walk_plan(walk_id: str, user: User = Depends(get_current_user), db: 
         raise HTTPException(
             status_code=409,
             detail={"code": "estado_invalido", "message": "Este passeio não pode ser confirmado pelo plano."},
+        )
+
+    # D1: o crédito de plano NÃO cobre o Pet Tour (modalidade premium paga à
+    # parte). Recusa a confirmação por plano de forma explícita — code próprio
+    # para o app diferenciar de "sem crédito" e voltar ao pagamento avulso.
+    if not plan_covers_walk_type(walk):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "modalidade_nao_coberta", "message": "Seu plano não cobre esta modalidade de passeio."},
         )
 
     tenant = db.get(Tenant, walk.tenant_id) if walk.tenant_id else None
@@ -1629,3 +1642,11 @@ def create_walk_kit_issue_report(walk_id: str, payload: WalkKitIssueReportReques
         metadata={"origin": "kit_issue_report", "missing_items": missing_keys},
     )
     return create_complaint(complaint_payload, user, db)
+
+
+# Rota espelho /api (api-Tx): expõe o MESMO conjunto de endpoints de /walks sob
+# /api/walks, para o app usar o prefixo /api uniformemente (confirm-plan incluso).
+# include_router COPIA as rotas já definidas em `router` acima — por isso este
+# bloco fica no FIM do módulo, depois de todas as rotas. Registrado em main.py.
+api_router = APIRouter(prefix="/api")
+api_router.include_router(router)

@@ -645,6 +645,21 @@ async def create_payment(payload: PaymentCreate, request: Request, user: User = 
         if _covered is not None and getattr(_covered, "subscription_id", None):
             raise HTTPException(status_code=409, detail="Este passeio já está coberto pelo seu plano mensal.")
 
+        # Projeto A / D1: se o passeio AINDA pode ser coberto pelo plano do tutor
+        # (elegível: awaiting_payment, sem subscription_id, modalidade coberta e
+        # crédito disponível — walk_subscription_eligible aplica toda a regra) e o
+        # tutor NÃO pediu cobrança avulsa explícita (charge_anyway), oferece o
+        # plano em vez de cobrar. 409 com objeto {code, message} — o app abre a
+        # confirmação por plano (POST /walks/{id}/confirm-plan). Não altera a
+        # guarda de subscription_id já setado acima.
+        if _covered is not None and not payload.charge_anyway:
+            from app.services.recurring_plan_service import walk_subscription_eligible
+            if walk_subscription_eligible(db, _covered):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "plano_disponivel", "message": "Este passeio pode ser coberto pelo seu plano."},
+                )
+
         # P2: quando há walk_id, o `amount` NÃO é confiável (vem do client). Casa
         # com a cotação server-authoritative (build_quote = preço do walk - desconto
         # de plano do tenant). Rejeita subcotação/supercotação para evitar que o

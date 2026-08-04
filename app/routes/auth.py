@@ -242,12 +242,11 @@ def register(payload: UserCreate, request: Request, db: Session = Depends(get_db
     db.refresh(user)
     if payload.referral_code and role in {"walker", "passeador"}:
         link_referral_to_user(payload.referral_code, user, db)
-    # F1.2: boas-vindas fire-and-forget — nunca falha o registro
-    threading.Thread(
-        target=send_welcome_email,
-        args=(user.email, user.full_name or ""),
-        daemon=True,
-    ).start()
+    # F1.2: boas-vindas — envio SÍNCRONO. Em Cloud Run com CPU throttled, thread
+    # fire-and-forget congela após a resposta e o e-mail nunca sai (verificado
+    # 2026-08-04: 3 registros sem nenhuma tentativa logada). send_welcome_email
+    # é fire-safe (nunca lança) — a rota continua imune a falha de e-mail.
+    send_welcome_email(user.email, user.full_name or "")
     return build_session(user)
 
 @router.post("/login", response_model=TokenResponse)
@@ -520,12 +519,9 @@ def _create_social_tutor(
     db.add(user)
     db.commit()
     db.refresh(user)
-    # F1.2: boas-vindas para contas novas criadas via social login
-    threading.Thread(
-        target=send_welcome_email,
-        args=(user.email, user.full_name or ""),
-        daemon=True,
-    ).start()
+    # F1.2: boas-vindas para contas novas criadas via social login — envio
+    # síncrono (thread congela sob CPU throttling; ver nota no /register).
+    send_welcome_email(user.email, user.full_name or "")
     return user
 
 
@@ -741,12 +737,9 @@ def forgot_password(payload: ForgotPasswordRequest, request: Request, db: Sessio
     db.add(reset_code)
     db.commit()
 
-    # Envia e-mail de forma fire-and-forget
-    threading.Thread(
-        target=send_password_reset_email,
-        args=(user.email, code, user.full_name or ""),
-        daemon=True,
-    ).start()
+    # Envio SÍNCRONO do código de reset — crítico para o usuário; thread
+    # fire-and-forget congela sob CPU throttling (ver nota no /register).
+    send_password_reset_email(user.email, code, user.full_name or "")
 
     return {"message": "Se o e-mail estiver cadastrado, você receberá um código em breve."}
 

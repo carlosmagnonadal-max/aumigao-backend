@@ -43,10 +43,12 @@ def _from_addr() -> str:
 
 
 def _resend_api_key() -> str | None:
-    explicit = os.getenv("RESEND_API_KEY")
+    # strip(): secret gravado via pipe (PowerShell) chega com CRLF no final;
+    # header Authorization com \r\n é rejeitado pelo httpx antes do envio.
+    explicit = (os.getenv("RESEND_API_KEY") or "").strip()
     if explicit:
         return explicit
-    smtp_pw = os.getenv("SMTP_PASSWORD", "")
+    smtp_pw = os.getenv("SMTP_PASSWORD", "").strip()
     if smtp_pw.startswith("re_") and "resend.com" in os.getenv("SMTP_HOST", ""):
         return smtp_pw
     return None
@@ -102,7 +104,7 @@ def _send_via_smtp(to: str, subject: str, body_text: str) -> None:
     host = os.getenv("SMTP_HOST")
     port = int(os.getenv("SMTP_PORT", "587"))
     user = os.getenv("SMTP_USER")
-    password = os.getenv("SMTP_PASSWORD")
+    password = (os.getenv("SMTP_PASSWORD") or "").strip()
     use_ssl = os.getenv("SMTP_SSL", "false").strip().lower() in {"1", "true", "yes", "on"}
 
     if use_ssl:

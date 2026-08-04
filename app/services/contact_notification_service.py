@@ -38,10 +38,11 @@ def _resend_api_key() -> str | None:
     """Chave da API do Resend. Aceita RESEND_API_KEY explícita, ou reaproveita a
     SMTP_PASSWORD quando ela é uma chave do Resend (re_...) usada com SMTP_HOST
     do Resend — assim não é preciso duplicar a credencial."""
-    explicit = os.getenv("RESEND_API_KEY")
+    # strip(): secret via pipe chega com CRLF; header com \r\n quebra o httpx.
+    explicit = (os.getenv("RESEND_API_KEY") or "").strip()
     if explicit:
         return explicit
-    smtp_pw = os.getenv("SMTP_PASSWORD", "")
+    smtp_pw = os.getenv("SMTP_PASSWORD", "").strip()
     if smtp_pw.startswith("re_") and "resend.com" in os.getenv("SMTP_HOST", ""):
         return smtp_pw
     return None
@@ -114,7 +115,7 @@ def _send_via_smtp(contact) -> None:
     host = os.getenv("SMTP_HOST")
     port = int(os.getenv("SMTP_PORT", "587"))
     user = os.getenv("SMTP_USER")
-    password = os.getenv("SMTP_PASSWORD")
+    password = (os.getenv("SMTP_PASSWORD") or "").strip()
     use_ssl = os.getenv("SMTP_SSL", "false").strip().lower() in {"1", "true", "yes", "on"}
 
     if use_ssl:

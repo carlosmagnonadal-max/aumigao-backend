@@ -412,6 +412,64 @@ def test_patch_wallet_empty_string_returns_422():
     assert r.status_code == 422, r.text
 
 
+def _grant_finance_manage(db, user_id: str, tenant_id: str):
+    """Concede admin.access + finance.manage via RBAC real (papel + permissões + atribuição).
+
+    admin.access é exigido pela dependency global dos routers /admin e /api/admin.
+    """
+    from app.models.rbac import Permission, Role, RolePermission, UserRoleAssignment
+
+    role = db.query(Role).filter(Role.name == "tenant_admin").first()
+    if not role:
+        role = Role(name="tenant_admin", scope_type="tenant")
+        db.add(role)
+        db.flush()
+    for key, module, action in (("admin.access", "admin", "access"), ("finance.manage", "finance", "manage")):
+        perm = db.query(Permission).filter(Permission.key == key).first()
+        if not perm:
+            perm = Permission(key=key, module=module, action=action)
+            db.add(perm)
+            db.flush()
+        if not db.query(RolePermission).filter_by(role_id=role.id, permission_id=perm.id).first():
+            db.add(RolePermission(role_id=role.id, permission_id=perm.id))
+    db.add(UserRoleAssignment(user_id=user_id, role_id=role.id, tenant_id=tenant_id))
+    db.commit()
+
+
+def test_patch_wallet_tenant_admin_cross_tenant_returns_404():
+    """Sec-audit 2026-08-04 (#1 crítico): admin de tenant NÃO pode configurar a
+    carteira de repasse de walker de OUTRO tenant — furo de dinheiro cross-tenant."""
+    test_app, db = build_admin_app()
+    db.add(Tenant(id="t-outro", name="Outro", slug="t-outro", status="active", plan="business"))
+    db.add(User(id="tadmin-outro", email="ta@outro.com", password_hash="x", role="admin", tenant_id="t-outro"))
+    db.commit()
+    _grant_finance_manage(db, "tadmin-outro", "t-outro")
+
+    client = as_user(test_app, db, "tadmin-outro")
+    r = client.patch(f"/admin/walkers/{WALKER_USER_ID}/wallet", json={"asaas_wallet_id": "wal_desvio"})
+    assert r.status_code == 404, r.text
+
+    profile = db.get(WalkerProfile, WALKER_ID)
+    db.refresh(profile)
+    assert profile.asaas_wallet_id is None  # carteira NÃO foi alterada
+
+
+def test_patch_wallet_tenant_admin_same_tenant_allowed():
+    """Zero regressão: admin do MESMO tenant do walker continua configurando a carteira."""
+    test_app, db = build_admin_app()
+    db.add(User(id="tadmin-mesmo", email="ta@mesmo.com", password_hash="x", role="admin", tenant_id=TENANT_ID))
+    db.commit()
+    _grant_finance_manage(db, "tadmin-mesmo", TENANT_ID)
+
+    client = as_user(test_app, db, "tadmin-mesmo")
+    r = client.patch(f"/admin/walkers/{WALKER_USER_ID}/wallet", json={"asaas_wallet_id": "wal_legitimo"})
+    assert r.status_code == 200, r.text
+
+    profile = db.get(WalkerProfile, WALKER_ID)
+    db.refresh(profile)
+    assert profile.asaas_wallet_id == "wal_legitimo"
+
+
 # ---------------------------------------------------------------------------
 # Testes de CPF do tutor no modo live
 # ---------------------------------------------------------------------------

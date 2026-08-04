@@ -3029,6 +3029,16 @@ def set_walker_wallet(
     if not profile:
         raise HTTPException(status_code=404, detail="Perfil de walker nao encontrado para este user_id.")
 
+    # Escopo de tenant (sec-audit 2026-08-04, achado #1): a carteira e o destino REAL
+    # do repasse. WalkerProfile nao tem tenant_id (walkers sao globais), entao admin de
+    # tenant so pode configurar carteira de walker cujo user.tenant_id bate com o seu
+    # tenant — mesmo padrao de approve_walker/reject_walker.
+    scope = get_admin_tenant_scope(admin, db)
+    if not scope.is_global:
+        _wallet_scope_user = db.get(User, profile.user_id)
+        if not _wallet_scope_user or _wallet_scope_user.tenant_id != scope.tenant_id:
+            raise HTTPException(status_code=404, detail="Perfil de walker nao encontrado para este user_id.")
+
     if "asaas_wallet_id" not in payload.model_fields_set:
         raise HTTPException(status_code=422, detail="Campo 'asaas_wallet_id' obrigatorio no body.")
 
@@ -3051,7 +3061,7 @@ def set_walker_wallet(
             actor=admin,
             before={"asaas_wallet_id": old_wallet_id},
             after={"asaas_wallet_id": profile.asaas_wallet_id},
-            tenant_id=None,
+            tenant_id=None if scope.is_global else scope.tenant_id,
         )
     except Exception as _audit_exc:  # F17: loga em vez de silenciar
         _logger.warning("Falha ao registrar audit log de wallet update: %s", _audit_exc)

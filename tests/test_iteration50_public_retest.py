@@ -11,10 +11,30 @@ from dotenv import dotenv_values
 
 
 # Public URL and auth helpers for retesting what users access in preview.
-def _public_base_url() -> str:
+#
+# Estes testes sao de INTEGRACAO contra um servidor publico ja no ar: leem a URL
+# de /app/frontend/.env (caminho do container Linux do ambiente de preview) e
+# fazem requests HTTP reais. Fora desse ambiente — em qualquer maquina de dev,
+# Windows incluso — o arquivo nao existe e os 4 testes falhavam sempre com
+# RuntimeError, poluindo a suite com vermelho permanente que nao indica
+# regressao alguma. O skipif abaixo torna a indisponibilidade explicita
+# (skipped, nao failed) sem perder a cobertura onde o ambiente existe.
+def _resolve_public_base_url() -> str | None:
+    """URL publica configurada, ou None quando o ambiente de preview nao existe."""
     env_file = Path("/app/frontend/.env")
     values = dotenv_values(str(env_file)) if env_file.exists() else {}
-    resolved = str(values.get("EXPO_PUBLIC_BACKEND_URL") or "").strip().rstrip("/")
+    return str(values.get("EXPO_PUBLIC_BACKEND_URL") or "").strip().rstrip("/") or None
+
+
+pytestmark = pytest.mark.skipif(
+    _resolve_public_base_url() is None,
+    reason="EXPO_PUBLIC_BACKEND_URL nao configurada em /app/frontend/.env "
+           "(ambiente de preview ausente) — teste de integracao contra servidor publico",
+)
+
+
+def _public_base_url() -> str:
+    resolved = _resolve_public_base_url()
     if not resolved:
         raise RuntimeError("EXPO_PUBLIC_BACKEND_URL não configurada em frontend/.env")
     return resolved

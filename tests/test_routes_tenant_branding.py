@@ -411,3 +411,91 @@ def test_patch_branding_free_powered_by_true_allowed():
     })
     assert r.status_code == 200, r.text
     assert r.json()["powered_by_enabled"] is True
+
+
+# ───────────────────────────────────────── Isolamento admin de tenant (A5) ──
+# Regressao (white-label do admin-web): o BFF nao injeta X-Tenant-Slug, entao
+# resolve_current_tenant cai no tenant default. O admin de tenant X deve ler e
+# gravar o branding de X — nunca o do default (outro tenant).
+PARTNER_TENANT_ID = "t-parceiro"
+PARTNER_ADMIN_ID = "admin-parceiro"
+
+
+def _build_partner_admin():
+    from app.core.database import get_read_db
+    from app.models.rbac import Permission, Role, RolePermission, UserRoleAssignment
+    from app.routes import tenant_app_config
+
+    client, db = build(branding={"display_name": "Aumigao Default", "primary_color": "#000001"})
+    db.add(Tenant(id=PARTNER_TENANT_ID, name="Parceiro", slug="parceiro", status="active", plan="business"))
+    db.add(TenantBranding(tenant_id=PARTNER_TENANT_ID, display_name="Parceiro Pet", primary_color="#00aa00"))
+    db.add(User(id=PARTNER_ADMIN_ID, email="admin@parceiro.test", password_hash="x", role="admin",
+                tenant_id=PARTNER_TENANT_ID))
+    db.add(Role(id="role-parceiro", name="tenant_admin_parceiro", scope_type="tenant"))
+    for i, key in enumerate(("branding.read", "branding.update")):
+        module, _, action = key.partition(".")
+        db.add(Permission(id=f"perm-{i}", key=key, module=module, action=action))
+        db.flush()
+        db.add(RolePermission(id=f"rp-{i}", role_id="role-parceiro", permission_id=f"perm-{i}"))
+    db.add(UserRoleAssignment(id="ura-parceiro", user_id=PARTNER_ADMIN_ID, role_id="role-parceiro",
+                              tenant_id=PARTNER_TENANT_ID))
+    db.commit()
+    client.app.include_router(tenant_app_config.api_router)
+    client.app.dependency_overrides[get_read_db] = lambda: db
+    as_admin(client, db, user_id=PARTNER_ADMIN_ID)
+    return client, db
+
+
+def test_tenant_admin_patch_writes_own_tenant_not_default():
+    client, db = _build_partner_admin()
+    r = client.patch("/api/admin/tenants/current/branding", json={
+        "display_name": "Parceiro Novo", "primary_color": "#112233",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["tenant_id"] == PARTNER_TENANT_ID
+    assert r.json()["display_name"] == "Parceiro Novo"
+
+    db.expire_all()
+    own = db.query(TenantBranding).filter(TenantBranding.tenant_id == PARTNER_TENANT_ID).one()
+    default = db.query(TenantBranding).filter(TenantBranding.tenant_id == TENANT_ID).one()
+    assert own.display_name == "Parceiro Novo"
+    # branding do OUTRO tenant (default) intacto
+    assert default.display_name == "Aumigao Default"
+    assert default.primary_color == "#000001"
+
+
+def test_tenant_admin_reads_own_branding_via_tenant_scoped_app_config():
+    """O admin-web le /api/tenants/{tenant_id}/app-config com o tenant do admin."""
+    client, _ = _build_partner_admin()
+    client.patch("/api/admin/tenants/current/branding", json={"display_name": "Parceiro Lido"})
+    body = client.get(f"/api/tenants/{PARTNER_TENANT_ID}/app-config").json()
+    assert body["tenant_id"] == PARTNER_TENANT_ID
+    assert body["branding"]["display_name"] == "Parceiro Lido"
+    # e o "current" sem contexto de tenant continua sendo o default (comportamento do app)
+    assert client.get("/api/tenants/current/app-config").json()["tenant_id"] == TENANT_ID
+
+
+def test_tenant_admin_upload_records_own_tenant():
+    from app.models.upload_file import UploadFile as UploadFileRecord
+
+    client, db = _build_partner_admin()
+    with mock_patch("app.services.object_storage.save"),          mock_patch("app.routes.tenant_branding._branding_image_url",
+                    return_value="https://cdn/tenant_branding_icon-abc.png"):
+        r = client.post(
+            "/api/admin/tenants/current/branding/upload-image?kind=icon",
+            files=[_png_file("icon.png")],
+        )
+    assert r.status_code == 201, r.text
+    record = db.query(UploadFileRecord).filter(UploadFileRecord.context == "tenant_branding").one()
+    assert record.tenant_id == PARTNER_TENANT_ID
+
+
+def test_super_admin_patch_keeps_current_resolution():
+    client, db = _build_partner_admin()
+    as_admin(client, db)  # super_admin do build()
+    r = client.patch("/api/admin/tenants/current/branding", json={"display_name": "Default Editado"})
+    assert r.status_code == 200, r.text
+    assert r.json()["tenant_id"] == TENANT_ID
+    db.expire_all()
+    partner = db.query(TenantBranding).filter(TenantBranding.tenant_id == PARTNER_TENANT_ID).one()
+    assert partner.display_name == "Parceiro Pet"

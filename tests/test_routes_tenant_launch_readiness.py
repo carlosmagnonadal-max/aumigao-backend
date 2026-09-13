@@ -9,10 +9,9 @@ O modulo expoe checklist/prontidao de lancamento do tenant em dois endpoints
 (GET /tenants/current/launch-readiness e GET /tenants/{tenant_id}/launch-readiness),
 espelhados tambem sob /api/tenants/... pelo api_router.
 
-NOTA sobre AUTH: as rotas NAO declaram nenhuma dependencia de autenticacao
-(sem get_current_user, sem require_*). O endpoint e publico no comportamento
-atual; ver bug_or_gap. Por isso nao ha teste 401/403 — nao existe gate de auth
-a exercitar nesta camada.
+NOTA sobre AUTH: as rotas exigem admin.access (401 sem auth) e aplicam escopo de
+tenant ao admin de tenant ("current" = proprio tenant; /{tenant_id} de outro
+tenant -> 404). super_admin mantem acesso a qualquer tenant.
 """
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -222,3 +221,67 @@ def test_endpoint_requires_auth():
     client, _ = build(authed=False)
     assert client.get("/tenants/current/launch-readiness").status_code == 401
     assert client.get(f"/tenants/{TENANT_ID}/launch-readiness").status_code == 401
+
+
+# ------------------------------------------- isolamento admin de tenant -------
+# Regressao (white-label do admin-web): admin de tenant X via BFF nao envia
+# X-Tenant-Slug; "current" caia no tenant default e /{tenant_id} nao checava
+# escopo -> admin de X lia a prontidao (branding/plano/unidades) de outro tenant.
+OTHER_TENANT_ID = "t-parceiro"
+TENANT_ADMIN_ID = "admin-parceiro"
+
+
+def _build_multi_tenant():
+    from app.models.rbac import Permission, Role, RolePermission, UserRoleAssignment
+
+    client, db = build(plan="starter", authed=False)
+    db.add(Tenant(id=OTHER_TENANT_ID, name="Parceiro", slug="parceiro", status="active", plan="business"))
+    db.add(TenantBranding(tenant_id=OTHER_TENANT_ID, **_ready_branding()))
+    db.add(User(id=TENANT_ADMIN_ID, email="admin@parceiro.test", full_name="Admin Parceiro",
+                role="admin", is_active=True, password_hash="x", tenant_id=OTHER_TENANT_ID))
+    db.add(Role(id="role-parceiro", name="tenant_admin_parceiro", scope_type="tenant"))
+    db.add(Permission(id="perm-admin-access", key="admin.access", module="admin", action="access"))
+    db.flush()
+    db.add(RolePermission(id="rp-parceiro", role_id="role-parceiro", permission_id="perm-admin-access"))
+    db.add(UserRoleAssignment(id="ura-parceiro", user_id=TENANT_ADMIN_ID, role_id="role-parceiro",
+                              tenant_id=OTHER_TENANT_ID))
+    db.commit()
+    client.app.dependency_overrides[get_current_user] = lambda: db.get(User, TENANT_ADMIN_ID)
+    return client, db
+
+
+def test_tenant_admin_current_resolves_own_tenant_not_default():
+    client, _ = _build_multi_tenant()
+    for prefix in ("/tenants", "/api/tenants"):
+        r = client.get(f"{prefix}/current/launch-readiness")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["tenant_id"] == OTHER_TENANT_ID
+        assert body["checks"]["logo"] is True  # branding do tenant X, nao do default
+
+
+def test_tenant_admin_reads_own_tenant_by_id():
+    client, _ = _build_multi_tenant()
+    r = client.get(f"/api/tenants/{OTHER_TENANT_ID}/launch-readiness")
+    assert r.status_code == 200, r.text
+    assert r.json()["tenant_id"] == OTHER_TENANT_ID
+
+
+def test_tenant_admin_cannot_read_other_tenant_by_id_404():
+    client, _ = _build_multi_tenant()
+    assert client.get(f"/api/tenants/{TENANT_ID}/launch-readiness").status_code == 404
+    assert client.get(f"/tenants/{TENANT_ID}/launch-readiness").status_code == 404
+    # id inexistente nao pode cair no fallback do default para admin de tenant
+    assert client.get("/api/tenants/does-not-exist/launch-readiness").status_code == 404
+
+
+def test_super_admin_still_reads_any_tenant_by_id():
+    client, db = _build_multi_tenant()
+    super_admin = User(id="super-x", email="s@aumigao.test", full_name="S", role="super_admin",
+                       is_active=True, password_hash="x")
+    client.app.dependency_overrides[get_current_user] = lambda: super_admin
+    r = client.get(f"/api/tenants/{OTHER_TENANT_ID}/launch-readiness")
+    assert r.status_code == 200, r.text
+    assert r.json()["tenant_id"] == OTHER_TENANT_ID
+    # current do super_admin segue a resolucao da requisicao (default no TestClient)
+    assert client.get("/api/tenants/current/launch-readiness").json()["tenant_id"] == TENANT_ID

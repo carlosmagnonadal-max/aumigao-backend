@@ -2548,11 +2548,31 @@ def pending_walker_kits(
     }
 
 
+def _walker_user_in_admin_scope(db: Session, scope, walker_ref: str | None) -> bool:
+    """Sec-audit 2026-08-04 (achado #2): o walker referenciado pertence ao escopo do admin?
+
+    WalkerProfile/WalkerKitSubmission nao tem tenant_id (walkers sao globais), entao —
+    mesmo padrao de approve_walker/set_walker_wallet — admin de tenant so age sobre
+    walker cujo user.tenant_id bate com o seu escopo. `walker_ref` aceita user_id OU
+    WalkerProfile.id (a tela de programas expoe ambos). super_admin global: sempre True.
+    """
+    if scope.is_global:
+        return True
+    if not walker_ref:
+        return False
+    walker_user = db.get(User, walker_ref)
+    if walker_user is None:
+        profile = db.get(WalkerProfile, walker_ref)
+        walker_user = db.get(User, profile.user_id) if profile and profile.user_id else None
+    return bool(walker_user and walker_user.tenant_id == scope.tenant_id)
+
+
 @router.post("/walker-kits/{submission_id}/approve")
 @api_router.post("/walker-kits/{submission_id}/approve")
 def approve_walker_kit(submission_id: str, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
+    scope = get_admin_tenant_scope(admin, db)
     submission = db.query(WalkerKitSubmission).filter(WalkerKitSubmission.id == submission_id).first()
-    if not submission:
+    if not submission or not _walker_user_in_admin_scope(db, scope, submission.walker_user_id):
         raise HTTPException(status_code=404, detail="Envio de kit nao encontrado.")
 
     now = datetime.utcnow()
@@ -2603,8 +2623,9 @@ class RejectWalkerKitRequest(BaseModel):
 @router.post("/walker-kits/{submission_id}/reject")
 @api_router.post("/walker-kits/{submission_id}/reject")
 def reject_walker_kit(submission_id: str, payload: RejectWalkerKitRequest | None = None, admin: User = Depends(require_permission("walkers.validate")), db: Session = Depends(get_db)):
+    scope = get_admin_tenant_scope(admin, db)
     submission = db.query(WalkerKitSubmission).filter(WalkerKitSubmission.id == submission_id).first()
-    if not submission:
+    if not submission or not _walker_user_in_admin_scope(db, scope, submission.walker_user_id):
         raise HTTPException(status_code=404, detail="Envio de kit nao encontrado.")
 
     now = datetime.utcnow()
@@ -2801,6 +2822,9 @@ def adjust_walker_cr(
     admin: User = Depends(require_permission("walkers.validate")),
     db: Session = Depends(get_db),
 ):
+    scope = get_admin_tenant_scope(admin, db)
+    if not _walker_user_in_admin_scope(db, scope, walker_id):
+        raise HTTPException(status_code=404, detail="Passeador nao encontrado")
     action = {
         "id": str(uuid4()),
         "type": "cr_adjustment",
@@ -2818,6 +2842,7 @@ def adjust_walker_cr(
         entity_id=walker_id,
         actor=admin,
         after={"amount": payload.amount, "reason": payload.reason},
+        tenant_id=None if scope.is_global else scope.tenant_id,
     )
     db.commit()
     return {"ok": True, "action": action}
@@ -2836,6 +2861,9 @@ def audit_walker_kit(
     admin: User = Depends(require_permission("walkers.validate")),
     db: Session = Depends(get_db),
 ):
+    scope = get_admin_tenant_scope(admin, db)
+    if not _walker_user_in_admin_scope(db, scope, walker_id):
+        raise HTTPException(status_code=404, detail="Passeador nao encontrado")
     action = {
         "id": str(uuid4()),
         "type": "kit_audit",
@@ -2853,6 +2881,7 @@ def audit_walker_kit(
         entity_id=walker_id,
         actor=admin,
         after={"status": payload.status, "note": payload.note},
+        tenant_id=None if scope.is_global else scope.tenant_id,
     )
     db.commit()
     return {"ok": True, "action": action}
@@ -2871,6 +2900,13 @@ def review_tip(
     admin: User = Depends(require_permission("walkers.validate")),
     db: Session = Depends(get_db),
 ):
+    scope = get_admin_tenant_scope(admin, db)
+    if not scope.is_global:
+        # WalkTip TEM tenant_id: admin de tenant so revisa gorjeta do proprio tenant
+        # (inexistente ou de outro tenant -> 404). super_admin global mantem o
+        # comportamento anterior (sem checagem de existencia).
+        tip = db.get(WalkTip, tip_id)
+        ensure_tenant_access(tip.tenant_id if tip else None, scope)
     action = {
         "id": str(uuid4()),
         "type": "tip_review",
@@ -2888,6 +2924,7 @@ def review_tip(
         entity_id=tip_id,
         actor=admin,
         after={"status": payload.status, "note": payload.note},
+        tenant_id=None if scope.is_global else scope.tenant_id,
     )
     db.commit()
     return {"ok": True, "action": action}

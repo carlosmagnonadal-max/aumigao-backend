@@ -19,7 +19,7 @@ import os
 # Importado aqui para que o módulo já exponha os ContextVars mesmo
 # antes de configure_logging() ser chamada.
 from app.core.request_context import request_id_var, tenant_id_var, user_id_var
-from app.core.log_masking import SensitiveDataFilter
+from app.core.log_masking import MaskingFormatterMixin, SensitiveDataFilter
 
 _configured = False
 
@@ -46,7 +46,13 @@ def _make_formatter() -> logging.Formatter:
     if use_json:
         try:
             from pythonjsonlogger.jsonlogger import JsonFormatter  # type: ignore[import]
-            return JsonFormatter(
+
+            # MaskingFormatterMixin: o JsonFormatter re-renderiza exc_info (ignora o
+            # exc_text ja mascarado pelo filtro) — mascara traceback/stack aqui tambem.
+            class _MaskedJsonFormatter(MaskingFormatterMixin, JsonFormatter):
+                pass
+
+            return _MaskedJsonFormatter(
                 "%(asctime)s %(levelname)s %(name)s %(request_id)s %(user_id)s %(tenant_id)s %(message)s",
                 rename_fields={"asctime": "ts", "levelname": "level", "name": "logger"},
             )
@@ -54,7 +60,17 @@ def _make_formatter() -> logging.Formatter:
             # python-json-logger não instalado — cai para texto plano sem ruído.
             pass
     fmt = "%(asctime)s %(levelname)s %(name)s [%(request_id)s] %(message)s"
-    return logging.Formatter(fmt)
+    return _MaskedTextFormatter(fmt)
+
+
+class _MaskedTextFormatter(MaskingFormatterMixin, logging.Formatter):
+    """Formatter texto plano com traceback/stack mascarados."""
+
+
+# Loggers do uvicorn tem handlers proprios (propagate=False) e registram os
+# tracebacks de excecoes nao tratadas ("Exception in ASGI application") — sem o
+# filtro, esses tracebacks saiam sem mascaramento (sec-audit 2026-08-04).
+_UVICORN_LOGGERS = ("uvicorn", "uvicorn.error")
 
 
 def configure_logging() -> None:
@@ -89,3 +105,10 @@ def configure_logging() -> None:
         handler.addFilter(pii_filter)
         root_logger.addHandler(handler)
         root_logger.setLevel(level)
+
+    # Apenas o filtro (nao troca o formatter do uvicorn): o DefaultFormatter dele
+    # reaproveita o exc_text ja mascarado pelo SensitiveDataFilter.
+    for name in _UVICORN_LOGGERS:
+        for handler in logging.getLogger(name).handlers:
+            if not any(isinstance(f, SensitiveDataFilter) for f in handler.filters):
+                handler.addFilter(pii_filter)

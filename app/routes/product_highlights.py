@@ -230,7 +230,13 @@ async def admin_upload_photo(
     Autenticação: mesmo require_admin dos outros endpoints admin.
     Gating de vitrine NÃO é verificado aqui — o upload é pré-operação;
     o admin pode fazer upload antes de criar o item.
+
+    Sec-audit 2026-08-04 (achado #2): escopo de tenant no topo (injeta o GUC RLS antes
+    do INSERT em upload_files) e o registro do upload passa a carregar o tenant do
+    escopo — antes gravava tenant_id=NULL sob GUC do tenant (WITH CHECK do RLS) e
+    ficava sem dono de tenant. super_admin global segue permitido (tenant_id=None, GUC '*').
     """
+    scope = get_admin_tenant_scope(admin, db)
     enforce_upload_rate_limit(request)
 
     if not file.content_type or file.content_type not in _HIGHLIGHT_ALLOWED_CONTENT_TYPES:
@@ -245,6 +251,7 @@ async def admin_upload_photo(
 
     record_upload(
         db, context="product_highlight", owner_id=admin.id,
+        tenant_id=None if scope.is_global else scope.tenant_id,
         document_type="highlight_photo", storage_path=str(destination),
         mime_type=file.content_type, size_bytes=len(content),
     )

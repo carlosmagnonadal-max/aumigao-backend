@@ -761,6 +761,12 @@ app.include_router(fiscal.api_router)
 app.include_router(fiscal.payments_router)
 app.include_router(fiscal.api_payments_router)
 
+# LGPD (art. 18) — direitos do titular sobre a própria conta: exportação dos dados e
+# exclusão/anonimização (GET /me/data-export, POST /me/account-deletion). Rota legada
+# sem versão + espelho em /api/v1 (tupla abaixo), como os demais routers de negócio.
+from app.routes import data_rights  # noqa: E402
+app.include_router(data_rights.router)
+
 # ── /api/v1 — versionamento de contrato (api-T5). ADITIVO: as rotas atuais (sem
 # versão) continuam servindo os apps em uso; /api/v1/* é a superfície ESTÁVEL para
 # apps/integrações futuras apontarem sem risco de quebra de contrato. Monta os
@@ -772,7 +778,7 @@ for _v1_child in (
     auth.router, tutor.router, pets.router, walks.router, walk_locations.router,
     walker.router, walker_network.walker_router, payments.router, notifications.router,
     matching.router, pet_tour.router, recurring_plans.router, shared_walks.router,
-    individual_walk_pricing.router, protected_chat.router,
+    individual_walk_pricing.router, protected_chat.router, data_rights.router,
 ):
     _v1_router.include_router(_v1_child)
 app.include_router(_v1_router)

@@ -113,6 +113,21 @@ def _public_live(token: str) -> dict:
 
         pet = db.get(Pet, walk.pet_id) if walk.pet_id else None
         tenant = db.get(Tenant, walk.tenant_id) if walk.tenant_id else None
+        # Branding white-label mora em TenantBranding (tenant.branding) — o
+        # modelo Tenant NÃO tem coluna logo_url/display_name própria. O código
+        # antigo fazia getattr(tenant, "logo_url", None), que devolvia sempre
+        # None (getattr cai no default por o atributo nem existir em Tenant),
+        # fazendo a página pública sempre cair no fallback padrão "AU" em vez
+        # da logo do estabelecimento. Mesmo padrão correto de app/routes/tutor.py
+        # e app/routes/walker.py (_tenant_brand_dict): ler de tenant.branding.
+        branding = getattr(tenant, "branding", None) if tenant else None
+        tenant_display_name = (
+            (getattr(branding, "display_name", None) or getattr(tenant, "name", None))
+            if tenant
+            else None
+        )
+        tenant_logo_url = getattr(branding, "logo_url", None) if branding else None
+        tenant_primary_color = getattr(branding, "primary_color", None) if branding else None
 
         raw_pings = (
             db.query(WalkLocationPing)
@@ -132,9 +147,10 @@ def _public_live(token: str) -> dict:
             "pet_first_name": pet_first_name(pet.name if pet else ""),
             "pet_photo_url": getattr(pet, "photo_url", None) if pet else None,
             "tenant": {
-                "name": getattr(tenant, "name", None) if tenant else None,
+                "name": tenant_display_name,
                 "slug": getattr(tenant, "slug", None) if tenant else None,
-                "logo_url": getattr(tenant, "logo_url", None) if tenant else None,
+                "logo_url": tenant_logo_url,
+                "primary_color": tenant_primary_color,
             },
             "started_at": getattr(walk, "scheduled_date", None),
             "pings": safe_pings,

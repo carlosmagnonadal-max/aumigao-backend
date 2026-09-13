@@ -11,7 +11,7 @@ import app.models  # noqa: F401 — registra tabelas
 from app.core.database import Base, get_db
 from app.dependencies.auth import get_current_user
 from app.models.pet import Pet
-from app.models.tenant import Tenant
+from app.models.tenant import Tenant, TenantBranding
 from app.models.user import User
 from app.models.walk import Walk
 from app.models.walk_location_ping import WalkLocationPing
@@ -25,13 +25,29 @@ PET_ID = "pet1"
 WALK_ID = "walk1"
 
 
-def build(monkeypatch, *, operational_status="ride_in_progress", with_pings=True):
+def build(monkeypatch, *, operational_status="ride_in_progress", with_pings=True, with_branding=False):
     monkeypatch.setenv("LIVE_SHARE_ENABLED", "true")
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     db = Session()
     db.add(Tenant(id=TENANT_ID, name="Pet Shop X", slug="petx", status="active", plan="business"))
+    if with_branding:
+        db.add(TenantBranding(
+            tenant_id=TENANT_ID,
+            display_name="Pet Shop X — White Label",
+            logo_url="https://cdn.aumigaowalk.com.br/tenant-branding-images/logo-petx.png",
+            primary_color="#123456",
+        ))
+    # Tenant B — mesmo servidor, branding próprio distinto — prova que o payload
+    # de um passeio nunca vaza o branding de outro tenant.
+    db.add(Tenant(id="t2", name="Pet Shop Y", slug="pety", status="active", plan="business"))
+    db.add(TenantBranding(
+        tenant_id="t2",
+        display_name="Pet Shop Y — White Label",
+        logo_url="https://cdn.aumigaowalk.com.br/tenant-branding-images/logo-pety.png",
+        primary_color="#abcdef",
+    ))
     db.add(User(id=TUTOR_ID, email="t@t.com", password_hash="x", role="cliente", tenant_id=TENANT_ID))
     db.add(User(id=OTHER_ID, email="o@t.com", password_hash="x", role="cliente", tenant_id=TENANT_ID))
     db.add(User(id=WALKER_ID, email="w@t.com", password_hash="x", role="walker", tenant_id=TENANT_ID))
@@ -105,10 +121,46 @@ def test_public_live_returns_sanitized_payload(monkeypatch):
     assert body["status"] == "active"
     assert body["pet_first_name"] == "Rex"
     assert "Carmo" not in str(body)
+    # Sem TenantBranding cadastrado: nome cai no fallback Tenant.name e o
+    # logo/cor ficam None — a página do site então usa o logo padrão (correto).
     assert body["tenant"]["name"] == "Pet Shop X"
     assert body["tenant"]["slug"] == "petx"
+    assert body["tenant"]["logo_url"] is None
+    assert body["tenant"]["primary_color"] is None
     assert body["count"] == 1
     assert body["pings"][0]["latitude"] == 0.003
+
+
+def test_public_live_uses_tenant_branding_logo_not_legacy_column(monkeypatch):
+    """Bug real: a página pública mostrava a logo padrão em vez da logo do
+    tenant. Causa: o endpoint lia getattr(tenant, "logo_url", None) — o
+    modelo Tenant nem tem essa coluna, então getattr sempre caía no default
+    None. A logo/nome/cor de white-label moram em TenantBranding
+    (tenant.branding), gravados pelo upload do admin. Este teste trava o
+    payload correto: nome de exibição do branding, logo_url do branding
+    (absoluta) e cor primária."""
+    client, db, _ = build(monkeypatch, with_branding=True)
+    token = client.post(f"/walks/{WALK_ID}/share-link").json()["token"]
+    r = client.get(f"/public/live/{token}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["tenant"]["name"] == "Pet Shop X — White Label"
+    assert body["tenant"]["logo_url"] == "https://cdn.aumigaowalk.com.br/tenant-branding-images/logo-petx.png"
+    assert body["tenant"]["primary_color"] == "#123456"
+
+
+def test_public_live_does_not_leak_other_tenant_branding(monkeypatch):
+    """O passeio é do tenant t1 (petx) — o payload nunca pode trazer o
+    branding do tenant t2 (pety), mesmo que ambos existam no mesmo banco."""
+    client, db, _ = build(monkeypatch, with_branding=True)
+    token = client.post(f"/walks/{WALK_ID}/share-link").json()["token"]
+    r = client.get(f"/public/live/{token}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["tenant"]["slug"] == "petx"
+    assert "pety" not in str(body)
+    assert "logo-pety" not in str(body)
+    assert "#abcdef" not in str(body)
 
 
 def test_public_live_unknown_token_404(monkeypatch):

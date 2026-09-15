@@ -37,6 +37,7 @@ from app.services.operational_observability_service import record_operational_ex
 from app.services.operational_reliability_service import serialize_operational_event
 from app.services.walker_operational_score_service import calculate_walker_operational_score
 from app.services.walker_network_matching_service import get_matching_pool_for_tenant, is_walker_eligible_for_tenant
+from app.services.walker_training_policy import get_enforcement as get_training_enforcement, is_walker_trained
 from app.routes.notifications import NotificationCreate, _create_notification
 from app.utils.url_utils import normalize_media_url
 
@@ -769,15 +770,21 @@ def _candidate_for_selected_walker(walk: Walk, walker_id: str, db: Session) -> d
     if tenant_id and not is_walker_eligible_for_tenant(db, tenant_id, walker_id):
         return None
 
+    # S2: passeador sem Capacitação não recebe oferta direta quando a trava bloqueia.
+    training = get_training_enforcement()
     profile = db.query(WalkerProfile).filter(
         WalkerProfile.user_id == walker_id,
         WalkerProfile.status == "active",
         WalkerProfile.active_as_walker.is_(True),
     ).first()
     if profile:
+        if training.blocking and not is_walker_trained(profile, training.required_version):
+            return None
         return matched_walker_payload(profile, _candidate_request(walk), db)
     user = db.get(User, walker_id)
     if user and user.role == "walker" and user.is_active:
+        if training.blocking:
+            return None  # sem perfil não há como ter concluído a Capacitação
         return {
             "walker_id": user.id,
             "name": user.full_name or user.email,

@@ -23,6 +23,7 @@ from app.services.reputation_service import DEFAULT_WALKER_PHOTO, calculate_hybr
 from app.services.walker_availability_service import _covers
 from app.services.walker_trust_service import compute_walker_trust
 from app.services.tenant_feature_runtime_service import is_tenant_feature_enabled
+from app.services.walker_training_policy import get_enforcement as get_training_enforcement, is_walker_trained
 
 # Sentinel para diferenciar "kit_row nao informado pelo chamador" (dispara query
 # individual de fallback) de "kit_row=None resolvido" (walker sem kit aprovado).
@@ -284,6 +285,8 @@ def get_eligible_walkers(request: MatchingWalkerRequest, db: Session, tenant_id:
             pet = None
         if pet is not None:
             pet_size_rank = size_rank(getattr(pet, "size", None))
+    # S2: trava da Capacitação — calculada 1x por ranking; só exclui com trava EFETIVA.
+    training = get_training_enforcement()
     eligible = []
     seen_keys = set()
     for profile in profiles:
@@ -292,6 +295,8 @@ def get_eligible_walkers(request: MatchingWalkerRequest, db: Session, tenant_id:
             continue
         seen_keys.add(dedupe_key)
         if tenant_pool is not None and profile.user_id not in tenant_pool:
+            continue
+        if training.blocking and not is_walker_trained(profile, training.required_version):
             continue
         # WK-10: gate de presença (ligável por flag) — offline fora do pool quando ligado.
         if not passes_online_gate(profile):

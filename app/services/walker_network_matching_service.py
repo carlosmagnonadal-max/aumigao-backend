@@ -126,7 +126,28 @@ def get_matching_pool_for_tenant(db: Session, tenant_id: str) -> list[str]:
 
     Plano free: a REDE é desligada → pool VAZIO (tenant free só usa passeadores
     próprios, que não passam por este pool de rede). O trial de 21d libera a rede.
+
+    S2: com a trava da Capacitação EFETIVA, remove quem não concluiu a versão exigida.
+    (is_walker_eligible_for_tenant NÃO filtra — é usado fora do matching, DV4.)
     """
     if tenant_network_blocked_by_plan(db, tenant_id):
         return []
-    return get_tenant_eligible_walker_ids(db, tenant_id)
+    return _exclude_untrained_walkers(db, get_tenant_eligible_walker_ids(db, tenant_id))
+
+
+def _exclude_untrained_walkers(db: Session, walker_ids: list[str]) -> list[str]:
+    from app.services.walker_training_policy import get_enforcement
+
+    enforcement = get_enforcement()
+    if not enforcement.blocking or not walker_ids:
+        return walker_ids
+    trained = {
+        row[0]
+        for row in db.query(WalkerProfile.user_id)
+        .filter(
+            WalkerProfile.user_id.in_(walker_ids),
+            WalkerProfile.training_completed_version == enforcement.required_version,
+        )
+        .all()
+    }
+    return [walker_id for walker_id in walker_ids if walker_id in trained]

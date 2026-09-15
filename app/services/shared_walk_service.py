@@ -30,6 +30,7 @@ from app.models.shared_walk import (
     TenantSharedWalkConfig,
 )
 from app.models.tenant import Tenant
+from app.services.local_rules_service import local_max_dogs_override, resolve_tutor_location
 from app.services.payment_split_service import build_payment_split
 from app.services.tenant_plan_service import enforce_tenant_product_feature, tenant_has_feature
 
@@ -77,6 +78,23 @@ def tutor_count(session: SharedWalk) -> int:
     return len({p.tutor_id for p in active_participants(session)})
 
 
+def _enforce_local_dog_limit(db: Session, tenant_id: str, host_tutor_id: str, total_dogs: int) -> None:
+    """D7/S3: limite de cães por passeador sobrescrito por regra local `limite_caes`.
+
+    SEM override vigente → no-op (comportamento idêntico ao anterior, DV3).
+    Local de referência = anfitrião (perfil) → unidades do tenant.
+    """
+    municipio, uf = resolve_tutor_location(db, host_tutor_id, tenant_id)
+    if not uf:
+        return
+    limit = local_max_dogs_override(db, municipio, uf)
+    if limit is not None and total_dogs > limit:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Regra local de {municipio or uf}: máximo de {limit} cães por passeador neste passeio.",
+        )
+
+
 def _pet_owned(db: Session, pet_id: str, tutor_id: str) -> Pet:
     pet = db.get(Pet, pet_id)
     if not pet or pet.tutor_id != tutor_id:
@@ -106,6 +124,7 @@ def create_session(
         raise HTTPException(status_code=400, detail=f"Máximo de {config.max_pets_same_tutor} pets do mesmo tutor.")
     for pet_id in unique_pets:
         _pet_owned(db, pet_id, host_tutor_id)
+    _enforce_local_dog_limit(db, tenant.id, host_tutor_id, len(unique_pets))
 
     # Preço por pet varia com a duração (white label). Fallback = price_per_pet.
     price = {
@@ -161,6 +180,7 @@ def join_session(db: Session, tenant: Tenant, walk_id: str, guest_tutor_id: str,
         raise HTTPException(status_code=400, detail="Este pet não está habilitado para passeio com outros pets.")
     if any(p.pet_id == pet_id and p.status in ACTIVE_PARTICIPANT_STATUSES for p in session.participants):
         raise HTTPException(status_code=409, detail="Este pet já está no passeio.")
+    _enforce_local_dog_limit(db, tenant.id, session.created_by_tutor_id, len(active_participants(session)) + 1)
 
     db.add(SharedWalkParticipant(
         shared_walk_id=session.id,

@@ -152,6 +152,10 @@ def _shared_walk_db():
         SharedWalk.__table__, SharedWalkParticipant.__table__, Pet.__table__,
         __import__("app.models.payment", fromlist=["Payment"]).Payment.__table__,
         TenantPaymentConfig.__table__,
+        # S3: limite local de cães consulta perfil do tutor, unidades e regras locais.
+        __import__("app.models.tutor_profile", fromlist=["TutorProfile"]).TutorProfile.__table__,
+        __import__("app.models.tenant", fromlist=["TenantUnit"]).TenantUnit.__table__,
+        __import__("app.models.local_rule", fromlist=["LocalRule"]).LocalRule.__table__,
     ])
     return sessionmaker(bind=engine)()
 

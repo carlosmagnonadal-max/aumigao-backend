@@ -1,9 +1,12 @@
+import json
+
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
+from app.models.local_rule import LocalRule
 from app.models.payment import Payment
 from app.models.pet import Pet
 from app.models.shared_walk import (
@@ -15,8 +18,9 @@ from app.models.shared_walk import (
     SharedWalkParticipant,
     TenantSharedWalkConfig,
 )
-from app.models.tenant import Tenant, TenantFeature
+from app.models.tenant import Tenant, TenantFeature, TenantUnit
 from app.models.tenant_payment_config import TenantPaymentConfig
+from app.models.tutor_profile import TutorProfile
 from app.services import shared_walk_service as svc
 
 
@@ -26,6 +30,8 @@ def _db():
         Tenant.__table__, TenantFeature.__table__, TenantSharedWalkConfig.__table__,
         SharedWalk.__table__, SharedWalkParticipant.__table__, Pet.__table__, Payment.__table__,
         TenantPaymentConfig.__table__,
+        # S3: limite local de cães consulta perfil do tutor, unidades e regras locais.
+        TutorProfile.__table__, TenantUnit.__table__, LocalRule.__table__,
     ])
     return sessionmaker(bind=engine)()
 
@@ -159,3 +165,79 @@ def test_host_cancel_cancels_session():
     s = svc.create_session(db, t, "tutorA", scheduled_date="x", duration_minutes=45, host_pet_ids=["p1", "p2"], open_to_pool=False)
     s = svc.cancel_participation(db, t, s.id, "tutorA")
     assert s.status == SHARED_CANCELLED
+
+
+# --------------------------------------------------------------------------- #
+# S3 — limite de cães por passeador (override municipal via local_rules)
+# --------------------------------------------------------------------------- #
+def _tutor_city(db, tutor_id, city, uf):
+    db.add(TutorProfile(id=f"tp-{tutor_id}", user_id=tutor_id, city=city, state=uf))
+    db.commit()
+
+
+def _limit_rule(db, *, max_dogs, status="vigente", municipio="Salvador", uf="BA"):
+    db.add(LocalRule(id=f"lr-limite-{status}-{max_dogs}", uf=uf, municipio=municipio, nivel="municipal",
+                     tema="limite_caes", criterio="operational", params_json=json.dumps({"max_dogs": max_dogs}),
+                     exigencia_json=json.dumps({"itens": [f"no máximo {max_dogs} cães por passeador"]}),
+                     norma="Regra de teste", status=status))
+    db.commit()
+
+
+def test_regression_without_local_limit_behavior_is_unchanged():
+    # Sem regra limite_caes: anfitrião leva 3 pets (max_pets_same_tutor) e o convidado entra
+    # com 4 — exatamente como antes do S3. (Convidado sem teto é lacuna PRÉ-EXISTENTE, ver DV3.)
+    db = _db(); t = _tenant(db)
+    _tutor_city(db, "tutorA", "Salvador", "BA")
+    for i in range(3):
+        _pet(db, f"a{i}", "tutorA")
+    for i in range(4):
+        _pet(db, f"b{i}", "tutorB")
+    s = svc.create_session(db, t, "tutorA", scheduled_date="x", duration_minutes=45,
+                           host_pet_ids=["a0", "a1", "a2"], open_to_pool=False)
+    for i in range(4):
+        s = svc.join_session(db, t, s.id, "tutorB", f"b{i}")
+    assert len(svc.active_participants(s)) == 7
+
+
+def test_local_limit_blocks_create_above_override():
+    db = _db(); t = _tenant(db)
+    _tutor_city(db, "tutorA", "Salvador", "BA")
+    _limit_rule(db, max_dogs=2)
+    for i in range(3):
+        _pet(db, f"a{i}", "tutorA")
+    with pytest.raises(HTTPException) as e:
+        svc.create_session(db, t, "tutorA", scheduled_date="x", duration_minutes=45,
+                           host_pet_ids=["a0", "a1", "a2"], open_to_pool=False)
+    assert e.value.status_code == 409
+    assert "máximo de 2 cães" in e.value.detail
+
+
+def test_local_limit_blocks_join_that_exceeds_override():
+    db = _db(); t = _tenant(db)
+    _tutor_city(db, "tutorA", "Salvador", "BA")
+    _limit_rule(db, max_dogs=2)
+    _pet(db, "a0", "tutorA"); _pet(db, "a1", "tutorA"); _pet(db, "b0", "tutorB")
+    s = svc.create_session(db, t, "tutorA", scheduled_date="x", duration_minutes=45,
+                           host_pet_ids=["a0", "a1"], open_to_pool=False)
+    with pytest.raises(HTTPException) as e:
+        svc.join_session(db, t, s.id, "tutorB", "b0")
+    assert e.value.status_code == 409
+
+
+def test_local_limit_in_tramitacao_is_ignored():
+    db = _db(); t = _tenant(db)
+    _tutor_city(db, "tutorA", "Salvador", "BA")
+    _limit_rule(db, max_dogs=1, status="tramitacao")
+    _pet(db, "a0", "tutorA"); _pet(db, "a1", "tutorA")
+    s = svc.create_session(db, t, "tutorA", scheduled_date="x", duration_minutes=45,
+                           host_pet_ids=["a0", "a1"], open_to_pool=False)
+    assert len(svc.active_participants(s)) == 2
+
+
+def test_local_limit_not_applied_when_location_unknown():
+    db = _db(); t = _tenant(db)
+    _limit_rule(db, max_dogs=1)
+    _pet(db, "a0", "tutorA"); _pet(db, "a1", "tutorA")
+    s = svc.create_session(db, t, "tutorA", scheduled_date="x", duration_minutes=45,
+                           host_pet_ids=["a0", "a1"], open_to_pool=False)
+    assert len(svc.active_participants(s)) == 2

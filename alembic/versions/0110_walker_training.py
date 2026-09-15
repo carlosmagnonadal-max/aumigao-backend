@@ -54,7 +54,9 @@ def upgrade() -> None:
             sa.Column("best_score", sa.Integer(), nullable=False, server_default="0"),
             sa.Column("attempts", sa.Integer(), nullable=False, server_default="0"),
             sa.Column("passed_at", sa.DateTime(), nullable=True),
-            sa.Column("created_at", sa.DateTime(), nullable=True),
+            # S2-8: coerente com o modelo (Mapped[datetime], sem "| None" -> NOT NULL);
+            # server_default cobre INSERT feito fora do ORM (ex.: SQL manual/seed).
+            sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
             sa.Column("updated_at", sa.DateTime(), nullable=True),
             sa.UniqueConstraint("walker_user_id", "content_version", "module_id",
                                 name="uq_walker_training_progress_module"),

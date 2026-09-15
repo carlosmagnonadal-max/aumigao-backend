@@ -2,10 +2,15 @@
 
 Tabela GLOBAL (sem tenant_id / sem RLS), igual a walker_profiles e walker_kit_submissions.
 """
+import importlib.util
+from pathlib import Path
+
 import pytest
 from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
@@ -14,6 +19,14 @@ from app.core.database import Base
 from app.models.walker_training_progress import WalkerTrainingProgress
 
 _REV = "0110_walker_training"
+_MIGRATION_PATH = Path(__file__).resolve().parents[1] / "alembic" / "versions" / f"{_REV}.py"
+
+
+def _load_migration():
+    spec = importlib.util.spec_from_file_location("mig_0110_walker_training", _MIGRATION_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _script() -> ScriptDirectory:
@@ -55,3 +68,29 @@ def test_unique_progress_per_walker_version_module():
     db.add(WalkerTrainingProgress(id="p2", walker_user_id="w", content_version="1.0", module_id="m01"))
     with pytest.raises(IntegrityError):
         db.commit()
+
+
+def test_migration_created_at_is_not_null_with_default():
+    # S2-8: created_at coerente com o modelo (Mapped[datetime], sem "| None" ->
+    # NOT NULL) — a MIGRAÇÃO (não só o create_all do ORM) precisa criar a coluna
+    # assim; um INSERT sem informar created_at (ex.: SQL manual) não pode falhar.
+    from app.models.walker_profile import WalkerProfile
+
+    mig = _load_migration()
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine, tables=[WalkerProfile.__table__])
+    with engine.begin() as conn:
+        with Operations.context(MigrationContext.configure(conn)):
+            mig.upgrade()
+    insp = inspect(engine)
+    column = next(c for c in insp.get_columns("walker_training_progress") if c["name"] == "created_at")
+    assert column["nullable"] is False
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO walker_training_progress (id, walker_user_id, content_version, module_id) "
+            "VALUES ('p-sem-created-at', 'w', '1.0', 'm01')"
+        ))
+        row = conn.execute(text(
+            "SELECT created_at FROM walker_training_progress WHERE id = 'p-sem-created-at'"
+        )).one()
+    assert row[0] is not None

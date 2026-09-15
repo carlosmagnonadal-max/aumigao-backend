@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS walker_training_progress (
     best_score INTEGER NOT NULL DEFAULT 0,
     attempts INTEGER NOT NULL DEFAULT 0,
     passed_at TIMESTAMP WITHOUT TIME ZONE NULL,
-    created_at TIMESTAMP WITHOUT TIME ZONE NULL,
+    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT now(),
     updated_at TIMESTAMP WITHOUT TIME ZONE NULL,
     CONSTRAINT uq_walker_training_progress_module UNIQUE (walker_user_id, content_version, module_id)
 );

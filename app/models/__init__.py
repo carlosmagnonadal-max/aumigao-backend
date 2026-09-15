@@ -72,3 +72,4 @@ from app.models.webhook_event import WebhookEvent  # noqa: F401 — dedup de web
 from app.models.tenant_product_highlight import TenantProductHighlight  # noqa: F401 — Vitrine de destaques (Enterprise)
 from app.models.walker_indication import WalkerIndication, WalkerLead  # noqa: F401 — Indicação de passeador (0098)
 from app.models.cost_alert import CostAlert, CostAlertEvent  # noqa: F401 — Alertas de custo (0106)
+from app.models.walk_emergency_call import WalkEmergencyCall  # noqa: F401 — Botão de Emergência S1 (0109)

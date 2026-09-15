@@ -94,10 +94,21 @@ def test_operational_accept_blocked_and_trained_passes(tmp_path, monkeypatch):
     assert client.post("/walks/nao-existe/accept").status_code == 404
 
 
-def test_gate_function_ignores_users_without_profile(tmp_path, monkeypatch):
+def test_gate_function_blocks_users_without_profile_when_enforced(tmp_path, monkeypatch):
+    # S2-3: sem WalkerProfile, com trava EFETIVA (on) -> bloqueia igual ao matching
+    # (que já exclui implicitamente quem não tem perfil, por só ranquear WalkerProfile).
     _content(tmp_path, monkeypatch)
     _, db = build(create_profile=False)
-    enforce_training_completed(SimpleNamespace(id=WALKER_ID), db)  # não levanta
+    with pytest.raises(HTTPException) as exc:
+        enforce_training_completed(SimpleNamespace(id=WALKER_ID), db)
+    assert exc.value.status_code == 403
+    assert exc.value.detail["code"] == "training_required"
+
+
+def test_gate_function_ignores_users_without_profile_in_warn(tmp_path, monkeypatch):
+    _content(tmp_path, monkeypatch, mode="warn")
+    _, db = build(create_profile=False)
+    enforce_training_completed(SimpleNamespace(id=WALKER_ID), db)  # não levanta (não bloqueante)
 
 
 def test_gate_function_off_never_queries(tmp_path, monkeypatch):

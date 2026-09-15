@@ -29,7 +29,19 @@ def enforce_training_completed(user: User, db: Session) -> None:
         return
     profile = db.query(WalkerProfile).filter(WalkerProfile.user_id == user.id).first()
     if profile is None:
-        # Quem não tem perfil de passeador já é barrado pelos checks de papel da própria rota.
+        # S2-3: sem perfil de passeador, o matching já exclui implicitamente (só ranqueia
+        # WalkerProfile) — com trava EFETIVA (on), o gate bloqueia igual, em vez de deixar
+        # passar; sem trava efetiva (off/warn), mantém o comportamento de sempre (passa —
+        # quem não tem perfil já é barrado pelos checks de papel da própria rota).
+        if enforcement.blocking:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": TRAINING_REQUIRED_CODE,
+                    "message": TRAINING_REQUIRED_MESSAGE,
+                    "required_version": enforcement.required_version,
+                },
+            )
         return
     if is_walker_trained(profile, enforcement.required_version):
         return

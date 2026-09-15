@@ -57,6 +57,8 @@ from app.services.operational_matching_service import (
     _batch_live_tracking,
 )
 from app.services.walker_operational_score_service import calculate_walker_operational_score
+from app.services.local_rules_service import safety_alerts_for_walk
+from app.services.tenant_contact_service import resolve_tenant_support_phone
 from app.routes.notifications import NotificationCreate, _create_notification
 from app.constants import PAID_PAYMENT_STATUSES as _PAID_PAYMENT_STATUSES_CONST
 from app.constants import WALK_COMPLETED_STATUSES as _WALK_COMPLETED_STATUSES
@@ -330,6 +332,25 @@ def _walk_payload(walk: Walk, db: Session) -> dict:
         "expires_in": "15 min",
         "is_frequent_client": True,
     }
+
+
+# S3: passeios encerrados não precisam de alerta (evita consultas em históricos).
+_SAFETY_ALERT_SKIP_STATUSES = {"ride_completed", "ride_cancelled"}
+
+
+def _attach_safety_alerts(payload: dict, walk: Walk, db: Session, cache: dict) -> dict:
+    """Anexa `safety_alerts` (regra local × ficha do pet) ao payload do passeador. Chave sempre presente.
+
+    TAREFA EXTRA (S3): também anexa `establishment_support_phone` (telefone de
+    contato/suporte do TENANT — não é dado pessoal do tutor, que continua
+    omitido em `tutor_phone`). Mesmos pontos de anexo de `safety_alerts`.
+    """
+    if (walk.operational_status or "") in _SAFETY_ALERT_SKIP_STATUSES:
+        payload["safety_alerts"] = []
+    else:
+        payload["safety_alerts"] = safety_alerts_for_walk(db, walk, cache=cache)
+    payload["establishment_support_phone"] = resolve_tenant_support_phone(db, walk.tenant_id)
+    return payload
 
 
 def _completed_walks(user: User, db: Session, limit: int = 200) -> list[Walk]:
@@ -1248,10 +1269,18 @@ def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_
 
     potential = sum(float(walk.price or 0) for walk in available[:3])
 
-    active_walk = _walk_payload(active[0], db) if active else (_walk_payload(accepted[0], db) if accepted else None)
+    safety_cache: dict = {}
+    active_walk_row = active[0] if active else (accepted[0] if accepted else None)
+    active_walk = (
+        _attach_safety_alerts(_walk_payload(active_walk_row, db), active_walk_row, db, safety_cache)
+        if active_walk_row else None
+    )
     next_request = available[0] if available else None
     buffer_minutes = 15
-    next_request_payload = _walk_payload(next_request, db) if next_request else None
+    next_request_payload = (
+        _attach_safety_alerts(_walk_payload(next_request, db), next_request, db, safety_cache)
+        if next_request else None
+    )
     if next_request_payload:
         next_request_payload["acceptance_guard"] = {
             "min_interval_minutes": buffer_minutes,
@@ -2255,6 +2284,7 @@ def requests(user: User = Depends(get_current_user), db: Session = Depends(get_w
         .all()
     )
     payloads = []
+    safety_cache: dict = {}
     for walk in walks:
         payload = _walk_payload(walk, db)
         operational = serialize_operational_walk(walk, db, user=user)
@@ -2273,6 +2303,7 @@ def requests(user: User = Depends(get_current_user), db: Session = Depends(get_w
             "tenant_name": operational["tenant_name"],
             "tenant_brand_color": operational["tenant_brand_color"],
         })
+        _attach_safety_alerts(payload, walk, db, safety_cache)
         payloads.append(payload)
     return payloads
 
@@ -2332,7 +2363,13 @@ def walker_walks(user: User = Depends(get_current_user), db: Session = Depends(g
     # Batch: 1 query para saber quais walks têm live-tracking ativo (elimina N+1)
     walk_ids = [walk.id for walk in walks]
     live_ids = _batch_live_tracking(walk_ids, db)
-    return [serialize_operational_walk(walk, db, user=user, live_tracking_ids=live_ids) for walk in walks]
+    safety_cache: dict = {}
+    return [
+        _attach_safety_alerts(
+            serialize_operational_walk(walk, db, user=user, live_tracking_ids=live_ids), walk, db, safety_cache
+        )
+        for walk in walks
+    ]
 
 
 @router.post("/walks/{walk_id}/accept")
@@ -3111,7 +3148,7 @@ def walker_active_walk(
     if not walk:
         raise HTTPException(status_code=404, detail="Nenhum passeio ativo no momento.")
 
-    return serialize_operational_walk(walk, db, user=user)
+    return _attach_safety_alerts(serialize_operational_walk(walk, db, user=user), walk, db, {})
 
 
 # ---------------------------------------------------------------------------

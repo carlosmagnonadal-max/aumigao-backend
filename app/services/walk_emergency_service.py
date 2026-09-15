@@ -26,7 +26,6 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models.pet import Pet
-from app.models.tenant import Tenant, TenantSettings
 from app.models.tutor_profile import TutorProfile
 from app.models.user import User
 from app.models.walk import Walk
@@ -34,6 +33,7 @@ from app.models.walk_emergency_call import WalkEmergencyCall
 from app.models.walker_profile import WalkerProfile
 from app.services.operational_reliability_service import EMERGENCY_CALL, create_operational_event
 from app.services.telephony import get_telephony_provider, to_e164_br
+from app.services.tenant_contact_service import resolve_tenant_support_phone
 
 LOGGER = logging.getLogger("aumigao.walk_emergency")
 
@@ -92,17 +92,10 @@ def _walker_e164(db: Session, user_id: str) -> str | None:
 
 
 def _tenant_support_phone(db: Session, tenant_id: str | None) -> str | None:
-    if not tenant_id:
-        return None
-    settings = db.query(TenantSettings).filter(TenantSettings.tenant_id == tenant_id).first()
-    raw = (settings.support_phone if settings else None) or ""
-    if not raw.strip():
-        tenant = db.get(Tenant, tenant_id)
-        raw = (tenant.contact_phone if tenant else None) or ""
-    raw = raw.strip()
-    if not raw:
-        return None
-    return to_e164_br(raw) or raw
+    # S3: extraído para app.services.tenant_contact_service (reuso no
+    # establishment_support_phone dos payloads do passeador). Mesma regra,
+    # mesmo comportamento — só um alias local para não mexer nos call sites.
+    return resolve_tenant_support_phone(db, tenant_id)
 
 
 def _plan_call(db: Session, walk_id: str, tutor_id: str | None, walker_user_id: str) -> _CallPlan:

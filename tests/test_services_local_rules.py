@@ -280,3 +280,44 @@ def test_rules_cache_avoids_second_query(monkeypatch):
     first = lrs.rules_for_city(db, "Salvador", "BA", cache=cache)
     monkeypatch.setattr(db, "query", lambda *a, **k: (_ for _ in ()).throw(AssertionError("sem cache")))
     assert lrs.rules_for_city(db, "salvador", "BA", cache=cache) == first
+
+
+# --------------------------------------------------------------------------- #
+# S3 (Task 5) — limite de cães por passeador (override municipal)
+# --------------------------------------------------------------------------- #
+from app.models.shared_walk import TenantSharedWalkConfig
+
+
+def _limit_rule(db, *, rule_id, max_dogs, status="vigente", municipio="Salvador", uf="BA", nivel="municipal"):
+    db.add(LocalRule(id=rule_id, uf=uf, municipio=municipio, nivel=nivel, tema="limite_caes",
+                     criterio="operational", params_json=json.dumps({"max_dogs": max_dogs}),
+                     exigencia_json=json.dumps({"itens": [f"no máximo {max_dogs} cães por passeador"]}),
+                     norma="Regra de teste", status=status))
+    db.commit()
+
+
+def test_max_dogs_without_override_returns_national_default():
+    db = _db(); _seed(db)
+    assert lrs.local_max_dogs_override(db, "Salvador", "BA") is None
+    assert lrs.max_dogs_per_walker(db, "Salvador", "BA", national_default=6) == 6
+
+
+def test_max_dogs_override_uses_most_protective_vigente_value():
+    db = _db(); _seed(db)
+    _limit_rule(db, rule_id="lr-t-estado", max_dogs=4, municipio=None, nivel="estadual")
+    _limit_rule(db, rule_id="lr-t-ssa", max_dogs=2)
+    _limit_rule(db, rule_id="lr-t-pl", max_dogs=1, status="tramitacao")
+    assert lrs.local_max_dogs_override(db, "Salvador", "BA") == 2
+    assert lrs.max_dogs_per_walker(db, "Salvador", "BA", national_default=6) == 2
+    assert lrs.local_max_dogs_override(db, "Feira de Santana", "BA") == 4
+
+
+def test_invalid_max_dogs_param_is_ignored():
+    db = _db()
+    _limit_rule(db, rule_id="lr-t-ruim", max_dogs="dois")
+    assert lrs.local_max_dogs_override(db, "Salvador", "BA") is None
+
+
+def test_national_default_is_derived_from_shared_walk_config():
+    config = TenantSharedWalkConfig(tenant_id="t1", max_tutors=2, max_pets_same_tutor=3)
+    assert lrs.national_max_dogs_per_walker(config) == 6

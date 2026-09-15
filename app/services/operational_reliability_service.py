@@ -19,6 +19,9 @@ TUTOR_NO_SHOW = "tutor_no_show"
 LATE_CANCELLATION = "late_cancellation"
 MISSING_CHECKIN = "missing_checkin"
 OPERATIONAL_RECOVERY_TRIGGERED = "operational_recovery_triggered"
+# S1 — Botão de Emergência (spec 2026-09-15 §1). Criado com dedupe=False
+# (cada acionamento aceito gera um evento) e severity="high".
+EMERGENCY_CALL = "emergency_call"
 
 EVENT_LABELS = {
     WALKER_LATE: "Possível atraso do passeador",
@@ -28,6 +31,7 @@ EVENT_LABELS = {
     LATE_CANCELLATION: "Cancelamento próximo ao horário",
     MISSING_CHECKIN: "Check-in operacional ausente",
     OPERATIONAL_RECOVERY_TRIGGERED: "Recovery operacional acionado",
+    EMERGENCY_CALL: "Emergência acionada pelo passeador",
 }
 
 SEVERITY_LABELS = {

@@ -16,6 +16,9 @@ ATTENTION_EVENTS = {
     "operational_recovery_triggered",
 }
 HIGH_ATTENTION_EVENTS = {"walker_no_show", "missing_checkin"}
+# S1 — eventos de SEGURANÇA acionados pelo próprio passeador (severity="high")
+# nunca descontam score: punir o botão de emergência desincentivaria o uso.
+SAFETY_EVENTS = {"emergency_call"}
 
 
 def _completed_walks(walker_id: str, db: Session) -> list[Walk]:
@@ -112,7 +115,12 @@ def _score_from_inputs(
     dados pré-carregados em lote (calculate_walker_operational_scores) e eliminar o N+1.
     """
     attention_events = [event for event in events if event.event_type in ATTENTION_EVENTS]
-    high_attention_events = [event for event in events if event.event_type in HIGH_ATTENTION_EVENTS or event.severity == "high"]
+    high_attention_events = [
+        event
+        for event in events
+        if event.event_type not in SAFETY_EVENTS
+        and (event.event_type in HIGH_ATTENTION_EVENTS or event.severity == "high")
+    ]
 
     score = 70
     score += min(12, completed_count * 2)

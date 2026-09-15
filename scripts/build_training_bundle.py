@@ -32,7 +32,14 @@ DEFAULT_OUTPUT_DIR = BACKEND_ROOT / "app" / "content" / "training"
 
 MODULE_FILE_RE = re.compile(r"^\d{2}[a-z]?-[a-z0-9-]+\.md$")
 VERSION_RE = re.compile(r"^\d+(?:\.\d+)*$")
-REVIEW_MARKER_RE = re.compile(r"[ \t]*⚠️?[ \t]*\**VERIFICAR-[^\n]*")
+# S2-1: início de uma nota de revisão — "⚠️ VERIFICAR-<TAG>: ..." ou o marcador
+# de fonte não confirmada. Só o INÍCIO — onde a nota termina é achado à parte
+# (_note_end), porque nem sempre é o fim da linha (pode ter texto do passeador
+# depois, na mesma linha/caixa).
+REVIEW_MARKER_START_RE = re.compile(
+    r"⚠️?[ \t]*\**(?:VERIFICAR-[^\s:()]*|Referência original não confirmada)"
+)
+_CITATION_END_RE = re.compile(r"\[F\d+\]\.")
 EMPTY_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*]|\d+\.)\s*$")
 SECTION_ID_RE = re.compile(r"^(\d+[A-Za-z]?(?:\.\d+)*)\.?\s+(.+)$")
 SOURCE_LINE_RE = re.compile(r"^\s*-\s*\*\*\[(F\d+)\]\*\*\s*(.+)$")
@@ -41,7 +48,7 @@ QUIZ_FENCE_RE = re.compile(r"```ya?ml[ \t]*\n(.*?)\n```", re.DOTALL)
 H2_QUICK_CARD = "cartão rápido".casefold()
 H2_QUIZ = "quiz"
 H2_SOURCES = "fontes"
-H2_VET_REVIEW = "para o veterinário revisar".casefold()
+H2_VET_REVIEW_PREFIX = "para o veterinário".casefold()
 STATUSES = ("draft", "vet_approved")
 QUICK_GUIDE_MODULES = ["m08", "m09"]
 PASS_THRESHOLD = 80
@@ -56,19 +63,60 @@ def _normalize_newlines(text: str) -> str:
 
 
 def count_review_markers(text: str) -> int:
-    return len(REVIEW_MARKER_RE.findall(text))
+    return len(REVIEW_MARKER_START_RE.findall(text))
+
+
+def _note_end(text: str, marker_start: int, marker_end: int) -> int:
+    """Onde a nota termina (S2-1): fechamento do parêntese que JÁ estava aberto
+    quando a nota começou (nota dentro de um parêntese do texto do passeador —
+    ex.: "...fila brasileiro — ⚠️ VERIFICAR-VET: não listado na fonte) — tem..."),
+    uma citação "[Fn]." logo em seguida (ex.: nota termina com "... (→ 10.9) [F5]."
+    antes de o texto do passeador continuar), ou — sem nenhum dos dois — o fim
+    da linha/caixa (comportamento anterior, seguro quando a nota é a última coisa
+    da linha).
+    """
+    line_end = text.find("\n", marker_end)
+    if line_end == -1:
+        line_end = len(text)
+    depth = text.count("(", 0, marker_start) - text.count(")", 0, marker_start)
+    if depth > 0:
+        running = depth
+        for i in range(marker_end, line_end):
+            char = text[i]
+            if char == "(":
+                running += 1
+            elif char == ")":
+                running -= 1
+                if running == 0:
+                    return i + 1
+    citation = _CITATION_END_RE.search(text, marker_end, line_end)
+    if citation:
+        return citation.end()
+    return line_end
+
+
+def _strip_review_notes(text: str) -> str:
+    out: list[str] = []
+    pos = 0
+    for match in REVIEW_MARKER_START_RE.finditer(text):
+        if match.start() < pos:
+            continue
+        out.append(text[pos:match.start()])
+        pos = _note_end(text, match.start(), match.end())
+    out.append(text[pos:])
+    return "".join(out)
 
 
 def strip_review_markers(text: str) -> str:
-    return REVIEW_MARKER_RE.sub("", text).strip()
+    return _strip_review_notes(text).strip()
 
 
 def clean_markdown(markdown: str) -> str:
-    """Remove marcações VERIFICAR, itens de lista que ficaram vazios e bordas em branco/---."""
+    """Remove notas de revisão, itens de lista que ficaram vazios e bordas em branco/---."""
     lines: list[str] = []
     for line in _normalize_newlines(markdown).split("\n"):
-        had_marker = bool(REVIEW_MARKER_RE.search(line))
-        line = REVIEW_MARKER_RE.sub("", line).rstrip()
+        had_marker = bool(REVIEW_MARKER_START_RE.search(line))
+        line = _strip_review_notes(line).rstrip()
         if had_marker and (not line.strip() or EMPTY_LIST_ITEM_RE.match(line) or line.strip() == ">"):
             continue
         lines.append(line)
@@ -199,7 +247,7 @@ def build_module(path: Path, order: int) -> dict:
     reviewable = [intro]
     for h2_title, markdown in h2_sections:
         key = h2_title.strip().casefold()
-        if key == H2_VET_REVIEW:
+        if key.startswith(H2_VET_REVIEW_PREFIX):
             continue
         reviewable.append(h2_title)
         reviewable.append(markdown)
@@ -259,6 +307,19 @@ def build_bundle(
         pending = [f"{m['id']}={m['review_markers']}" for m in modules if m["review_markers"]]
         if pending:
             raise BundleError(f"vet_approved com marcações VERIFICAR pendentes: {', '.join(pending)}")
+        # S2-2: defesa extra sobre o JSON FINAL (além da contagem de marcações acima) —
+        # recusa se sobrar "VERIFICAR" (case-insensitive) ou alguma seção do vet
+        # (título começando com "Para o veterinário") não tiver sido excluída.
+        dumped = json.dumps(modules, ensure_ascii=False)
+        if "verificar" in dumped.lower():
+            raise BundleError("vet_approved com o texto 'VERIFICAR' ainda presente no conteúdo final")
+        for module in modules:
+            for section in module.get("sections", []):
+                title = str(section.get("title") or "")
+                if title.strip().casefold().startswith(H2_VET_REVIEW_PREFIX):
+                    raise BundleError(
+                        f"{module['id']}: seção do veterinário não excluída do bundle final ('{title}')"
+                    )
     return {
         "schema": 1,
         "version": version,

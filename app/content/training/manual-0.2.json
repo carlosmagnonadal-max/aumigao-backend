@@ -3,7 +3,7 @@
  "version": "0.2",
  "status": "draft",
  "vet_signature": null,
- "built_at": "2026-09-15T17:20:50Z",
+ "built_at": "2026-09-15T19:37:43Z",
  "pass_threshold": 80,
  "quick_guide_modules": [
   "m08",
@@ -62,7 +62,7 @@
     {
      "id": "1.7",
      "title": "Passeio compartilhado (vários cães)",
-     "markdown": "O app permite passeio compartilhado com **até 2 tutores e até 3 cães por tutor** no mesmo passeio. Isso multiplica o risco de guias emaranhadas e de briga, então:\n\n- Use uma guia por cão, nunca amarre dois cães na mesma guia.\n- Antes de sair, veja a ficha de cada pet (porte, observações) e observe como os cães reagem uns aos outros parados, antes de andar.\n- Mantenha distância entre os cães enquanto caminha, principalmente em curvas e esquinas.\n- Se um cão do grupo ficar tenso ou rígido com outro (→ 2.4 Escada da agressividade), separe as guias e aumente a distância antes que vire briga.\n- Se perder o controle do grupo, siga → 7.13 Perda de controle no passeio compartilhado.\n\n> [!ATENCAO] O limite do app é o máximo permitido, não uma meta. Só aceite o número de cães que você consegue controlar com segurança. Cão com observação de reatividade (→ 2.6), cadela no cio (→ 4.6) ou cães de porte muito diferente juntos pedem combinação prévia com os tutores — na dúvida, não junte."
+     "markdown": "O app permite passeio compartilhado com **até 2 tutores e até 3 cães por tutor** no mesmo passeio. Isso multiplica o risco de guias emaranhadas e de briga, então:\n\n- Use uma guia por cão, nunca amarre dois cães na mesma guia.\n- Antes de sair, veja a ficha de cada pet (porte, observações) e observe como os cães reagem uns aos outros parados, antes de andar.\n- Mantenha distância entre os cães enquanto caminha, principalmente em curvas e esquinas.\n- Se um cão do grupo ficar tenso ou rígido com outro (→ 2.4 Escada da agressividade), separe as guias e aumente a distância antes que vire briga.\n- Se perder o controle do grupo, siga → 7.13 Perda de controle no passeio compartilhado.\n\n> [!ATENCAO] O limite do app é o máximo permitido, não uma meta. Só aceite o número de cães que você consegue controlar com segurança. Cão com observação de reatividade (→ 2.6), cadela no cio (→ 4.6) ou cães de porte muito diferente juntos pedem combinação prévia com os tutores — na dúvida, não junte.  Em praia de Pernambuco, passeio compartilhado na areia não é permitido pelo manual (→ 10B)."
     },
     {
      "id": "1.8",
@@ -296,7 +296,7 @@
     },
     {
      "id": "F2",
-     "text": "Shepherd, Kendal. *Ladder of Aggression*. Conceito reproduzido em material veterinário de comportamento (WVS Academy, PDSA). Acesso em 15/09/2026. ⚠️ Referência original não confirmada — pista (não verificada): capítulo de K. Shepherd no *BSAVA Manual of Canine and Feline Behavioural Medicine* (BSAVA, 1ª ed. 2002; 2ª ed. 2009). Confirmar edição e ano."
+     "text": "Shepherd, Kendal. *Ladder of Aggression*. Conceito reproduzido em material veterinário de comportamento (WVS Academy, PDSA). Acesso em 15/09/2026."
     },
     {
      "id": "F3",
@@ -307,7 +307,7 @@
      "text": "American Veterinary Society of Animal Behavior (AVSAB). *AVSAB Position Statement on Humane Dog Training*, 2021. https://avsab.org/wp-content/uploads/2021/08/AVSAB-Humane-Dog-Training-Position-Statement-2021.pdf — Acesso em 15/09/2026 (cita intimidação como \"shouting, staring\", correções físicas como \"leash jerking\" e efeitos como \"increased anxiety and fear-related aggression\")."
     }
    ],
-   "review_markers": 4
+   "review_markers": 5
   },
   {
    "id": "m03",
@@ -621,7 +621,7 @@
     {
      "id": "5.3",
      "title": "Peito profundo (risco de torção gástrica)",
-     "markdown": "Raças grandes e de peito fundo — como dogue alemão, são-bernardo, weimaraner, setter irlandês, poodle standard, basset hound e doberman [F4] (e, por semelhança de porte e tórax, outras como fila brasileiro —\n\nFatores de risco ligados à rotina: comer muito rápido, uma única refeição grande por dia, e **se exercitar logo depois de comer** [F4].\n\n- Combine com o tutor o horário: depois de refeição grande, nada de corrida ou brincadeira intensa — a fonte orienta limitar a atividade após as refeições [F4].\n- Observe: ânsia de vômito sem sair nada, baba excessiva, inquietação/andar sem parar, barriga estufada (nem sempre aparece), fraqueza, \"postura de reza\" (patas dianteiras esticadas, peito perto do chão) [F4].\n\n> [!EMERGENCIA] Ânsia de vômito sem sair nada — **com ou sem barriga estufada** —, principalmente em cão grande de peito fundo: acione o botão de Emergência e ligue para o veterinário AGORA, não espere passar (→ 8.16 Suspeita de torção gástrica). [F4]"
+     "markdown": "Raças grandes e de peito fundo — como dogue alemão, são-bernardo, weimaraner, setter irlandês, poodle standard, basset hound e doberman [F4] (e, por semelhança de porte e tórax, outras como fila brasileiro —  — têm mais risco de **dilatação-torção gástrica (GDV)**: o estômago se enche de gás/alimento, incha e pode torcer sobre si mesmo. É uma emergência que pode matar rápido [F4].\n\nFatores de risco ligados à rotina: comer muito rápido, uma única refeição grande por dia, e **se exercitar logo depois de comer** [F4].\n\n- Combine com o tutor o horário: depois de refeição grande, nada de corrida ou brincadeira intensa — a fonte orienta limitar a atividade após as refeições [F4].\n- Observe: ânsia de vômito sem sair nada, baba excessiva, inquietação/andar sem parar, barriga estufada (nem sempre aparece), fraqueza, \"postura de reza\" (patas dianteiras esticadas, peito perto do chão) [F4].\n\n> [!EMERGENCIA] Ânsia de vômito sem sair nada — **com ou sem barriga estufada** —, principalmente em cão grande de peito fundo: acione o botão de Emergência e ligue para o veterinário AGORA, não espere passar (→ 8.16 Suspeita de torção gástrica). [F4]"
     },
     {
      "id": "5.4",
@@ -993,7 +993,7 @@
     {
      "id": "7.9",
      "title": "Escorpião (Tityus serrulatus)",
-     "markdown": "O escorpião-amarelo (*Tityus serrulatus*) tem ampla distribuição no Brasil e é a espécie de maior preocupação por causar os quadros mais graves de envenenamento entre os escorpiões do país [F3].\n\n> [!FACA] Acione o botão de Emergência, mantenha o cão calmo e leve ao veterinário sem demora. Não aplique compressa nem nada no local e não tente capturar o escorpião; foto só se for seguro (→ 8.10). `\n\n> [!EMERGENCIA] Toda picada de escorpião em cão é emergência: botão de Emergência. Dor intensa, choro, agitação, tremores, vômito, baba em excesso ou respiração acelerada indicam quadro mais grave. Filhotes e cães pequenos correm mais risco. (ver → 8.10 Picadas e mordidas · → 9.1 VERMELHO) `"
+     "markdown": "O escorpião-amarelo (*Tityus serrulatus*) tem ampla distribuição no Brasil e é a espécie de maior preocupação por causar os quadros mais graves de envenenamento entre os escorpiões do país [F3].\n\n> [!FACA] Acione o botão de Emergência, mantenha o cão calmo e leve ao veterinário sem demora. Não aplique compressa nem nada no local e não tente capturar o escorpião; foto só se for seguro (→ 8.10).\n\n> [!EMERGENCIA] Toda picada de escorpião em cão é emergência: botão de Emergência. Dor intensa, choro, agitação, tremores, vômito, baba em excesso ou respiração acelerada indicam quadro mais grave. Filhotes e cães pequenos correm mais risco. (ver → 8.10 Picadas e mordidas · → 9.1 VERMELHO)"
     },
     {
      "id": "7.10",

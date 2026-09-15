@@ -268,6 +268,89 @@ def test_invalid_version_raises(tmp_path):
         builder.build_bundle(_source(tmp_path), "../0.2")
 
 
+# --------------------------------------------- S2-1: nota termina, texto fica
+# Linha real de docs/manual-passeador/modulos/01-passeio-seguro.md (~82): a nota
+# ⚠️ VERIFICAR-JURÍDICO termina na citação "[F5]." — a frase de Pernambuco depois
+# dela é texto do PASSEADOR e não pode ser apagada junto.
+_PE_LINE = (
+    "> [!ATENCAO] O limite do app é o máximo permitido, não uma meta. "
+    "Cão com observação de reatividade (→ 2.6), cadela no cio (→ 4.6) ou cães de porte muito "
+    "diferente juntos pedem combinação prévia com os tutores — na dúvida, não junte. "
+    "⚠️ VERIFICAR-JURÍDICO: confirmar se alguma norma municipal limita o número de cães por "
+    "passeador. No levantamento de 15/09/2026 não foi encontrada lei vigente com esse limite; "
+    "há um projeto de lei federal que propõe no máximo 2 cães (→ 10.9) [F5]. Em praia de "
+    "Pernambuco, passeio compartilhado na areia não é permitido pelo manual (→ 10B)."
+)
+
+
+def test_review_note_ends_at_citation_keeps_walker_text_after_it():
+    cleaned = builder.clean_markdown(_PE_LINE)
+    assert "VERIFICAR" not in cleaned
+    assert "Em praia de Pernambuco, passeio compartilhado na areia não é permitido" in cleaned
+    assert "não junte." in cleaned
+
+
+def test_review_note_ends_at_enclosing_parenthesis_keeps_walker_text_after_it():
+    # Nota aberta DENTRO de um parêntese do texto do passeador — termina no
+    # fechamento desse mesmo parêntese, preservando o resto da frase.
+    line = (
+        "Raças grandes (e, por semelhança de porte, outras como fila brasileiro — "
+        "⚠️ VERIFICAR-VET: não listado na fonte) — têm mais risco de torção gástrica."
+    )
+    cleaned = builder.clean_markdown(line)
+    assert "VERIFICAR" not in cleaned
+    assert "têm mais risco de torção gástrica." in cleaned
+
+
+def test_review_note_without_terminator_removes_to_end_of_line():
+    line = "- Guia curta. ⚠️ VERIFICAR-VET: comprimento sem fonte confirmada ainda."
+    cleaned = builder.clean_markdown(line)
+    assert cleaned == "- Guia curta."
+
+
+def test_strip_review_markers_removes_unconfirmed_source_note():
+    text = (
+        "Shepherd, Kendal. *Ladder of Aggression*. Acesso em 15/09/2026. "
+        "⚠️ Referência original não confirmada — pista: capítulo do BSAVA Manual "
+        "(1ª ed. 2002; 2ª ed. 2009). Confirmar edição e ano."
+    )
+    cleaned = builder.strip_review_markers(text)
+    assert "VERIFICAR" not in cleaned and "confirmada" not in cleaned
+    assert cleaned == "Shepherd, Kendal. *Ladder of Aggression*. Acesso em 15/09/2026."
+
+
+def test_vet_approved_rejects_leftover_verificar_text_in_final_json(tmp_path, monkeypatch):
+    # S2-2: defesa extra sobre o JSON final, além da contagem de review_markers —
+    # se um "VERIFICAR" escapar da limpeza (caso-insensível), vet_approved recusa.
+    monkeypatch.setattr(builder, "count_review_markers", lambda text: 0)  # simula contagem furada
+    monkeypatch.setattr(builder, "_strip_review_notes", lambda text: text)  # simula limpeza furada
+    bad = tmp_path / "bad"
+    _write(bad, "09-teste.md", M08.replace("id: m08", "id: m09").replace(
+        "Abertura.", "Abertura. ⚠️ VERIFICAR-VET: nota que deveria ter sido limpa."
+    ))
+    signature = {"nome": "Dra. Teste", "crmv": "CRMV-BA 0000", "data": "2026-10-01"}
+    with pytest.raises(builder.BundleError, match="VERIFICAR"):
+        builder.build_bundle(bad, "1.0", status="vet_approved", vet_signature=signature)
+
+
+def test_vet_approved_rejects_leftover_vet_section_title(tmp_path, monkeypatch):
+    # S2-2: seção cujo título comece com "Para o veterinário" nunca deveria ir
+    # para o bundle final (defesa extra além da exclusão em build_module).
+    real_parse_sections = builder.parse_sections
+
+    def leaking_parse_sections(sections):
+        result = real_parse_sections(sections)
+        result.append({"id": "99", "title": "Para o veterinário validar", "markdown": "x"})
+        return result
+
+    monkeypatch.setattr(builder, "parse_sections", leaking_parse_sections)
+    src = _source(tmp_path)
+    (src / "01-passeio-seguro.md").unlink()  # zera review_markers (gate antigo não interfere)
+    signature = {"nome": "Dra. Teste", "crmv": "CRMV-BA 0000", "data": "2026-10-01"}
+    with pytest.raises(builder.BundleError, match="veterinário"):
+        builder.build_bundle(src, "1.0", status="vet_approved", vet_signature=signature)
+
+
 def test_main_writes_json_and_returns_2_on_error(tmp_path):
     src = _source(tmp_path)
     out = tmp_path / "out"

@@ -320,6 +320,21 @@ def _apply_rls_policies(sa_engine) -> None:
                 f"USING ({_WEBHOOK_POLICY}) WITH CHECK ({_WEBHOOK_POLICY})"
             ))
 
+        # -------------------------------------------------------------------------
+        # local_rules (0111): tabela GLOBAL de referência — SELECT em qualquer
+        # escopo; escrita só no escopo global '*'.
+        # -------------------------------------------------------------------------
+        if "local_rules" in all_tables:
+            _LR_GLOBAL = "current_setting('app.current_tenant', true) = '*'"
+            conn.execute(sa.text('ALTER TABLE "local_rules" ENABLE ROW LEVEL SECURITY'))
+            conn.execute(sa.text('DROP POLICY IF EXISTS local_rules_read ON "local_rules"'))
+            conn.execute(sa.text('CREATE POLICY local_rules_read ON "local_rules" FOR SELECT USING (true)'))
+            conn.execute(sa.text('DROP POLICY IF EXISTS local_rules_write_global ON "local_rules"'))
+            conn.execute(sa.text(
+                'CREATE POLICY local_rules_write_global ON "local_rules" FOR ALL '
+                f"USING ({_LR_GLOBAL}) WITH CHECK ({_LR_GLOBAL})"
+            ))
+
 
 @pytest.fixture(scope="session", autouse=True)
 def _pg_setup():

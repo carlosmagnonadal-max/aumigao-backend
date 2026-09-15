@@ -101,9 +101,20 @@ def test_grade_quiz_reprovado_hides_results_and_lists_review_sections(db):
     assert result["passed"] is False
     assert result["results"] == []
     assert "correct_index" not in _dump(result) and "explanation" not in _dump(result)
-    # m01 (fixture) tem 1 única seção "Seção" -> sem mapeamento pergunta->seção,
-    # o fallback devolve os títulos de TODAS as seções do módulo.
-    assert result["review_sections"] == ["Seção"]
+    # m01 (fixture) tem 1 única seção (id "1.1", título "Seção") -> sem mapeamento
+    # pergunta->seção, o fallback devolve os IDs de TODAS as seções do módulo
+    # (contrato com o app: navega e rotula a seção pelo ID).
+    assert result["review_sections"] == ["1.1"]
+
+
+def test_grade_quiz_reprovado_review_sections_mapeadas_por_section_id():
+    module = {"sections": [
+        {"id": "1.1", "title": "A"}, {"id": "1.2", "title": "B"}, {"id": "1.3", "title": "C"},
+    ]}
+    quiz = [{"section_id": "1.3"}, {"section_id": "1.1"}, {"section_id": "1.3"}, {"section_id": "9.9"}]
+    assert svc._review_sections_for(module, quiz, [0, 1, 2]) == ["1.3", "1.1"]
+    # section_id desconhecido não vira atalho quebrado -> cai no fallback (todas).
+    assert svc._review_sections_for(module, quiz, [3]) == ["1.1", "1.2", "1.3"]
 
 
 def test_grade_quiz_rejects_stale_version_with_409(db):

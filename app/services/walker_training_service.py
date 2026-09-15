@@ -175,25 +175,28 @@ def _maybe_complete_training(db: Session, walker_user_id: str, bundle: dict, now
 
 
 def _review_sections_for(module: dict, quiz: list[dict], wrong_indexes: list[int]) -> list[str]:
-    """Títulos das seções ("## ...") relacionadas às perguntas erradas (C1).
+    """IDs das seções (ex.: "1.1") relacionadas às perguntas erradas (C1).
+
+    Contrato com o app (frontend/app/walker/capacitacao/[moduleId].tsx): o app
+    recebe o ID, monta o rótulo "id título" a partir de `sections` e rola até a
+    seção pelo ID — por isso devolver título quebrava o atalho "Revise estas seções".
 
     Sem mapeamento pergunta→seção nos dados do bundle (nenhuma pergunta traz
-    `section_id`) → devolve os títulos de TODAS as seções do módulo (fallback
+    `section_id`) → devolve os IDs de TODAS as seções do módulo (fallback
     do contrato). Com mapeamento, devolve só as seções das perguntas erradas
-    (deduplicado, na ordem das seções do módulo).
+    (deduplicado, na ordem das perguntas erradas).
     """
     sections = module.get("sections") or []
-    all_titles = [s["title"] for s in sections if s.get("title")]
-    title_by_id = {s["id"]: s["title"] for s in sections if s.get("id") and s.get("title")}
+    all_ids = [s["id"] for s in sections if s.get("id")]
+    known_ids = set(all_ids)
     mapped: list[str] = []
     seen: set[str] = set()
     for index in wrong_indexes:
         section_id = quiz[index].get("section_id")
-        title = title_by_id.get(section_id) if section_id else None
-        if title and title not in seen:
-            seen.add(title)
-            mapped.append(title)
-    return mapped if mapped else all_titles
+        if section_id and section_id in known_ids and section_id not in seen:
+            seen.add(section_id)
+            mapped.append(section_id)
+    return mapped if mapped else all_ids
 
 
 def grade_quiz(
@@ -256,7 +259,7 @@ def grade_quiz(
     db.commit()
 
     # C1: REPROVADO nunca devolve acerto por pergunta, explicação nem gabarito —
-    # só os títulos das seções pra revisar. APROVADO segue como hoje (DV8).
+    # só os IDs das seções pra revisar. APROVADO segue como hoje (DV8).
     if passed:
         results, review_sections = full_results, []
     else:

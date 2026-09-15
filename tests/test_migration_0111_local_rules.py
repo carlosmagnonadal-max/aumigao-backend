@@ -116,6 +116,9 @@ def test_upgrade_creates_seeds_backfills_and_is_idempotent():
         conn.execute(Pet.__table__.insert(), [
             {"id": "p-reativo", "tutor_id": "u1", "name": "Thor", "behavior_notes": "Calmo, Reativo"},
             {"id": "p-calmo", "tutor_id": "u1", "name": "Mel", "behavior_notes": "Calmo"},
+            # S3-2: "não reativo"/"nao reativo" (negação) NÃO deve marcar is_reactive.
+            {"id": "p-nao-reativo", "tutor_id": "u1", "name": "Bela", "behavior_notes": "Não reativo, sociável"},
+            {"id": "p-nao-reativo-sem-acento", "tutor_id": "u1", "name": "Duke", "behavior_notes": "nao reativo"},
         ])
     for _ in range(2):  # idempotência
         with engine.begin() as conn:
@@ -127,3 +130,5 @@ def test_upgrade_creates_seeds_backfills_and_is_idempotent():
     assert total == len(mig.SEED_ROWS)
     assert bool(flags["p-reativo"]) is True
     assert bool(flags["p-calmo"]) is False
+    assert bool(flags["p-nao-reativo"]) is False
+    assert bool(flags["p-nao-reativo-sem-acento"]) is False

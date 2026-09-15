@@ -25,6 +25,7 @@ Revises: 0110_walker_training
 Create Date: 2026-09-15
 """
 import json
+import re
 from datetime import date, datetime
 from typing import Sequence, Union
 
@@ -41,6 +42,20 @@ _READ_POLICY = "local_rules_read"
 _WRITE_POLICY = "local_rules_write_global"
 _GLOBAL_SCOPE = "current_setting('app.current_tenant', true) = '*'"
 _INDEXES = (("ix_local_rules_uf", "uf"), ("ix_local_rules_tema", "tema"), ("ix_local_rules_status", "status"))
+
+# S3-2: backfill via Python (não LIKE '%reativo%' puro) — exclui "não reativo"/
+# "nao reativo" (negação) para não marcar como reativo quem foi explicitamente
+# marcado como NÃO reativo em texto livre.
+_REACTIVE_WORD_RE = re.compile(r"reativo", re.IGNORECASE)
+_NEGATED_REACTIVE_RE = re.compile(r"n[aã]o\s+reativo", re.IGNORECASE)
+
+
+def _note_marks_reactive(note) -> bool:
+    text = note or ""
+    if not _REACTIVE_WORD_RE.search(text):
+        return False
+    return bool(_REACTIVE_WORD_RE.search(_NEGATED_REACTIVE_RE.sub(" ", text)))
+
 
 _VERIFIED = date(2026, 9, 15)
 _LEI_SSA_9108_URL = "https://leismunicipais.com.br/a1/ba/s/salvador/lei-ordinaria/2016/911/9108"
@@ -64,7 +79,7 @@ SEED_ROWS: list[dict] = [
         "params_json": _json({"min_kg": 24, "inclusive": False, "size_fallback": ["grande", "gigante"]}),
         "exigencia_json": _json({
             "itens": ["guia", "focinheira"],
-            "onde": "em local público",
+            "onde": "em local público ou privado de uso coletivo",
             "detalhe": "Cães de grande porte (acima de 24 kg) e de porte gigante, em ambiente público "
                        "ou privado de uso coletivo, sempre acompanhados do responsável.",
         }),
@@ -265,13 +280,17 @@ def upgrade() -> None:
     if not _has_column("pets", "reactivity_notes"):
         op.add_column("pets", sa.Column("reactivity_notes", sa.Text(), nullable=True))
 
-    bind.execute(
-        sa.text(
-            "UPDATE pets SET is_reactive = :yes "
-            "WHERE is_reactive = :no AND LOWER(COALESCE(behavior_notes, '')) LIKE '%reativo%'"
-        ),
-        {"yes": True, "no": False},
-    )
+    # S3-2: LIKE '%reativo%' puro marcaria também "não reativo"/"nao reativo" —
+    # filtra em Python (regex com exclusão de negação) antes do UPDATE.
+    candidates = bind.execute(
+        sa.text("SELECT id, behavior_notes FROM pets WHERE is_reactive = :no"), {"no": False}
+    ).fetchall()
+    reactive_ids = [row[0] for row in candidates if _note_marks_reactive(row[1])]
+    if reactive_ids:
+        bind.execute(
+            sa.text("UPDATE pets SET is_reactive = :yes WHERE id = :id"),
+            [{"yes": True, "id": pet_id} for pet_id in reactive_ids],
+        )
 
     _seed(bind)
     if is_pg:

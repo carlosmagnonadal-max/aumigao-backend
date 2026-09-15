@@ -15,7 +15,8 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from app.services import training_content
 
@@ -24,6 +25,18 @@ logger = logging.getLogger(__name__)
 VALID_MODES = {"off", "warn", "on"}
 DEFAULT_GRACE_DAYS = 7
 _logged_reasons: set[str] = set()
+
+# S2-5: ENFORCED_FROM é uma DATA (sem hora/fuso) que só faz sentido no fuso do
+# público-alvo (passeadores no Brasil) — a carência deve terminar à meia-noite
+# em America/Sao_Paulo, não à meia-noite UTC (senão a trava liga ~3h mais cedo,
+# ainda "ontem" no horário de Brasília — faixa de borda 21h-00h BRT).
+_SP_TZ = ZoneInfo("America/Sao_Paulo")
+
+
+def _deadline_utc(start: date, grace_days: int) -> datetime:
+    """Meia-noite de `start + grace_days` em America/Sao_Paulo, convertida para UTC (naive)."""
+    local_midnight = datetime.combine(start, time.min).replace(tzinfo=_SP_TZ) + timedelta(days=grace_days)
+    return local_midnight.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 @dataclass(frozen=True)
@@ -87,7 +100,7 @@ def get_enforcement(now: datetime | None = None) -> TrainingEnforcement:
     bundle = training_content.load_bundle(version)
     status = bundle.get("status") if bundle else None
     start = _enforced_from()
-    deadline = datetime.combine(start, time.min) + timedelta(days=_grace_days()) if start else None
+    deadline = _deadline_utc(start, _grace_days()) if start else None
 
     if mode == "warn":
         return TrainingEnforcement(mode, "warn", version, status, deadline, "mode_warn")

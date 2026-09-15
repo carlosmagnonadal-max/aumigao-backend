@@ -1,5 +1,5 @@
 ﻿from datetime import date, datetime
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
@@ -54,6 +54,11 @@ class Pet(Base):
     behavior_with_children: Mapped[str | None] = mapped_column(String, nullable=True)
     behavior_with_cats: Mapped[str | None] = mapped_column(String, nullable=True)
     fear_triggers_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: ["trovão","fogos",...]
+    # S3 (0111) — segurança do passeio: cão reativo declarado pelo tutor (chip
+    # "Reativo" do cadastro). Cruzado com regras locais (ex.: Salvador exige
+    # focinheira para cães "bravios"). server_default p/ INSERTs SQL crus.
+    is_reactive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    reactivity_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     tutor = relationship("User", back_populates="pets")

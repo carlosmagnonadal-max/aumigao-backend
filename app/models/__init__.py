@@ -74,3 +74,4 @@ from app.models.walker_indication import WalkerIndication, WalkerLead  # noqa: F
 from app.models.cost_alert import CostAlert, CostAlertEvent  # noqa: F401 — Alertas de custo (0106)
 from app.models.walk_emergency_call import WalkEmergencyCall  # noqa: F401 — Botão de Emergência S1 (0109)
 from app.models.walker_training_progress import WalkerTrainingProgress  # noqa: F401 — Capacitação do passeador (0110)
+from app.models.local_rule import LocalRule  # noqa: F401 — Regras locais (S3, 0111)

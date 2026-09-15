@@ -1,2 +1,4 @@
 -r requirements.txt
 pytest==9.1.1
+# Build do bundle da Capacitação (scripts/build_training_bundle.py). Runtime lê JSON, não YAML.
+PyYAML>=6.0.3,<7

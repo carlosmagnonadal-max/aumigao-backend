@@ -2338,8 +2338,11 @@ def walker_walks(user: User = Depends(get_current_user), db: Session = Depends(g
 @router.post("/walks/{walk_id}/accept")
 def accept_walk(walk_id: str, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     from app.dependencies.legal_gate import enforce_legal_acceptance
+    from app.dependencies.training_gate import enforce_training_completed
     enforce_legal_acceptance(request, user, db)
     _require_active_walker(user, db)
+    # S2: Capacitação obrigatória (só bloqueia com trava efetiva — ver walker_training_policy).
+    enforce_training_completed(user, db)
     # with_for_update() garante exclusao mutua em Postgres (no-op em SQLite nos testes).
     walk = db.query(Walk).filter(Walk.id == walk_id).with_for_update().first()
     if not walk:
@@ -2385,6 +2388,9 @@ def walker_status(walk_id: str, payload: WalkerStatusRequest, user: User = Depen
     if walk.walker_id not in {None, user.id}:
         raise HTTPException(status_code=403, detail="Passeio nao pertence ao passeador")
     if walk.operational_status in {"pending_walker_confirmation", "auto_rematching"}:
+        # S2 (DV3): este ramo também ACEITA o passeio — mesma trava da Capacitação.
+        from app.dependencies.training_gate import enforce_training_completed
+        enforce_training_completed(user, db)
         accept_operational_walk(walk, user, db)
     # Preserva o default do .get("status", walk.status): so cai no walk.status se a chave
     # nao foi enviada (model_fields_set), nao quando vem explicitamente nula.

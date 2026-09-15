@@ -55,6 +55,9 @@ def accept_walk_request(walk_id: str, request: Request, user: User = Depends(get
     enforce_legal_acceptance(request, user, db)
     if user.role != "walker":
         raise HTTPException(status_code=403, detail="Apenas passeadores podem aceitar.")
+    # S2: Capacitação obrigatória (só bloqueia com trava efetiva — ver walker_training_policy).
+    from app.dependencies.training_gate import enforce_training_completed
+    enforce_training_completed(user, db)
     # with_for_update() garante exclusao mutua em Postgres (no-op em SQLite nos testes).
     walk = db.query(Walk).filter(Walk.id == walk_id).with_for_update().first()
     if not walk:

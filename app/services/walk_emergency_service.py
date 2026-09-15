@@ -117,8 +117,14 @@ def _plan_call(db: Session, walk_id: str, tutor_id: str | None, walker_user_id: 
         return _CallPlan("direct", "fallback_direct", provider.name, None, "walker_phone_missing", tutor_e164)
     try:
         result = provider.start_bridge_call(walker_e164, tutor_e164, os.getenv("TELEPHONY_CALLER_ID") or None)
-    except Exception:  # noqa: BLE001 — provedor externo nunca derruba a emergência
-        LOGGER.exception("walk_emergency: provedor %s falhou walk_id=%s", provider.name, walk_id)
+    except Exception as exc:  # noqa: BLE001 — provedor externo nunca derruba a emergência
+        # Sem traceback (LOGGER.exception) e sem locais: exc_info carregaria os
+        # frames desta função, cujas variáveis locais incluem tutor_e164/walker_e164
+        # em texto puro — o Sentry captura locais de frame, não só a mensagem.
+        LOGGER.error(
+            "walk_emergency_provider_call_failed",
+            extra={"walk_id": walk_id, "provider": provider.name, "error_type": type(exc).__name__},
+        )
         return _CallPlan("direct", "fallback_direct", provider.name, None, "provider_exception", tutor_e164)
     if result.ok and result.provider_call_id:
         return _CallPlan("masked", "initiated", provider.name, result.provider_call_id, None, tutor_e164)
@@ -266,25 +272,46 @@ def trigger_walk_emergency(db: Session, walk: Walk, user: User, reason: str | No
             notes=_event_notes(reason, plan.mode), dedupe=False,
         )
         db.commit()
-    except Exception:  # noqa: BLE001 — a resposta com o número sai mesmo sem registro
+    except Exception as exc:  # noqa: BLE001 — a resposta com o número sai mesmo sem registro
         db.rollback()
         persisted = False
-        LOGGER.exception("walk_emergency: falha ao gravar acionamento walk_id=%s", walk_id)
+        # Sem traceback e sem locais (mesmo motivo do provider acima): esta função
+        # tem tutor_e164/walker_e164/plan no frame, e LOGGER.exception anexaria
+        # exc_info com esses locais para o Sentry.
+        LOGGER.error(
+            "walk_emergency_persist_failed",
+            extra={"walk_id": walk_id, "error_type": type(exc).__name__},
+        )
 
     if persisted:
+        # Notificar tutor e admins são passos independentes: a falha de um NUNCA
+        # impede o outro, e nenhum dos dois pode derrubar a resposta da emergência
+        # (achado de revisão: estavam acoplados no mesmo try/except).
         try:
             _notify_tutor(
                 db, walk_id=walk_id, tutor_id=tutor_id, tenant_id=tenant_id,
                 pet_name=pet_name, reason=reason, call_id=call_id,
             )
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            LOGGER.error(
+                "walk_emergency_notify_tutor_failed",
+                extra={"walk_id": walk_id, "error_type": type(exc).__name__},
+            )
+
+        try:
             _notify_admins(
                 db, walk_id=walk_id, tenant_id=tenant_id,
                 pet_name=pet_name, reason=reason, call_id=call_id,
             )
             db.commit()
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             db.rollback()
-            LOGGER.exception("walk_emergency: falha ao notificar walk_id=%s", walk_id)
+            LOGGER.error(
+                "walk_emergency_notify_admins_failed",
+                extra={"walk_id": walk_id, "error_type": type(exc).__name__},
+            )
 
     LOGGER.info(
         "walk_emergency: acionado walk_id=%s mode=%s status=%s persisted=%s",

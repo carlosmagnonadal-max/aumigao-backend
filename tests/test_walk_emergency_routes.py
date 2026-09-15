@@ -310,6 +310,112 @@ def test_notification_failure_does_not_block_dial(db, monkeypatch):
 
 # ── Privacidade: payloads normais continuam sem telefone ─────────────────────
 
+def test_persist_failure_still_returns_mode_and_phone_to_designated_walker(db, monkeypatch):
+    """Achado de revisão (3a): se a gravação falhar (persisted=False), a resposta
+    ainda sai com modo/telefone para o passeador designado discar na hora — a
+    resposta NUNCA depende da persistência (regra do módulo)."""
+    _add_walk(db, "ride_in_progress")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("db fora do ar")
+
+    monkeypatch.setattr("app.services.walk_emergency_service.create_operational_event", _boom)
+    resp = _client(db).post(URL, json={"reason": "pet_mal"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["persisted"] is False
+    assert body["call_id"] is None
+    assert body["mode"] == "direct"
+    assert body["status"] == "initiated"
+    assert body["tutor_phone_e164"] == TUTOR_PHONE_E164
+    assert db.query(WalkEmergencyCall).count() == 0
+
+
+def test_provider_exception_falls_back_to_direct_with_reason(db, monkeypatch):
+    """Achado de revisão (3b): exceção do provedor de telefonia nunca derruba a
+    emergência — cai em modo direto com fallback_reason='provider_exception'."""
+    _add_walk(db, "ride_in_progress")
+
+    class _ExplodingProvider:
+        name = "fake"
+
+        def is_enabled(self) -> bool:
+            return True
+
+        def start_bridge_call(self, walker_e164, tutor_e164, caller_id):
+            raise RuntimeError("timeout no provedor")
+
+    monkeypatch.setattr(
+        "app.services.walk_emergency_service.get_telephony_provider",
+        lambda: _ExplodingProvider(),
+    )
+    body = _client(db).post(URL, json={}).json()
+    assert body["mode"] == "direct"
+    assert body["status"] == "fallback_direct"
+    assert body["tutor_phone_e164"] == TUTOR_PHONE_E164
+    call = db.get(WalkEmergencyCall, body["call_id"])
+    assert call.fallback_reason == "provider_exception"
+
+
+def test_walk_without_tenant_id_uses_session_tenant(db):
+    """Achado de revisão (3c): passeio sem tenant_id (walk.tenant_id is None) usa
+    o tenant ativo da sessão (db.info['rls_tenant']) — não None."""
+    walk = _add_walk(db, "ride_in_progress")
+    walk.tenant_id = None
+    db.commit()
+    db.info["rls_tenant"] = TENANT_ID
+
+    body = _client(db).post(URL, json={"reason": "outro"}).json()
+    call = db.get(WalkEmergencyCall, body["call_id"])
+    assert call.tenant_id == TENANT_ID
+
+    # Admins do tenant continuam sendo notificados (prova indireta de que o
+    # tenant certo foi usado no filtro de notificação, não o super_admin global).
+    admin_notif = db.query(Notification).filter_by(user_id=ADMIN_ID, type="walk_emergency_admin").one()
+    assert admin_notif.tenant_id == TENANT_ID
+
+
+def test_tutor_phone_never_appears_in_logs_on_failure(db, monkeypatch, caplog):
+    """Achado de revisão (3d): quando push/gravação falham, o número do tutor não
+    pode aparecer em nenhum registro de log (mesmo mascarado por engano em texto
+    livre) — os pontos de log tocados usam apenas walk_id/error_type."""
+    _add_walk(db, "ride_in_progress")
+
+    def _boom_persist(*args, **kwargs):
+        raise RuntimeError("db fora do ar")
+
+    def _boom_notify(*args, **kwargs):
+        raise RuntimeError("push fora do ar")
+
+    monkeypatch.setattr("app.services.walk_emergency_service.create_operational_event", _boom_persist)
+    with caplog.at_level("DEBUG", logger="aumigao.walk_emergency"):
+        resp = _client(db).post(URL, json={})
+    assert resp.status_code == 200, resp.text
+    for record in caplog.records:
+        assert TUTOR_PHONE_FRAGMENT not in record.getMessage()
+        assert TUTOR_PHONE_E164 not in record.getMessage()
+        assert record.exc_info is None  # sem traceback anexado (sem locais p/ Sentry)
+    caplog.clear()
+
+    _add_walk_id2 = "walk-emg-2"
+    walk2 = Walk(
+        id=_add_walk_id2, tutor_id=TUTOR_ID, walker_id=WALKER_ID, pet_id=PET_ID, tenant_id=TENANT_ID,
+        scheduled_date="2026-09-15T10:00:00", duration_minutes=30, price=50.0,
+        status="Passeando agora", operational_status="ride_in_progress",
+    )
+    db.add(walk2)
+    db.commit()
+    monkeypatch.setattr("app.services.walk_emergency_service._notify_tutor", _boom_notify)
+    monkeypatch.setattr("app.services.walk_emergency_service._notify_admins", _boom_notify)
+    with caplog.at_level("DEBUG", logger="aumigao.walk_emergency"):
+        resp2 = _client(db).post(f"/walker/walks/{_add_walk_id2}/emergency", json={})
+    assert resp2.status_code == 200, resp2.text
+    for record in caplog.records:
+        assert TUTOR_PHONE_FRAGMENT not in record.getMessage()
+        assert TUTOR_PHONE_E164 not in record.getMessage()
+        assert record.exc_info is None  # sem traceback anexado (sem locais p/ Sentry)
+
+
 def test_normal_walker_payloads_never_expose_tutor_phone(db):
     walk = _add_walk(db, "ride_in_progress")
     client = _client(db)

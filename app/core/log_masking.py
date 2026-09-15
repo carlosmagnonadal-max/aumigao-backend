@@ -40,6 +40,14 @@ SENSITIVE_KEYS: frozenset[str] = frozenset({
 
 # Regex to detect CPF patterns in free-form text (11 digits, optionally formatted).
 _CPF_RE = re.compile(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b")
+# Regex to detect Brazilian phone numbers in free-form text (sec-audit 2026-09-15:
+# LOGGER.exception in walk_emergency_service could hand Sentry a traceback whose
+# frame locals carry the tutor/walker phone in E.164 or formatted form).
+# E.164 with country code: "+5571988887777".
+_PHONE_E164_RE = re.compile(r"\+55\d{10,11}\b")
+# Formatted or bare national form: "(71) 98888-7777" / "71988887777" — DDD (2
+# digits, optional parens) + mobile number (9 + 8 digits, optional hyphen).
+_PHONE_BR_RE = re.compile(r"\(?\b\d{2}\)?[\s.-]?9\d{4}-?\d{4}\b")
 # Regex to detect bare e-mail addresses in free-form strings.
 # Quantifiers are bounded (RFC local-part <= 64) so long tracebacks/blobs can't
 # trigger quadratic backtracking; _mask_string also skips it when there is no "@".
@@ -108,9 +116,17 @@ def mask_email(email: str) -> str:
     return f"{local[:1]}***@{domain}"
 
 
+def _mask_phone(match: re.Match) -> str:
+    """Keep only the last 2 digits of a matched phone number, masking the rest."""
+    digits = re.sub(r"\D", "", match.group(0))
+    tail = digits[-2:] if len(digits) >= 2 else digits
+    return f"***{tail}"
+
+
 def _mask_string(text: str) -> str:
-    """Mask secrets (tokens, API keys, passwords, URL credentials), CPF and e-mail
-    patterns found in free-form log strings. Idempotent (masking "***" is a no-op)."""
+    """Mask secrets (tokens, API keys, passwords, URL credentials), CPF, e-mail and
+    phone number patterns found in free-form log strings. Idempotent (masking
+    "***" is a no-op)."""
     # Cheap substring guards skip regexes that cannot match (hot path: every record).
     lower = text.lower()
     if "bearer" in lower or "Basic" in text:
@@ -125,6 +141,9 @@ def _mask_string(text: str) -> str:
         text = _URL_CREDS_RE.sub(r"\1***@", text)
     if any(hint in lower for hint in _KV_HINTS):
         text = _SENSITIVE_KV_RE.sub(r"\1\2***", text)
+    if "+55" in text:
+        text = _PHONE_E164_RE.sub(_mask_phone, text)
+    text = _PHONE_BR_RE.sub(_mask_phone, text)
     text = _CPF_RE.sub("***", text)
     if "@" in text:
         text = _EMAIL_RE.sub(lambda m: mask_email(m.group(0)), text)

@@ -153,3 +153,52 @@ def test_no_false_positives_on_common_text(text):
 def test_mask_is_idempotent():
     once = _mask_string(f"Bearer {BEARER_TOKEN} password={PASSWORD} {RESEND_KEY}")
     assert _mask_string(once) == once
+
+
+# ── Telefone BR/E.164 (sec-audit 2026-09-15: walk_emergency_service vazava o
+# número do tutor/passeador para o Sentry via LOGGER.exception) ─────────────
+
+TUTOR_PHONE_FORMATTED = "(71) 98888-7777"
+TUTOR_PHONE_BARE = "71988887777"
+TUTOR_PHONE_E164 = "+5571988887777"
+
+
+def test_mask_string_masks_e164_phone_keeping_last_two_digits():
+    masked = _mask_string(f"tutor_e164={TUTOR_PHONE_E164}")
+    assert TUTOR_PHONE_E164 not in masked
+    assert "988887777" not in masked
+    assert "***77" in masked
+
+
+def test_mask_string_masks_formatted_br_phone_keeping_last_two_digits():
+    masked = _mask_string(f"telefone do tutor: {TUTOR_PHONE_FORMATTED}")
+    assert TUTOR_PHONE_FORMATTED not in masked
+    assert "988887777" not in masked
+    assert "***77" in masked
+
+
+def test_mask_string_masks_bare_br_phone_keeping_last_two_digits():
+    masked = _mask_string(f"walker_e164 sem +55: {TUTOR_PHONE_BARE}")
+    assert TUTOR_PHONE_BARE not in masked
+    assert "***77" in masked
+
+
+def test_phone_masking_does_not_break_cpf_and_email_masking():
+    text = f"cpf {CPF} email {EMAIL} tel {TUTOR_PHONE_E164}"
+    masked = _mask_string(text)
+    assert CPF not in masked
+    assert EMAIL not in masked
+    assert TUTOR_PHONE_E164 not in masked
+
+
+@pytest.mark.parametrize("text", [
+    "walk 3f2a-uuid status Agendado",
+    "max_tokens=5 token_version=3",
+])
+def test_phone_regex_does_not_flag_common_non_phone_text(text):
+    assert _mask_string(text) == text
+
+
+def test_cpf_is_not_mistaken_for_a_phone_number():
+    # CPF continua mascarado do jeito de sempre ("***"), não vira "***77" de telefone.
+    assert _mask_string("123.456.789-09") == "***"

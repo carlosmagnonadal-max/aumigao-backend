@@ -304,6 +304,9 @@ def build_pet_briefing(db: Session, pet: Pet, *, now: datetime | None = None) ->
             "is_social": pet.is_social,
             "can_walk_with_other_pets": pet.can_walk_with_other_pets,
             "behavior_notes": pet.behavior_notes or "",
+            # S3: reatividade declarada pelo tutor (segurança do passeio).
+            "is_reactive": bool(pet.is_reactive),
+            "reactivity_notes": pet.reactivity_notes or "",
         },
         "health": {
             "allergies": pet.allergies or "",

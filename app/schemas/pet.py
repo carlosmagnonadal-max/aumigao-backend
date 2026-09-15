@@ -43,6 +43,9 @@ class PetBase(BaseModel):
     behavior_with_children: str | None = Field(None, max_length=50)
     behavior_with_cats: str | None = Field(None, max_length=50)
     fear_triggers_json: str | None = Field(None, max_length=2000)  # JSON: ["trovão","fogos",...]
+    # S3 (0111): cão reativo (chip "Reativo" do cadastro) + o que dispara a reatividade.
+    is_reactive: bool = False
+    reactivity_notes: str | None = Field(None, max_length=1000)
 
 class PetCreate(PetBase):
     pass

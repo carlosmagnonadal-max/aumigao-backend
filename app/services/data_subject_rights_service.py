@@ -176,7 +176,8 @@ _PET_FIELDS = (
     "diet_grams_per_meal", "diet_meals_per_day", "diet_meal_times", "diet_notes",
     "supplements_json", "food_bag_weight_kg", "food_bag_opened_at", "vet_clinic",
     "insurance_provider", "insurance_policy", "behavior_with_dogs",
-    "behavior_with_children", "behavior_with_cats", "fear_triggers_json", "created_at",
+    "behavior_with_children", "behavior_with_cats", "fear_triggers_json",
+    "is_reactive", "reactivity_notes", "created_at",
 )
 _WALK_TUTOR_FIELDS = (
     "id", "pet_id", "scheduled_date", "duration_minutes", "price", "status",
@@ -654,8 +655,9 @@ def anonymize_account(db: Session, user: User) -> dict:
                   "diet_meals_per_day", "diet_meal_times", "diet_notes", "supplements_json",
                   "food_bag_weight_kg", "food_bag_opened_at", "vet_clinic", "insurance_provider",
                   "insurance_policy", "behavior_with_dogs", "behavior_with_children",
-                  "behavior_with_cats", "fear_triggers_json"):
+                  "behavior_with_cats", "fear_triggers_json", "reactivity_notes"):
             setattr(pet, f, None)
+        pet.is_reactive = False
     counts["pets"] = len(pets)
     if pet_ids:
         counts["pet_health_records"] = db.query(PetHealthRecord).filter(

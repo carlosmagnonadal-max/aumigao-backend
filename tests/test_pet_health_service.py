@@ -187,3 +187,13 @@ def test_worst_status_by_kind_per_kind_isolation():
     worst = health.worst_status_by_kind(records, today=TODAY)
     assert worst["vaccine"] == "atrasada"
     assert worst["dewormer"] == "em_dia"
+
+
+def test_briefing_temperament_includes_reactivity():
+    db = _db()
+    pet = Pet(id="p-reativo", tutor_id="t", name="Thor", is_reactive=True, reactivity_notes="Avança em motos")
+    db.add(pet)
+    db.commit()
+    briefing = health.build_pet_briefing(db, pet, now=datetime(2026, 9, 15, 12, 0))
+    assert briefing["temperament"]["is_reactive"] is True
+    assert briefing["temperament"]["reactivity_notes"] == "Avança em motos"

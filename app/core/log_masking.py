@@ -43,8 +43,10 @@ _CPF_RE = re.compile(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b")
 # Regex to detect Brazilian phone numbers in free-form text (sec-audit 2026-09-15:
 # LOGGER.exception in walk_emergency_service could hand Sentry a traceback whose
 # frame locals carry the tutor/walker phone in E.164 or formatted form).
-# E.164 with country code: "+5571988887777".
-_PHONE_E164_RE = re.compile(r"\+55\d{10,11}\b")
+# E.164 with country code: "+5571988887777". Also covers US/Canada "+1" numbers
+# (sec-audit 2026-09-15b: TwilioProvider's caller_id/walker number can be a "+1"
+# Twilio number, e.g. in exception text from the HTTP client).
+_PHONE_E164_RE = re.compile(r"\+55\d{10,11}\b|\+1\d{10}\b")
 # Formatted or bare national form: "(71) 98888-7777" / "71988887777" — DDD (2
 # digits, optional parens) + mobile number (9 + 8 digits, optional hyphen).
 _PHONE_BR_RE = re.compile(r"\(?\b\d{2}\)?[\s.-]?9\d{4}-?\d{4}\b")
@@ -141,7 +143,7 @@ def _mask_string(text: str) -> str:
         text = _URL_CREDS_RE.sub(r"\1***@", text)
     if any(hint in lower for hint in _KV_HINTS):
         text = _SENSITIVE_KV_RE.sub(r"\1\2***", text)
-    if "+55" in text:
+    if "+55" in text or "+1" in text:
         text = _PHONE_E164_RE.sub(_mask_phone, text)
     text = _PHONE_BR_RE.sub(_mask_phone, text)
     text = _CPF_RE.sub("***", text)

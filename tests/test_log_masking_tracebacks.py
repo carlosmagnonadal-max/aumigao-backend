@@ -183,6 +183,16 @@ def test_mask_string_masks_bare_br_phone_keeping_last_two_digits():
     assert "***77" in masked
 
 
+def test_mask_string_masks_us_e164_phone_keeping_last_two_digits():
+    # sec-audit 2026-09-15b: TwilioProvider usa números Twilio "+1" (US/Canada)
+    # como caller_id — o texto de exceções não pode vazá-los.
+    us_phone = "+15551234567"
+    masked = _mask_string(f"caller_id={us_phone}")
+    assert us_phone not in masked
+    assert "1234567" not in masked
+    assert "***67" in masked
+
+
 def test_phone_masking_does_not_break_cpf_and_email_masking():
     text = f"cpf {CPF} email {EMAIL} tel {TUTOR_PHONE_E164}"
     masked = _mask_string(text)

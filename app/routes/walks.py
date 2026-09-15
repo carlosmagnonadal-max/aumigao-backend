@@ -47,6 +47,9 @@ from app.services.operational_matching_service import (
 )
 from app.services.operational_reliability_service import detect_reliability_events, record_late_cancellation_if_applicable
 from app.services.tenant_seed_service import default_tenant_id
+from app.services.walk_emergency_service import latest_emergency_triggered_at
+from app.services.local_rules_service import safety_alerts_for_walk
+from app.services.tenant_contact_service import resolve_tenant_support_phone
 from app.models.tenant_walker_access import TenantWalkerAccess
 from app.core.feature_flags import multi_tenant_tutor_enabled
 from app.services.tutor_network_service import is_tutor_eligible_for_tenant
@@ -725,6 +728,11 @@ def create_walk(payload: WalkCreate, request: Request, user: User = Depends(get_
 
         raise
 
+# S3: passeios encerrados não precisam de alerta (evita consultas em históricos).
+# Mesmo critério de app/routes/walker.py::_SAFETY_ALERT_SKIP_STATUSES.
+_GET_WALK_SAFETY_ALERT_SKIP_STATUSES = {"ride_completed", "ride_cancelled"}
+
+
 @router.get("/{walk_id}", response_model=WalkResponse)
 def get_walk(walk_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     process_expired_attempts(db)
@@ -734,6 +742,28 @@ def get_walk(walk_id: str, user: User = Depends(get_current_user), db: Session =
     # Campo ADITIVO (review P2 #3): o app do passeador usa este booleano para
     # esconder o formulário de observação quando a feature está dormente.
     data["walk_observations_enabled"] = _walk_observations_enabled(walk, db)
+    # Correção de contrato (2026-09-15) — PROBLEMA 1: o app do tutor lê este GET
+    # (não operational_events, nunca exposto ao tutor por privacidade) para
+    # mostrar a faixa "Emergência acionada às HH:MM". _get_walk_for_user já
+    # restringiu quem chega aqui a tutor dono/passeador designado/admin do
+    # tenant — preenche para todos eles.
+    emergency_at = latest_emergency_triggered_at(db, walk.id)
+    data["emergency_triggered_at"] = (emergency_at.isoformat() + "Z") if emergency_at else None
+    # PROBLEMA 2: app/walker/detalhes-passeio.tsx usa este GET quando o passeio
+    # não está (ainda) na agenda local do passeador — sem isto ele perdia
+    # safety_alerts/establishment_support_phone que só a listagem do passeador
+    # (/walker/walks/*) anexava. Mesmos helpers do S3, mesma regra de
+    # privacidade: só o passeador DESIGNADO vê (tutor/admin recebem None).
+    is_designated_walker = user.id is not None and user.id in {walk.walker_id, walk.assigned_walker_id}
+    if is_designated_walker:
+        if (walk.operational_status or "") in _GET_WALK_SAFETY_ALERT_SKIP_STATUSES:
+            data["safety_alerts"] = []
+        else:
+            data["safety_alerts"] = safety_alerts_for_walk(db, walk)
+        data["establishment_support_phone"] = resolve_tenant_support_phone(db, walk.tenant_id)
+    else:
+        data["safety_alerts"] = None
+        data["establishment_support_phone"] = None
     return data
 
 

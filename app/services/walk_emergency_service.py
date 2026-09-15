@@ -315,3 +315,20 @@ def trigger_walk_emergency(db: Session, walk: Walk, user: User, reason: str | No
         tutor_e164=plan.tutor_e164, support_phone=support_phone, vet_name=vet_name,
         vet_phone=vet_phone, created_at=now, rate_limited=False, persisted=persisted,
     )
+
+
+def latest_emergency_triggered_at(db: Session, walk_id: str) -> datetime | None:
+    """`emergency_triggered_at` do GET /walks/{id} (correção de contrato 2026-09-15).
+
+    Horário do acionamento de emergência MAIS RECENTE do passeio, direto de
+    `walk_emergency_calls` (S1) — NUNCA de `operational_events` (privacidade:
+    o evento carrega `notes` com o motivo, que não deve vazar ao tutor). None
+    quando o passeio nunca teve emergência acionada.
+    """
+    call = (
+        db.query(WalkEmergencyCall)
+        .filter(WalkEmergencyCall.walk_id == walk_id)
+        .order_by(WalkEmergencyCall.created_at.desc())
+        .first()
+    )
+    return call.created_at if call else None

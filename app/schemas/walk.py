@@ -132,3 +132,22 @@ class WalkResponse(ORMModel):
     cancelled_by_role: str | None = None
     refund_status: str | None = None
     refunded_amount: float | None = None
+    # Seguranca do Passeio S1/S3 (correcao de contrato 2026-09-15): sem declarar
+    # aqui o response_model DESCARTA (mesmo gotcha de completion_review acima) e
+    # o app do tutor/passeador nunca via os campos.
+    #
+    # emergency_triggered_at: PRIVACIDADE — NAO expor operational_events ao tutor
+    # (vazaria motivo/nota do acionamento). Em vez disso: horario (created_at) do
+    # acionamento de emergencia MAIS RECENTE (walk_emergency_calls, S1), so ISO
+    # (string, nao datetime) para garantir o sufixo "Z" (UTC) explicito no
+    # contrato, preenchido para quem ja pode ver o passeio (tutor dono/passeador
+    # designado/admin do tenant — a rota GET /walks/{id} ja restringe isso antes
+    # de chegar aqui).
+    emergency_triggered_at: str | None = None
+    # safety_alerts / establishment_support_phone (S3): MESMOS campos do payload
+    # do passeador (app/routes/walker.py::_attach_safety_alerts). Preenchidos
+    # SOMENTE quando o solicitante e o passeador designado do passeio (walker_id
+    # ou assigned_walker_id == usuario) — tutor/admin recebem None, igual ao
+    # tutor_phone (nunca exposto no payload do passeador).
+    safety_alerts: list[dict] | None = None
+    establishment_support_phone: str | None = None

@@ -71,6 +71,11 @@ class WalkerProfile(Base):
     )
     sanctions_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    # S2 — Capacitação: versão do manual concluída (todos os módulos nacionais aprovados)
+    # e quando. Comparada à versão ativa pela trava (walker_training_policy). Migration 0110.
+    training_completed_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    training_completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     # Trilha de devido processo para status restritivos (blocked/rejected durante atividade).
     # Populadas sempre que a API transiciona para um estado restritivo.
     # suspension_reason = motivo registrado pelo admin (obrigatorio via API).

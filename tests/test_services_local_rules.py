@@ -69,6 +69,10 @@ def test_normalize_uf_accepts_sigla_and_full_state_name():
     ("Parque da Cidade, perto do lago", (None, None)),
     ("", (None, None)),
     (None, (None, None)),
+    # S3-1: sigla de UF colada em número não é UF (numeração de apto/casa).
+    ("Edifício Mar Azul - AP 1203", (None, None)),
+    ("Rua Piauí - SE 45, Aracaju", (None, None)),
+    ("Rua X, 10 - SE", (None, None)),
 ])
 def test_parse_city_uf(text, expected):
     assert lrs.parse_city_uf(text) == expected
@@ -119,13 +123,34 @@ def test_resolve_tutor_location_uses_profile_then_tenant_units():
     assert lrs.resolve_tutor_location(db, "tutor9", "t1") == ("Recife", "PE")
 
 
+def test_resolve_walk_location_prefers_tutor_profile_uf_when_meeting_point_uf_diverges():
+    # S3-1: UF lida em texto livre é pista fraca — diverge do perfil -> perfil prevalece.
+    db = _db()
+    db.add(TutorProfile(id="tp1", user_id="tutor1", city="Salvador", state="BA"))
+    db.commit()
+    walk = _walk(meeting_point="Rua Piauí, perto da Serra - SE")
+    assert lrs.resolve_walk_location(db, walk) == ("Salvador", "BA")
+
+
+def test_resolve_walk_location_uses_meeting_point_when_uf_agrees_with_profile():
+    db = _db()
+    db.add(TutorProfile(id="tp1", user_id="tutor1", city="Salvador", state="BA"))
+    db.commit()
+    walk = _walk(meeting_point="Praça X, Lauro de Freitas - BA")
+    assert lrs.resolve_walk_location(db, walk) == ("Lauro de Freitas", "BA")
+
+
 def _pet(**kw) -> Pet:
     base = dict(id="pet1", tutor_id="tutor1", name="Thor", weight=None, size="", breed="", is_reactive=False)
     base.update(kw)
     return Pet(**base)
 
 
-SSA_32KG = "Salvador: cão de 32 kg — guia e focinheira em local público."
+SSA_32KG = "Salvador: cão acima de 24 kg — guia e focinheira obrigatórias em local público ou área de uso coletivo (Lei 9.108/2016)."
+SSA_REACTIVE = (
+    "Cão marcado como reativo: use guia curta; focinheira recomendada. "
+    "Em Salvador, a lei exige focinheira para cães bravios (Lei 9.108/2016)."
+)
 
 
 # ------------------------------------------------ critérios de aceite (spec §6)
@@ -141,6 +166,9 @@ def test_salvador_dog_32kg_gets_muzzle_alert():
     assert "9.108/2016" in alert.norma
     assert alert.status == "vigente"
     assert alert.verificado_em == "2026-09-15"
+    # C2: nivel/nota — regra de peso é confianca "alta" -> obrigatorio; sem nota.
+    assert alert.nivel == "obrigatorio"
+    assert alert.nota is None
 
 
 def test_salvador_threshold_is_strictly_above_24kg():
@@ -149,7 +177,8 @@ def test_salvador_threshold_is_strictly_above_24kg():
     assert lrs.alerts_for(db, _pet(weight=24.0), "Salvador", "BA") == []
     assert lrs.alerts_for(db, _pet(weight=23.9), "Salvador", "BA") == []
     alerts = lrs.alerts_for(db, _pet(weight=24.1), "Salvador", "BA")
-    assert [a.message for a in alerts] == ["Salvador: cão de 24,1 kg — guia e focinheira em local público."]
+    # C2: mensagem fixa (limite da regra), não o peso exato do pet.
+    assert [a.message for a in alerts] == [SSA_32KG]
 
 
 def test_weight_min_kg_is_inclusive_by_default_when_param_absent():
@@ -165,7 +194,10 @@ def test_weight_min_kg_is_inclusive_by_default_when_param_absent():
 def test_reactive_dog_gets_alert():
     db = _db(); _seed(db)
     alerts = lrs.alerts_for(db, _pet(weight=8.0, is_reactive=True), "Salvador", "BA")
-    assert [a.message for a in alerts] == ["Salvador: cão reativo — guia e focinheira em local público."]
+    assert [a.message for a in alerts] == [SSA_REACTIVE]
+    # C2: regra reativo é confianca "media" -> recomendado; nota vem da regra.
+    assert alerts[0].nivel == "recomendado"
+    assert "bravios" in (alerts[0].nota or "")
 
 
 def test_city_without_rules_gets_no_alert():
@@ -182,12 +214,31 @@ def test_city_matching_ignores_accents_and_case():
 def test_size_fallback_when_weight_is_missing():
     db = _db(); _seed(db)
     alerts = lrs.alerts_for(db, _pet(weight=None, size="Grande"), "Salvador", "BA")
-    assert [a.message for a in alerts] == ["Salvador: cão de porte grande — guia e focinheira em local público."]
+    # C2: mensagem fixa do limite da regra, mesmo entrando pelo fallback de porte.
+    assert [a.message for a in alerts] == [SSA_32KG]
 
 
 def test_behavior_with_dogs_reativo_counts_as_reactive():
     db = _db(); _seed(db)
     assert len(lrs.alerts_for(db, _pet(weight=8.0, behavior_with_dogs="reativo"), "Salvador", "BA")) == 1
+
+
+def test_pet_is_reactive_from_behavior_notes_word():
+    # S3-2: chip "Reativo" pode vir só em behavior_notes (texto livre).
+    assert lrs.pet_is_reactive(_pet(behavior_notes="Calmo, Reativo")) is True
+    assert lrs.pet_is_reactive(_pet(behavior_notes="Late muito, reativo com outros cães")) is True
+
+
+def test_pet_is_reactive_ignores_negated_note():
+    # S3-2: "não reativo"/"nao reativo" não deve marcar o pet como reativo.
+    assert lrs.pet_is_reactive(_pet(behavior_notes="Não reativo, sociável")) is False
+    assert lrs.pet_is_reactive(_pet(behavior_notes="nao reativo")) is False
+
+
+def test_reactive_note_word_triggers_salvador_alert():
+    db = _db(); _seed(db)
+    alerts = lrs.alerts_for(db, _pet(weight=8.0, behavior_notes="Late um pouco, Reativo"), "Salvador", "BA")
+    assert [a.message for a in alerts] == [SSA_REACTIVE]
 
 
 def test_heavy_and_reactive_dog_gets_both_alerts():
@@ -264,7 +315,7 @@ def test_safety_alerts_for_walk_uses_walk_location_and_returns_dicts():
     out = lrs.safety_alerts_for_walk(db, _walk())
     assert [a["message"] for a in out] == [SSA_32KG]
     assert set(out[0]) == {"rule_id", "uf", "municipio", "tema", "severity", "title", "message",
-                           "norma", "fonte_url", "status", "verificado_em"}
+                           "norma", "fonte_url", "status", "verificado_em", "nivel", "nota"}
 
 
 def test_safety_alerts_for_walk_without_location_is_empty():
@@ -280,6 +331,29 @@ def test_rules_cache_avoids_second_query(monkeypatch):
     first = lrs.rules_for_city(db, "Salvador", "BA", cache=cache)
     monkeypatch.setattr(db, "query", lambda *a, **k: (_ for _ in ()).throw(AssertionError("sem cache")))
     assert lrs.rules_for_city(db, "salvador", "BA", cache=cache) == first
+
+
+def test_tutor_profile_location_cache_avoids_second_query(monkeypatch):
+    # S3-3: perfil do tutor (city/UF) só é consultado 1x por request quando cacheado.
+    db = _db()
+    db.add(TutorProfile(id="tp1", user_id="tutor1", city="Salvador", state="BA"))
+    db.commit()
+    cache: dict = {}
+    first = lrs.resolve_walk_location(db, _walk(meeting_point=""), cache=cache)
+    assert first == ("Salvador", "BA")
+    monkeypatch.setattr(db, "query", lambda *a, **k: (_ for _ in ()).throw(AssertionError("sem cache")))
+    assert lrs.resolve_walk_location(db, _walk(meeting_point=""), cache=cache) == first
+
+
+def test_tenant_units_location_cache_avoids_second_query(monkeypatch):
+    db = _db()
+    db.add(TenantUnit(tenant_id="t1", name="Matriz", city="Salvador", state="BA", status="active"))
+    db.commit()
+    cache: dict = {}
+    first = lrs.resolve_tutor_location(db, None, "t1", cache=cache)
+    assert first == ("Salvador", "BA")
+    monkeypatch.setattr(db, "query", lambda *a, **k: (_ for _ in ()).throw(AssertionError("sem cache")))
+    assert lrs.resolve_tutor_location(db, None, "t1", cache=cache) == first
 
 
 # --------------------------------------------------------------------------- #

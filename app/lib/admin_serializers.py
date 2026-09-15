@@ -27,6 +27,8 @@ from app.services.walker_operational_score_service import (
     calculate_walker_operational_score,
 )
 from app.services.operational_matching_service import serialize_operational_walk
+from app.services import training_content
+from app.services.walker_training_policy import training_status_label
 from app.models.walker_background_certificate import WalkerBackgroundCertificate
 from app.services.background_check_service import (
     BACKGROUND_CHECK_DISCLAIMER,
@@ -498,6 +500,10 @@ def _serialize_walker_profile(
         # Porte máximo de cão aceito pelo passeador (alimenta o matching; migration 0034).
         "max_dog_size": getattr(profile, "max_dog_size", None),
         "has_vehicle": bool(getattr(profile, "has_vehicle", False)),
+        # S2 — Capacitação: status para a lista/detalhe do admin (versão exigida = bundle ativo).
+        "training_completed_version": getattr(profile, "training_completed_version", None),
+        "training_completed_at": getattr(profile, "training_completed_at", None),
+        "training_status": training_status_label(profile, training_content.active_version()),
     }
     # operational_score pode vir pré-calculado em lote (evita N+1 nas listagens);
     # senão calcula sob demanda (detalhe de 1 perfil).

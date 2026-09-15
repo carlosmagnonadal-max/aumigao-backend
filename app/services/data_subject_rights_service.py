@@ -165,6 +165,7 @@ _WALKER_PROFILE_FIELDS = (
     "max_dog_size", "pix_key", "background_check_status", "background_verified_at",
     "sanctions_check_status", "sanctions_checked_at", "approved_at", "rejected_at",
     "rejection_reason", "suspension_reason", "created_at", "updated_at",
+    "training_completed_version", "training_completed_at",
 )
 _PET_FIELDS = (
     "id", "name", "photo_url", "species", "sex", "breed", "size", "weight", "age",

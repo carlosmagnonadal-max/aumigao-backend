@@ -17,6 +17,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.walker_profile import WalkerProfile
@@ -173,8 +174,35 @@ def _maybe_complete_training(db: Session, walker_user_id: str, bundle: dict, now
     return True
 
 
-def grade_quiz(db: Session, walker_user_id: str, module_id: str, answers: list[int]) -> dict:
+def _review_sections_for(module: dict, quiz: list[dict], wrong_indexes: list[int]) -> list[str]:
+    """Títulos das seções ("## ...") relacionadas às perguntas erradas (C1).
+
+    Sem mapeamento pergunta→seção nos dados do bundle (nenhuma pergunta traz
+    `section_id`) → devolve os títulos de TODAS as seções do módulo (fallback
+    do contrato). Com mapeamento, devolve só as seções das perguntas erradas
+    (deduplicado, na ordem das seções do módulo).
+    """
+    sections = module.get("sections") or []
+    all_titles = [s["title"] for s in sections if s.get("title")]
+    title_by_id = {s["id"]: s["title"] for s in sections if s.get("id") and s.get("title")}
+    mapped: list[str] = []
+    seen: set[str] = set()
+    for index in wrong_indexes:
+        section_id = quiz[index].get("section_id")
+        title = title_by_id.get(section_id) if section_id else None
+        if title and title not in seen:
+            seen.add(title)
+            mapped.append(title)
+    return mapped if mapped else all_titles
+
+
+def grade_quiz(
+    db: Session, walker_user_id: str, module_id: str, answers: list[int], version: str | None = None,
+) -> dict:
     bundle = _require_bundle()
+    if version is not None and version != bundle["version"]:
+        # C1: conteúdo mudou de versão entre o passeador abrir o módulo e enviar o quiz.
+        raise HTTPException(status_code=409, detail={"code": "training_version_changed"})
     module = _require_module(bundle, module_id)
     quiz = module.get("quiz", [])
     if not quiz:
@@ -182,28 +210,41 @@ def grade_quiz(db: Session, walker_user_id: str, module_id: str, answers: list[i
     if len(answers) != len(quiz):
         raise HTTPException(status_code=422, detail=f"Envie {len(quiz)} respostas.")
 
-    results: list[dict] = []
+    full_results: list[dict] = []
+    wrong_indexes: list[int] = []
     hits = 0
     for index, (question, answer) in enumerate(zip(quiz, answers)):
         if not isinstance(answer, int) or not 0 <= answer < len(question["options"]):
             raise HTTPException(status_code=422, detail=f"Resposta inválida na pergunta {index + 1}.")
         correct = answer == question["correct_index"]
         hits += int(correct)
-        results.append({"index": index, "correct": correct, "explanation": question.get("explanation", "")})
+        if not correct:
+            wrong_indexes.append(index)
+        full_results.append({"index": index, "correct": correct, "explanation": question.get("explanation", "")})
 
     total = len(quiz)
     score = round(hits * 100 / total)
     passed = hits * 100 >= PASS_THRESHOLD_PERCENT * total
-    version = bundle["version"]
+    content_version = bundle["version"]
     now = datetime.utcnow()
 
-    row = _progress_rows(db, walker_user_id, version).get(module_id)
+    row = _progress_rows(db, walker_user_id, content_version).get(module_id)
     if row is None:
         row = WalkerTrainingProgress(
-            id=str(uuid4()), walker_user_id=walker_user_id, content_version=version,
+            id=str(uuid4()), walker_user_id=walker_user_id, content_version=content_version,
             module_id=module_id, best_score=0, attempts=0, created_at=now,
         )
         db.add(row)
+        try:
+            db.flush()
+        except IntegrityError:
+            # S2-4: envio simultâneo do 1º progresso — outra requisição já criou a
+            # linha (uq_walker_training_progress_module); relê e segue com UPDATE
+            # em vez de derrubar a requisição com 500.
+            db.rollback()
+            row = _progress_rows(db, walker_user_id, content_version).get(module_id)
+            if row is None:
+                raise
     row.attempts = (row.attempts or 0) + 1
     row.best_score = max(row.best_score or 0, score)
     if passed and row.passed_at is None:
@@ -213,6 +254,14 @@ def grade_quiz(db: Session, walker_user_id: str, module_id: str, answers: list[i
 
     training_completed = _maybe_complete_training(db, walker_user_id, bundle, now)
     db.commit()
+
+    # C1: REPROVADO nunca devolve acerto por pergunta, explicação nem gabarito —
+    # só os títulos das seções pra revisar. APROVADO segue como hoje (DV8).
+    if passed:
+        results, review_sections = full_results, []
+    else:
+        results, review_sections = [], _review_sections_for(module, quiz, wrong_indexes)
+
     return {
         "module_id": module_id,
         "score": score,
@@ -221,6 +270,7 @@ def grade_quiz(db: Session, walker_user_id: str, module_id: str, answers: list[i
         "passed": passed,
         "pass_threshold": PASS_THRESHOLD_PERCENT,
         "results": results,
+        "review_sections": review_sections,
         "progress": _progress_payload(row),
         "training_completed": training_completed,
     }
@@ -281,13 +331,50 @@ def _json_object(value) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _join_items(items: list[str]) -> str:
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " e " + items[-1]
+
+
+_TEMA_LABELS = {
+    "focinheira": "Focinheira",
+    "guia": "Guia",
+    "praia": "Praia",
+    "dejetos": "Dejetos",
+    "limite_caes": "Limite de cães",
+}
+
+
+def _tema_label(tema: str | None) -> str:
+    return _TEMA_LABELS.get(tema or "", (tema or "Regra local").replace("_", " ").strip().capitalize())
+
+
+def _conflict_summary(rule, items: list[str]) -> str:
+    """status="conflito" nunca deve soar como permissão (C3) — texto de cautela, não de liberação."""
+    label = _tema_label(getattr(rule, "tema", None))
+    if getattr(rule, "tema", None) == "praia":
+        action = f" se for, {_join_items(items)}." if items else ""
+        return f"{label}: situação legal em conflito — evite levar o cão à praia até confirmação;{action}"
+    action = f" se for, {_join_items(items)}." if items else " confirme antes de seguir."
+    return f"{label}: situação legal em conflito — evite até confirmação;{action}"
+
+
 def _serialize_local_rule(rule) -> dict:
     """LocalRule (ORM do S3) → dict público do M10-B. Só leitura de atributos (sem import do modelo)."""
     requirement = _json_object(getattr(rule, "exigencia_json", None))
     items = [str(item) for item in requirement.get("itens") or [] if str(item).strip()]
-    summary = str(requirement.get("detalhe") or "").strip() or " ".join(
-        part for part in (", ".join(items), str(requirement.get("onde") or "").strip()) if part
-    )
+    status = getattr(rule, "status", None)
+    if status == "conflito":
+        # C3: status "conflito" -> resumo de cautela (nunca soa como permissão).
+        summary = _conflict_summary(rule, items)
+    else:
+        summary = str(requirement.get("detalhe") or "").strip() or " ".join(
+            part for part in (", ".join(items), str(requirement.get("onde") or "").strip()) if part
+        )
+    nota = str(requirement.get("nota") or "").strip() or None
     checked = getattr(rule, "verificado_em", None)
     return {
         "id": getattr(rule, "id", None),
@@ -295,13 +382,14 @@ def _serialize_local_rule(rule) -> dict:
         "nivel": getattr(rule, "nivel", None),
         "municipio": getattr(rule, "municipio", None),
         "uf": getattr(rule, "uf", None),
-        "status": getattr(rule, "status", None),
+        "status": status,
         "confianca": getattr(rule, "confianca", None),
         "norma": getattr(rule, "norma", None),
         "fonte_url": getattr(rule, "fonte_url", None),
         "verificado_em": checked.isoformat() if hasattr(checked, "isoformat") else checked,
         "itens": items,
         "resumo": summary,
+        "nota": nota,
     }
 
 

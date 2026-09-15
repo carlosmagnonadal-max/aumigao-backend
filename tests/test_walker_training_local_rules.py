@@ -82,9 +82,12 @@ def test_structured_rules_come_from_s3_when_available(tmp_path, monkeypatch):
         "verificado_em": "2026-09-15",
         "itens": ["guia", "focinheira"],
         "resumo": "Cães acima de 24 kg em local público.",
+        "nota": None,
     }
-    # Sem "detalhe": resumo montado com itens + onde; regra em conflito vem sinalizada pelo status.
-    assert data["rules"][1]["resumo"] == "guia na praia"
+    # C3: regra em conflito nunca soa como permissão — texto de cautela, não "guia na praia".
+    assert data["rules"][1]["resumo"] == (
+        "Praia: situação legal em conflito — evite levar o cão à praia até confirmação; se for, guia."
+    )
     assert data["rules"][1]["status"] == "conflito"
 
 

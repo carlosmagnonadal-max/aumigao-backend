@@ -76,6 +76,8 @@ def test_grade_quiz_80_percent_passes_without_exposing_index(db):
     assert "correct_index" not in _dump(result)
     assert result["progress"]["passed"] is True
     assert result["training_completed"] is False
+    # C1: aprovado -> review_sections vazio (gabarito completo já veio em "results").
+    assert result["review_sections"] == []
 
 
 def test_grade_quiz_below_threshold_keeps_best_score_and_counts_attempts(db):
@@ -90,6 +92,58 @@ def test_grade_quiz_below_threshold_keeps_best_score_and_counts_attempts(db):
     assert row.best_score == 60
     assert row.passed_at is None
     assert row.content_version == "9.0"
+
+
+def test_grade_quiz_reprovado_hides_results_and_lists_review_sections(db):
+    # C1: reprovado -> results=[] (nem acerto por pergunta, nem explicação, nem gabarito).
+    wrong = [(a + 1) % 4 for a in M01_ANSWERS]
+    result = svc.grade_quiz(db, WALKER_ID, "m01", wrong)
+    assert result["passed"] is False
+    assert result["results"] == []
+    assert "correct_index" not in _dump(result) and "explanation" not in _dump(result)
+    # m01 (fixture) tem 1 única seção "Seção" -> sem mapeamento pergunta->seção,
+    # o fallback devolve os títulos de TODAS as seções do módulo.
+    assert result["review_sections"] == ["Seção"]
+
+
+def test_grade_quiz_rejects_stale_version_with_409(db):
+    with pytest.raises(HTTPException) as exc:
+        svc.grade_quiz(db, WALKER_ID, "m01", M01_ANSWERS, version="8.0")
+    assert exc.value.status_code == 409
+    assert exc.value.detail == {"code": "training_version_changed"}
+
+
+def test_grade_quiz_accepts_matching_version(db):
+    result = svc.grade_quiz(db, WALKER_ID, "m01", M01_ANSWERS, version="9.0")
+    assert result["passed"] is True
+
+
+def test_grade_quiz_handles_concurrent_first_progress_insert(db, monkeypatch):
+    # S2-4: 2 requisições simultâneas no 1º envio do quiz -> a 2ª não pode
+    # estourar 500 por IntegrityError (uq_walker_training_progress_module);
+    # ela relê a linha já criada pela 1ª e segue com UPDATE.
+    existing = WalkerTrainingProgress(
+        id="concurrent-row", walker_user_id=WALKER_ID, content_version="9.0",
+        module_id="m01", best_score=0, attempts=0,
+    )
+    db.add(existing)
+    db.commit()
+
+    real_progress_rows = svc._progress_rows
+    calls = {"n": 0}
+
+    def fake_progress_rows(db_, walker_user_id, version):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {}  # simula leitura que não viu a linha já commitada por outra requisição
+        return real_progress_rows(db_, walker_user_id, version)
+
+    monkeypatch.setattr(svc, "_progress_rows", fake_progress_rows)
+    result = svc.grade_quiz(db, WALKER_ID, "m01", M01_ANSWERS)
+    assert result["passed"] is True
+    row = db.query(WalkerTrainingProgress).filter_by(walker_user_id=WALKER_ID, module_id="m01").one()
+    assert row.id == "concurrent-row"
+    assert row.attempts == 1
 
 
 def test_grade_quiz_validates_answers(db):

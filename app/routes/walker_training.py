@@ -28,6 +28,9 @@ WALKER_ROLES = {"walker", "passeador"}
 
 class QuizSubmission(BaseModel):
     answers: list[int] = Field(..., min_length=1, max_length=50)
+    # C1: se enviado e != versão ativa, a correção recusa com 409 training_version_changed
+    # (conteúdo mudou entre o passeador abrir o módulo e enviar o quiz).
+    version: str | None = None
 
 
 def _require_walker(user: User, db: Session) -> WalkerProfile:
@@ -60,7 +63,7 @@ def submit_training_quiz(
     db: Session = Depends(get_db),
 ):
     _require_walker(user, db)
-    return svc.grade_quiz(db, user.id, module_id, payload.answers)
+    return svc.grade_quiz(db, user.id, module_id, payload.answers, payload.version)
 
 
 @router.get("/quick-guide")

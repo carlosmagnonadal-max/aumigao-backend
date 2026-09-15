@@ -45,6 +45,11 @@ os.environ.setdefault("LEGAL_ACCEPTANCE_ENFORCED", "false")
 #     monkeypatch.setenv("DATA_CACHE_ENABLED", "true"). Mesmo padrao do 2b/2c.
 os.environ.setdefault("DATA_CACHE_ENABLED", "false")
 
+# 2e) Trava da Capacitação (S2): o default do código já é "off", mas a suíte fixa
+#     explicitamente para não herdar env da máquina. Os testes da trava ligam via
+#     tests/training_helpers.configure_training (monkeypatch).
+os.environ.setdefault("WALKER_TRAINING_ENFORCEMENT", "off")
+
 # 3) Chave fixa de cifragem de PII (CPF/RG) para os testes — Fernet key válida de 32 bytes.
 #    NUNCA usar em produção (lá vem de PII_ENCRYPTION_KEY no ambiente).
 #    Gerada com: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"

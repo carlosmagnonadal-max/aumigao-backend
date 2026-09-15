@@ -1,7 +1,7 @@
 import os
 import logging
 import json
-from typing import Any
+from typing import Any, Literal
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -3106,6 +3106,36 @@ def walker_active_walk(
         raise HTTPException(status_code=404, detail="Nenhum passeio ativo no momento.")
 
     return serialize_operational_walk(walk, db, user=user)
+
+
+# ---------------------------------------------------------------------------
+# S1 — BOTÃO DE EMERGÊNCIA (spec 2026-09-15 §1). Regra de negócio em
+# app/services/walk_emergency_service.py.
+# • get_walker_self_db: com o multi-tenant do passeador ligado, o passeio pode
+#   ser de outro tenant que o do header — o serviço autoriza EXPLICITAMENTE
+#   (passeador designado + custódia) e grava tenant_id = walk.tenant_id.
+# • NÃO chama _require_active_walker: com o cão sob custódia, a emergência não
+#   pode ser bloqueada por status cadastral.
+# • O telefone do tutor só sai nesta resposta (modo direto); _walk_payload
+#   continua com tutor_phone "".
+# ---------------------------------------------------------------------------
+class WalkEmergencyRequest(BaseModel):
+    reason: Literal["pet_mal", "fuga", "ataque", "outro"] | None = None
+
+
+@router.post("/walks/{walk_id}/emergency")
+def trigger_walk_emergency_route(
+    walk_id: str,
+    payload: WalkEmergencyRequest | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_walker_self_db),
+):
+    from app.services.walk_emergency_service import trigger_walk_emergency
+
+    walk = db.get(Walk, walk_id)
+    if not walk:
+        raise HTTPException(status_code=404, detail="Passeio nao encontrado")
+    return trigger_walk_emergency(db, walk, user, payload.reason if payload else None)
 
 
 # api-T2 / Fase 1 Passo 4 §C: schema permissivo do pedido de saque.

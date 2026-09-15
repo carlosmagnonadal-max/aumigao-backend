@@ -611,6 +611,7 @@
   "POST /walker/walks/{walk_id}/completion-photo",
   "POST /walker/walks/{walk_id}/completion-report",
   "POST /walker/walks/{walk_id}/decline",
+  "POST /walker/walks/{walk_id}/emergency",
   "POST /walker/walks/{walk_id}/experience",
   "POST /walker/walks/{walk_id}/occurrence",
   "POST /walker/walks/{walk_id}/pet-handover",

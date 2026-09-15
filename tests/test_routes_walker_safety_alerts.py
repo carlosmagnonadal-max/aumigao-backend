@@ -31,7 +31,10 @@ TENANT_ID = "t-s3-walker"
 WALKER_ID = "walker-s3"
 TUTOR_ID = "tutor-s3"
 PET_ID = "pet-s3"
-EXPECTED = "Salvador: cão de 32 kg — guia e focinheira em local público."
+EXPECTED = (
+    "Salvador: cão acima de 24 kg — guia e focinheira obrigatórias em local público "
+    "ou área de uso coletivo (Lei 9.108/2016)."
+)
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0111_local_rules_pet_reactive.py"
 )
@@ -151,3 +154,39 @@ def test_establishment_support_phone_none_when_not_configured():
     # walker_active_walk usa serialize_operational_walk (não _walk_payload): não expõe
     # nenhum campo de telefone do tutor — nada a mascarar.
     assert "tutor_phone" not in body
+
+
+# ------------------------------------------------------------- S3-3 (cache) --
+def test_walker_walks_reuses_tenant_phone_and_tutor_location_across_walks(monkeypatch):
+    """/walker/walks com vários passeios do MESMO tenant/tutor só consulta
+    telefone do tenant e localização do tutor 1x cada (cache por request)."""
+    client, db = build(support_phone="7135999983")
+    _add_walk(db, "w1", walker_id=WALKER_ID, status="Agendado", operational_status="walker_accepted")
+    _add_walk(db, "w2", walker_id=WALKER_ID, status="Agendado", operational_status="walker_arriving")
+    _add_walk(db, "w3", walker_id=WALKER_ID, status="Agendado", operational_status="ride_scheduled")
+
+    from app.routes import walker as walker_module
+    from app.services import local_rules_service as lrs
+
+    phone_calls = {"n": 0}
+    tutor_loc_calls = {"n": 0}
+    real_resolve_phone = walker_module.resolve_tenant_support_phone
+    real_tutor_loc = lrs._tutor_profile_location
+
+    def counting_resolve_phone(db_, tenant_id):
+        phone_calls["n"] += 1
+        return real_resolve_phone(db_, tenant_id)
+
+    def counting_tutor_loc(db_, tutor_id, *, cache=None):
+        if cache is None or ("tutor_loc", tutor_id) not in cache:
+            tutor_loc_calls["n"] += 1
+        return real_tutor_loc(db_, tutor_id, cache=cache)
+
+    monkeypatch.setattr(walker_module, "resolve_tenant_support_phone", counting_resolve_phone)
+    monkeypatch.setattr(lrs, "_tutor_profile_location", counting_tutor_loc)
+
+    body = {w["id"]: w for w in client.get("/walker/walks").json()}
+    assert len(body) == 3
+    assert all(w["establishment_support_phone"] for w in body.values())
+    assert phone_calls["n"] == 1
+    assert tutor_loc_calls["n"] == 1

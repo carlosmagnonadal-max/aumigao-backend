@@ -256,6 +256,48 @@ def test_public_walkers_empty_when_no_active():
     assert body["walkers"] == []
 
 
+def test_public_walkers_excludes_untrained_when_training_enforced(tmp_path, monkeypatch):
+    # S2-6: trava da Capacitação EFETIVA (on) exclui passeador não capacitado da
+    # lista pública, igual ao matching; volta a aparecer quando concluir.
+    from tests.training_helpers import configure_training, make_bundle, write_bundle
+
+    write_bundle(tmp_path, make_bundle(status="vet_approved"))
+    configure_training(monkeypatch, tmp_path, mode="on")
+    client, db = build(create_profile=False, role="walker")
+    db.add(User(id="clean-walker", email="maria@aumigao.app", password_hash="x",
+                role="walker", tenant_id=TENANT_ID, full_name="Maria Silva"))
+    db.add(WalkerProfile(id="wp-clean", user_id="clean-walker", full_name="Maria Silva",
+                         cpf="11122233344", phone="71999990000", city="Salvador",
+                         status="active", active_as_walker=True))
+    db.commit()
+
+    r = client.get("/walker/public")
+    assert r.status_code == 200, r.text
+    assert r.json()["walkers"] == []
+
+    profile = db.query(WalkerProfile).filter_by(user_id="clean-walker").one()
+    profile.training_completed_version = "9.0"
+    db.commit()
+    r2 = client.get("/walker/public")
+    assert "clean-walker" in [w["id"] for w in r2.json()["walkers"]]
+
+
+def test_public_walkers_unaffected_by_training_in_warn_mode(tmp_path, monkeypatch):
+    from tests.training_helpers import configure_training, make_bundle, write_bundle
+
+    write_bundle(tmp_path, make_bundle(status="vet_approved"))
+    configure_training(monkeypatch, tmp_path, mode="warn")
+    client, db = build(create_profile=False, role="walker")
+    db.add(User(id="clean-walker", email="maria@aumigao.app", password_hash="x",
+                role="walker", tenant_id=TENANT_ID, full_name="Maria Silva"))
+    db.add(WalkerProfile(id="wp-clean", user_id="clean-walker", full_name="Maria Silva",
+                         cpf="11122233344", phone="71999990000", city="Salvador",
+                         status="active", active_as_walker=True))
+    db.commit()
+    r = client.get("/walker/public")
+    assert "clean-walker" in [w["id"] for w in r.json()["walkers"]]
+
+
 def test_api_public_walkers_returns_real_walker_when_clean_identity():
     client, db = build(create_profile=False, role="walker")
     # cria usuario/perfil "limpos" (sem tokens de teste no identidade)

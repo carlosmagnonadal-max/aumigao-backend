@@ -344,12 +344,20 @@ def _attach_safety_alerts(payload: dict, walk: Walk, db: Session, cache: dict) -
     TAREFA EXTRA (S3): também anexa `establishment_support_phone` (telefone de
     contato/suporte do TENANT — não é dado pessoal do tutor, que continua
     omitido em `tutor_phone`). Mesmos pontos de anexo de `safety_alerts`.
+
+    S3-3: `cache` (1 dict por request, compartilhado entre todas as chamadas
+    de uma listagem) evita reconsultar telefone do tenant e perfil do tutor
+    (via safety_alerts_for_walk → resolve_walk_location) uma vez por passeio —
+    passeios do mesmo tenant/tutor reaproveitam o valor já lido.
     """
     if (walk.operational_status or "") in _SAFETY_ALERT_SKIP_STATUSES:
         payload["safety_alerts"] = []
     else:
         payload["safety_alerts"] = safety_alerts_for_walk(db, walk, cache=cache)
-    payload["establishment_support_phone"] = resolve_tenant_support_phone(db, walk.tenant_id)
+    phone_key = ("support_phone", walk.tenant_id)
+    if phone_key not in cache:
+        cache[phone_key] = resolve_tenant_support_phone(db, walk.tenant_id)
+    payload["establishment_support_phone"] = cache[phone_key]
     return payload
 
 
@@ -1945,11 +1953,19 @@ def _public_walker_rows(db: Session, verified_walkers_enabled: bool = True) -> l
             for r in db.query(WalkerKitSubmission).filter(WalkerKitSubmission.walker_user_id.in_(walker_user_ids)).all()
         }
 
+    # S2-6: trava da Capacitação EFETIVA (on) exclui da lista pública quem não é
+    # capacitado — mesma condição usada no matching (training.blocking); com
+    # off/warn nada muda (DV: zero regressão sem trava efetiva).
+    from app.services.walker_training_policy import get_enforcement as _get_training_enforcement, is_walker_trained as _is_walker_trained
+    training = _get_training_enforcement()
+
     rows = []
     seen_keys = set()
     for profile in profiles:
         user = users_by_id.get(profile.user_id) if profile.user_id else None
         if not _is_public_real_walker(profile, user):
+            continue
+        if training.blocking and not _is_walker_trained(profile, training.required_version):
             continue
         dedupe_key = (profile.cpf or profile.user_id or profile.id or profile.phone or (user.email if user else "")).strip().lower()
         if not dedupe_key or dedupe_key in seen_keys:

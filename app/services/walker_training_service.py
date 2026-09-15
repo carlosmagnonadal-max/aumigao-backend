@@ -8,7 +8,11 @@ walker_profiles.training_completed_version/at.
 """
 from __future__ import annotations
 
+import importlib
+import json
 import logging
+import re
+import unicodedata
 from datetime import datetime
 from uuid import uuid4
 
@@ -233,3 +237,108 @@ def quick_guide() -> dict:
                 "markdown": card["markdown"],
             })
     return {"version": bundle["version"], "content_status": bundle.get("status"), "cards": cards}
+
+
+# ── M10-B: Regras da sua cidade ───────────────────────────────────────────────
+
+
+def _normalize(value: str | None) -> str:
+    text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode("ascii")
+    return " ".join(text.lower().split())
+
+
+def _walker_location(profile: WalkerProfile | None) -> tuple[str, str]:
+    """(cidade, UF). `state` do cadastro guarda a UF; valores que não são UF (bairro legado) viram ""."""
+    if profile is None:
+        return "", ""
+    city = (profile.city or "").strip()
+    raw_state = (profile.state or "").strip().upper()
+    uf = raw_state if len(raw_state) == 2 and raw_state.isalpha() else ""
+    return city, uf
+
+
+def _local_module_matches(module: dict, city: str, uf: str) -> bool:
+    module_uf = (module.get("uf") or "").upper()
+    if uf and module_uf and uf != module_uf:
+        return False
+    normalized_city = _normalize(city)
+    normalized_module_city = _normalize(module.get("cidade"))
+    if not normalized_city or not normalized_module_city:
+        return False
+    return re.search(rf"\b{re.escape(normalized_city)}\b", normalized_module_city) is not None
+
+
+def _json_object(value) -> dict:
+    try:
+        data = json.loads(value or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _serialize_local_rule(rule) -> dict:
+    """LocalRule (ORM do S3) → dict público do M10-B. Só leitura de atributos (sem import do modelo)."""
+    requirement = _json_object(getattr(rule, "exigencia_json", None))
+    items = [str(item) for item in requirement.get("itens") or [] if str(item).strip()]
+    summary = str(requirement.get("detalhe") or "").strip() or " ".join(
+        part for part in (", ".join(items), str(requirement.get("onde") or "").strip()) if part
+    )
+    checked = getattr(rule, "verificado_em", None)
+    return {
+        "id": getattr(rule, "id", None),
+        "tema": getattr(rule, "tema", None),
+        "nivel": getattr(rule, "nivel", None),
+        "municipio": getattr(rule, "municipio", None),
+        "uf": getattr(rule, "uf", None),
+        "status": getattr(rule, "status", None),
+        "confianca": getattr(rule, "confianca", None),
+        "norma": getattr(rule, "norma", None),
+        "fonte_url": getattr(rule, "fonte_url", None),
+        "verificado_em": checked.isoformat() if hasattr(checked, "isoformat") else checked,
+        "itens": items,
+        "resumo": summary,
+    }
+
+
+def _structured_local_rules(db: Session, city: str, uf: str) -> list[dict]:
+    """Adaptador do S3 — contrato do plano S3 (DV2): rules_for_city(db, municipio, uf) -> list[LocalRule].
+
+    Chamada POSICIONAL (a assinatura do S3 é `rules_for_city(db, municipio, uf, *, include_tramitacao, cache)`).
+    Devolve vigentes + "conflito" (o S3 marca praia de Salvador como conflito/baixa confiança);
+    o app mostra o status. Sem o módulo, sem a função ou com erro → [] (Capacitação nunca quebra pelo S3).
+    """
+    if not city or not uf:
+        return []
+    try:
+        service = importlib.import_module("app.services.local_rules_service")
+    except ImportError:
+        return []
+    rules_for_city = getattr(service, "rules_for_city", None)
+    if rules_for_city is None:
+        return []
+    try:
+        return [_serialize_local_rule(rule) for rule in rules_for_city(db, city, uf)]
+    except Exception as exc:  # noqa: BLE001 — fonte externa (S3); degrada para lista vazia
+        logger.warning("training_local_rules_failed city=%s uf=%s reason=%s", city, uf, type(exc).__name__)
+        db.rollback()
+        return []
+
+
+def local_rules(db: Session, walker_user_id: str) -> dict:
+    profile = _profile(db, walker_user_id)
+    city, uf = _walker_location(profile)
+    bundle = training_content.load_bundle()
+    modules: list[dict] = []
+    if bundle is not None:
+        rows = _progress_rows(db, walker_user_id, bundle["version"])
+        modules = [
+            _module_summary(module, rows.get(module["id"]))
+            for module in bundle.get("modules", [])
+            if module.get("scope") == "local" and _local_module_matches(module, city, uf)
+        ]
+    return {
+        "city": city or None,
+        "uf": uf or None,
+        "modules": modules,
+        "rules": _structured_local_rules(db, city, uf),
+    }

@@ -45,7 +45,13 @@ CRITICAL_NOTIFICATION_TYPES = {
     "walk_recovery",
     # Alertas de custo (10/07): orçamento do tenant cruzou threshold.
     "cost_alert",
+    # S1 — Botão de Emergência (15/09): tutor e admins do tenant.
+    "walk_emergency",
+    "walk_emergency_admin",
 }
+# S1 (D3): segurança do passeio NÃO é configurável por tenant — estes tipos
+# furam o toggle push_notifications do plano (ver _push_notifications_enabled_for).
+SAFETY_NOTIFICATION_TYPES = {"walk_emergency", "walk_emergency_admin"}
 CRITICAL_WALK_STATUS_ACTIONS = {
     "walker_accepted",
     "ride_in_progress",
@@ -213,6 +219,8 @@ def _do_send(messages: list[dict], notification_id: str, notification_type: str,
 
 def _push_notifications_enabled_for(db: Session, notification: Notification) -> bool:
     """Verifica se push_notifications esta habilitado para o tenant da notificacao."""
+    if notification.type in SAFETY_NOTIFICATION_TYPES:
+        return True
     from app.services.tenant_plan_service import tenant_feature_enabled  # import local para evitar ciclo
     tenant_id = getattr(notification, "tenant_id", None)
     if not tenant_id:

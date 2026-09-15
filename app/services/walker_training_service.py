@@ -22,7 +22,12 @@ from sqlalchemy.orm import Session
 from app.models.walker_profile import WalkerProfile
 from app.models.walker_training_progress import WalkerTrainingProgress
 from app.services import training_content
-from app.services.walker_training_policy import TrainingEnforcement, get_enforcement, is_walker_trained
+from app.services.walker_training_policy import (
+    TrainingEnforcement,
+    get_enforcement,
+    is_walker_trained,
+    training_status_label,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -341,4 +346,28 @@ def local_rules(db: Session, walker_user_id: str) -> dict:
         "uf": uf or None,
         "modules": modules,
         "rules": _structured_local_rules(db, city, uf),
+    }
+
+
+# ── Admin ─────────────────────────────────────────────────────────────────────
+
+
+def admin_training_detail(db: Session, walker_user_id: str) -> dict:
+    profile = _profile(db, walker_user_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Passeador não encontrado.")
+    enforcement = get_enforcement()
+    bundle = training_content.load_bundle(enforcement.required_version)
+    version = bundle["version"] if bundle else None
+    rows = _progress_rows(db, walker_user_id, version) if version else {}
+    modules = [_module_summary(m, rows.get(m["id"])) for m in (bundle.get("modules", []) if bundle else [])]
+    return {
+        "user_id": walker_user_id,
+        "version": version,
+        "content_status": bundle.get("status") if bundle else None,
+        "status": training_status_label(profile, version),
+        "completed_version": profile.training_completed_version,
+        "completed_at": profile.training_completed_at,
+        "enforcement": _enforcement_payload(enforcement),
+        "modules": modules,
     }

@@ -53,3 +53,33 @@ def test_list_includes_training_status_and_unavailable_without_bundle(tmp_path, 
 
 def test_lgpd_export_includes_training_columns():
     assert {"training_completed_version", "training_completed_at"} <= set(_WALKER_PROFILE_FIELDS)
+
+
+def test_list_reads_training_version_once_per_request_not_per_walker(tmp_path, monkeypatch):
+    # S2-7: active_version() faz I/O de diretório (sem WALKER_TRAINING_REQUIRED_VERSION
+    # fixada) — numa listagem com N passeadores, deve ser lido 1x, não N vezes.
+    write_bundle(tmp_path, make_bundle(status="draft"))
+    configure_training(monkeypatch, tmp_path, mode="warn")
+    monkeypatch.delenv("WALKER_TRAINING_REQUIRED_VERSION", raising=False)
+    db = make_db()
+    db.add(User(id="walker-2", email="segundo@aumigao.com.br", password_hash="x", role="walker",
+                full_name="Segundo Passeador", tenant_id="t-training", is_active=True))
+    db.add(WalkerProfile(id="wp-2", user_id="walker-2", full_name="Segundo Passeador", city="Salvador",
+                         state="BA", status="active", active_as_walker=True))
+    db.commit()
+    client = _client(db)
+
+    from app.routes import admin as admin_routes
+
+    calls = {"n": 0}
+    real_active_version = admin_routes.training_content.active_version
+
+    def counting_active_version():
+        calls["n"] += 1
+        return real_active_version()
+
+    monkeypatch.setattr(admin_routes.training_content, "active_version", counting_active_version)
+    r = client.get("/admin/partner-applications")
+    assert r.status_code == 200, r.text
+    assert len([row for row in r.json() if row.get("training_status")]) >= 2
+    assert calls["n"] == 1

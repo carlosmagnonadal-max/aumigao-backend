@@ -68,6 +68,7 @@ from app.services.operational_scheduler_service import get_operational_scheduler
 from app.services.walker_operational_score_service import (
     calculate_walker_operational_scores,
 )
+from app.services import training_content
 from app.routes.notifications import NotificationCreate, _create_notification
 from app.lib.admin_serializers import (
     FAKE_ENTITY_TOKENS,
@@ -664,11 +665,16 @@ def _unique_walker_profiles(db: Session, include_internal: bool = True) -> list[
     bg_certs_by_profile_id: dict[str, list] = {}
     for cert in bg_certs_list:
         bg_certs_by_profile_id.setdefault(cert.walker_profile_id, []).append(cert)
+    # S2-7: versão ativa da Capacitação lida 1x por listagem (não por passeador) —
+    # active_version() faz I/O de diretório quando WALKER_TRAINING_REQUIRED_VERSION
+    # não está fixada por env.
+    training_version = training_content.active_version()
     for profile in surviving:
         rows.append(_serialize_walker_profile(
             profile, db, include_internal=include_internal,
             operational_score=scores.get(profile.user_id),
             background_certs_by_profile_id=bg_certs_by_profile_id,
+            training_version=training_version,
         ))
     return rows
 

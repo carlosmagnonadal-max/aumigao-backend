@@ -440,12 +440,18 @@ def _admin_pet_health_card(pet: Pet, db: Session) -> dict:
     }
 
 
+# S2-7: sentinela para "training_version não veio do chamador" — distingue de um
+# active_version() legítimo == None (sem bundle nenhum instalado).
+_TRAINING_VERSION_UNSET = object()
+
+
 def _serialize_walker_profile(
     profile: WalkerProfile,
     db: Session,
     include_internal: bool = True,
     operational_score: dict | None = None,
     background_certs_by_profile_id: dict[str, list] | None = None,
+    training_version: str | None = _TRAINING_VERSION_UNSET,
 ) -> dict:
     user = _profile_user(profile, db)
     document_count = len([value for value in [profile.document_url, profile.identity_document_back_url, profile.selfie_url, profile.proof_of_address_url] if value])
@@ -503,7 +509,13 @@ def _serialize_walker_profile(
         # S2 — Capacitação: status para a lista/detalhe do admin (versão exigida = bundle ativo).
         "training_completed_version": getattr(profile, "training_completed_version", None),
         "training_completed_at": getattr(profile, "training_completed_at", None),
-        "training_status": training_status_label(profile, training_content.active_version()),
+        # S2-7: numa listagem, o chamador pré-calcula 1x e passa via training_version
+        # (evita reler o diretório/arquivo do bundle por passeador); chamada avulsa
+        # (detalhe de 1 perfil) calcula na hora, como antes.
+        "training_status": training_status_label(
+            profile,
+            training_content.active_version() if training_version is _TRAINING_VERSION_UNSET else training_version,
+        ),
     }
     # operational_score pode vir pré-calculado em lote (evita N+1 nas listagens);
     # senão calcula sob demanda (detalhe de 1 perfil).

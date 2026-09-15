@@ -184,19 +184,57 @@ def _limit_rule(db, *, max_dogs, status="vigente", municipio="Salvador", uf="BA"
 
 
 def test_regression_without_local_limit_behavior_is_unchanged():
-    # Sem regra limite_caes: anfitrião leva 3 pets (max_pets_same_tutor) e o convidado entra
-    # com 4 — exatamente como antes do S3. (Convidado sem teto é lacuna PRÉ-EXISTENTE, ver DV3.)
+    # Sem regra limite_caes: anfitrião leva 3 pets e o convidado também 3 (max_pets_same_tutor).
     db = _db(); t = _tenant(db)
     _tutor_city(db, "tutorA", "Salvador", "BA")
     for i in range(3):
         _pet(db, f"a{i}", "tutorA")
-    for i in range(4):
+    for i in range(3):
         _pet(db, f"b{i}", "tutorB")
     s = svc.create_session(db, t, "tutorA", scheduled_date="x", duration_minutes=45,
                            host_pet_ids=["a0", "a1", "a2"], open_to_pool=False)
-    for i in range(4):
+    for i in range(3):
         s = svc.join_session(db, t, s.id, "tutorB", f"b{i}")
-    assert len(svc.active_participants(s)) == 7
+    assert len(svc.active_participants(s)) == 6
+
+
+def test_join_guest_blocked_above_same_tutor_max():
+    # Regra do produto: até 3 cães por tutor vale para o convidado também.
+    db = _db(); t = _tenant(db)
+    _pet(db, "a0", "tutorA")
+    for i in range(4):
+        _pet(db, f"b{i}", "tutorB")
+    s = svc.create_session(db, t, "tutorA", scheduled_date="x", duration_minutes=45,
+                           host_pet_ids=["a0"], open_to_pool=False)
+    for i in range(3):
+        s = svc.join_session(db, t, s.id, "tutorB", f"b{i}")
+    with pytest.raises(HTTPException) as e:
+        svc.join_session(db, t, s.id, "tutorB", "b3")
+    assert e.value.status_code == 400
+    assert "Máximo de 3 pets do mesmo tutor" in e.value.detail
+
+
+def test_join_guest_limit_follows_tenant_config():
+    db = _db(); t = _tenant(db)
+    cfg = svc.get_or_create_config(db, t.id); cfg.max_pets_same_tutor = 1; db.commit()
+    _pet(db, "a0", "tutorA"); _pet(db, "b0", "tutorB"); _pet(db, "b1", "tutorB")
+    s = svc.create_session(db, t, "tutorA", scheduled_date="x", duration_minutes=45,
+                           host_pet_ids=["a0"], open_to_pool=False)
+    s = svc.join_session(db, t, s.id, "tutorB", "b0")
+    with pytest.raises(HTTPException) as e:
+        svc.join_session(db, t, s.id, "tutorB", "b1")
+    assert e.value.status_code == 400
+
+
+def test_host_adding_pet_via_join_respects_same_tutor_max():
+    db = _db(); t = _tenant(db)
+    cfg = svc.get_or_create_config(db, t.id); cfg.max_pets_same_tutor = 2; db.commit()
+    _pet(db, "a0", "tutorA"); _pet(db, "a1", "tutorA"); _pet(db, "a2", "tutorA")
+    s = svc.create_session(db, t, "tutorA", scheduled_date="x", duration_minutes=45,
+                           host_pet_ids=["a0", "a1"], open_to_pool=False)
+    with pytest.raises(HTTPException) as e:
+        svc.join_session(db, t, s.id, "tutorA", "a2")
+    assert e.value.status_code == 400
 
 
 def test_local_limit_blocks_create_above_override():

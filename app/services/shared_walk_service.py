@@ -180,6 +180,11 @@ def join_session(db: Session, tenant: Tenant, walk_id: str, guest_tutor_id: str,
         raise HTTPException(status_code=400, detail="Este pet não está habilitado para passeio com outros pets.")
     if any(p.pet_id == pet_id and p.status in ACTIVE_PARTICIPANT_STATUSES for p in session.participants):
         raise HTTPException(status_code=409, detail="Este pet já está no passeio.")
+    # Limite de pets por tutor vale para qualquer tutor do grupo (anfitrião ou convidado).
+    config = get_or_create_config(db, tenant.id)
+    same_tutor_pets = sum(1 for p in active_participants(session) if p.tutor_id == guest_tutor_id)
+    if same_tutor_pets >= config.max_pets_same_tutor:
+        raise HTTPException(status_code=400, detail=f"Máximo de {config.max_pets_same_tutor} pets do mesmo tutor.")
     _enforce_local_dog_limit(db, tenant.id, session.created_by_tutor_id, len(active_participants(session)) + 1)
 
     db.add(SharedWalkParticipant(

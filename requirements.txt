@@ -19,7 +19,7 @@ pydantic==2.13.4
 # pydantic_core é transitivo do pydantic (o pin exato vem do próprio pydantic);
 # não pinar aqui evita o conflito recorrente do Dependabot (par pydantic×core).
 cryptography==50.0.1
-PyJWT[crypto]==2.13.0
+PyJWT[crypto]==2.15.0
 python-dotenv==1.2.2
 python-multipart==0.0.32
 rsa==4.9.1
